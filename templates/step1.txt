@@ -1,0 +1,13 @@
+Hi {{first_name}},
+
+{{ai_opener}}
+
+I noticed {{company_name}} and wanted to ask whether improving your outbound workflow is on the roadmap.
+
+If this is relevant, I can send a short idea tailored to {{company_name}}.
+
+Best,
+{{sender_name}}
+
+Unsubscribe: {{unsubscribe_url}}
+

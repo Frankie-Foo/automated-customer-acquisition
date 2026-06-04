@@ -1,0 +1,62 @@
+database:
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+  dbname: ${DB_NAME}
+  connect_timeout: ${DB_CONNECT_TIMEOUT}
+
+app:
+  public_base_url: ${PUBLIC_BASE_URL}
+
+apis:
+  ninjapear_key: ${NINJAPEAR_API_KEY}
+  prospeo_key: ${PROSPEO_API_KEY}
+  proxycurl_key: ${PROXYCURL_KEY}
+  hunter_key: ${HUNTER_KEY}
+  openai_key: ${OPENAI_API_KEY}
+  deepseek_key: ${DEEPSEEK_API_KEY}
+  resend_key: ${RESEND_API_KEY}
+  sendgrid_key: ${SENDGRID_API_KEY}
+
+llm:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+
+sender:
+  name: Your Name
+  email: you@outreach-domain.com
+  provider: resend
+  daily_limit: 100
+  dry_run: true
+
+notifications:
+  slack_webhook_url: ${SLACK_WEBHOOK_URL}
+
+webhooks:
+  resend_secret: ${RESEND_WEBHOOK_SECRET}
+
+sourcing:
+  provider: prospeo
+  default_limit: 100
+
+queue:
+  batch_size: 100
+
+sequence:
+  - step: 1
+    delay_days: 0
+    subject: "Quick question about {{company_name}}"
+    body_template: templates/step1.txt
+    ai_opener: true
+  - step: 2
+    delay_days: 3
+    subject: "Re: Quick question about {{company_name}}"
+    body_template: templates/step2.txt
+    ai_opener: false
+  - step: 3
+    delay_days: 7
+    subject: "Re: Quick question about {{company_name}}"
+    body_template: templates/step3.txt
+    ai_opener: false

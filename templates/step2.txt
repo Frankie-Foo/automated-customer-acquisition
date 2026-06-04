@@ -1,0 +1,11 @@
+Hi {{first_name}},
+
+Quick follow-up on my note about {{company_name}}.
+
+Would it be useful if I shared a concise example of how similar teams reduce manual prospecting work?
+
+Best,
+{{sender_name}}
+
+Unsubscribe: {{unsubscribe_url}}
+

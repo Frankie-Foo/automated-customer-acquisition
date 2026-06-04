@@ -1,0 +1,23 @@
+[project]
+name = "linkedin-sales-automation"
+version = "0.1.0"
+description = "Self-hosted LinkedIn lead sourcing, enrichment, CRM, and email outreach CLI."
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.2",
+  "PyYAML>=6.0",
+  "svix>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+salesbot = "sales_automation.cli:main"
+salesbot-web = "sales_automation.web:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

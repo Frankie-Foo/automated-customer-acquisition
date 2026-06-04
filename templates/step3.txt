@@ -1,0 +1,11 @@
+Hi {{first_name}},
+
+I will close the loop here.
+
+If outbound automation becomes relevant for {{company_name}}, I am happy to share a practical checklist.
+
+Best,
+{{sender_name}}
+
+Unsubscribe: {{unsubscribe_url}}
+
