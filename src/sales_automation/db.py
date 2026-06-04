@@ -150,11 +150,29 @@ class Repository:
                 "SELECT COUNT(*) AS count FROM email_events WHERE event_type = 'sent' AND occurred_at::date = CURRENT_DATE"
             ).fetchone()
             total = conn.execute("SELECT COUNT(*) AS count FROM contacts").fetchone()
+            lifecycle = conn.execute(
+                """
+                SELECT lifecycle_stage, COUNT(*) AS count
+                FROM contacts
+                GROUP BY lifecycle_stage
+                ORDER BY lifecycle_stage
+                """
+            ).fetchall()
+            disposition = conn.execute(
+                """
+                SELECT disposition, COUNT(*) AS count
+                FROM contacts
+                GROUP BY disposition
+                ORDER BY disposition
+                """
+            ).fetchall()
         return {
             "total_contacts": int(total["count"]),
             "sent_today": int(sent_today["count"]),
             "statuses": {row["status"]: int(row["count"]) for row in statuses},
             "events_7d": {row["event_type"]: int(row["count"]) for row in events},
+            "lifecycle": {row["lifecycle_stage"]: int(row["count"]) for row in lifecycle},
+            "dispositions": {row["disposition"]: int(row["count"]) for row in disposition},
         }
 
     def list_contacts(self, *, status: str | None = None, search: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -180,6 +198,8 @@ class Repository:
                        c.sequence_step, c.last_contacted_at, c.replied_at, c.enriched_at,
                        c.enrich_error, c.notes, c.created_at, c.source_person_id, c.source,
                        c.social_profiles, c.social_enriched_at, c.social_error,
+                       c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
+                       c.owner, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
                        COALESCE(ev.sent_count, 0) AS sent_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
                        COALESCE(ev.clicked_count, 0) AS clicked_count,
@@ -272,6 +292,143 @@ class Repository:
                 (json.dumps(profiles), error, contact_id),
             )
 
+    def lifecycle_summary(self) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            stages = conn.execute(
+                """
+                SELECT lifecycle_stage, COUNT(*) AS count
+                FROM contacts
+                GROUP BY lifecycle_stage
+                """
+            ).fetchall()
+            outreach = conn.execute(
+                """
+                SELECT outreach_stage, COUNT(*) AS count
+                FROM contacts
+                GROUP BY outreach_stage
+                """
+            ).fetchall()
+            action_rows = conn.execute(
+                """
+                SELECT id, first_name, last_name, company_name, lifecycle_stage, disposition,
+                       next_action_at, profile_summary
+                FROM contacts
+                WHERE disposition IN ('active', 'waiting')
+                  AND (next_action_at IS NULL OR next_action_at <= NOW() + INTERVAL '7 days')
+                ORDER BY next_action_at NULLS FIRST, created_at DESC
+                LIMIT 12
+                """
+            ).fetchall()
+        return {
+            "stages": {row["lifecycle_stage"]: int(row["count"]) for row in stages},
+            "outreach": {row["outreach_stage"]: int(row["count"]) for row in outreach},
+            "actions": action_rows,
+        }
+
+    def update_lifecycle(
+        self,
+        contact_id: int,
+        *,
+        lifecycle_stage: str | None = None,
+        disposition: str | None = None,
+        next_action_at: str | None = None,
+        notes: str | None = None,
+        lost_reason: str | None = None,
+        owner: str | None = None,
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET lifecycle_stage = COALESCE(%s, lifecycle_stage),
+                    disposition = COALESCE(%s, disposition),
+                    next_action_at = COALESCE(%s::timestamptz, next_action_at),
+                    notes = COALESCE(%s, notes),
+                    lost_reason = COALESCE(%s, lost_reason),
+                    owner = COALESCE(%s, owner)
+                WHERE id = %s
+                """,
+                (lifecycle_stage, disposition, next_action_at, notes, lost_reason, owner, contact_id),
+            )
+
+    def update_profile_summary(self, contact_id: int, summary: str, insights: dict[str, Any] | None = None) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET profile_summary = %s,
+                    profile_insights = COALESCE(%s::jsonb, profile_insights),
+                    profile_updated_at = NOW()
+                WHERE id = %s
+                """,
+                (summary, json.dumps(insights) if insights is not None else None, contact_id),
+            )
+
+    def contact_detail(self, contact_id: int) -> dict[str, Any] | None:
+        contact = self.get_contact(contact_id)
+        if not contact:
+            return None
+        return {"contact": contact, "activities": self.list_lifecycle_activities(contact_id)}
+
+    def list_lifecycle_activities(self, contact_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, contact_id, lifecycle_stage, activity_type, title, content,
+                       ai_analysis, created_by, created_at
+                FROM lifecycle_activities
+                WHERE contact_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (contact_id, limit),
+            ).fetchall()
+
+    def add_lifecycle_activity(
+        self,
+        contact_id: int,
+        *,
+        lifecycle_stage: str,
+        activity_type: str,
+        content: str,
+        title: str | None = None,
+        created_by: str | None = None,
+        ai_analysis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO lifecycle_activities(
+                    contact_id, lifecycle_stage, activity_type, title, content, created_by, ai_analysis
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id, contact_id, lifecycle_stage, activity_type, title, content,
+                          ai_analysis, created_by, created_at
+                """,
+                (contact_id, lifecycle_stage, activity_type, title, content, created_by, json.dumps(ai_analysis or {})),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE contacts
+                SET lifecycle_stage = %s,
+                    notes = COALESCE(%s, notes)
+                WHERE id = %s
+                """,
+                (lifecycle_stage, content[:500], contact_id),
+            )
+            return row
+
+    def update_lifecycle_activity_analysis(self, activity_id: int, analysis: dict[str, Any]) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE lifecycle_activities
+                SET ai_analysis = %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(analysis), activity_id),
+            )
+
     def queue_contacts(self, limit: int) -> int:
         with self.db.connect() as conn:
             rows = conn.execute(
@@ -344,6 +501,32 @@ class Repository:
                 (f"sent_{step}", step, contact_id),
             )
             return True
+
+    def record_manual_sent(self, contact_id: int, step: int, subject: str, message_id: str | None, metadata: dict[str, Any]) -> bool:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO email_events(contact_id, sequence_step, event_type, email_subject, message_id, metadata)
+                VALUES (%s, %s, 'sent', %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (contact_id, step, subject, message_id, json.dumps(metadata)),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE contacts
+                SET sequence_step = GREATEST(sequence_step, %s),
+                    last_contacted_at = NOW(),
+                    status = CASE
+                        WHEN %s <= 1 THEN 'sent_1'::contact_status
+                        WHEN %s = 2 THEN 'sent_2'::contact_status
+                        ELSE 'sent_3'::contact_status
+                    END
+                WHERE id = %s
+                """,
+                (step, step, step, contact_id),
+            )
+            return bool(row)
 
     def mark_status(self, contact_id: int, status: str, *, notes: str | None = None) -> None:
         validate_status(status)

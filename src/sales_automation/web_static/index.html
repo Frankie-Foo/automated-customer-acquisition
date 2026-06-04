@@ -59,6 +59,86 @@
         <div class="followup-grid" id="followup-grid"></div>
       </section>
 
+      <section class="lifecycle-board" id="lifecycle-board">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Customer lifecycle</span>
+            <h2>客户生命周期漏斗</h2>
+          </div>
+          <p>从回复、沟通、约会、试订单到签约维护，持续沉淀客户画像。</p>
+        </div>
+        <div class="lifecycle-grid" id="lifecycle-grid"></div>
+      </section>
+
+      <section class="customer-workspace" id="customer-workspace">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Customer workspace</span>
+            <h2>客户详情与阶段工作台</h2>
+          </div>
+          <p>记录回复、沟通、会议、商业计划、试订单、协议和门店信息，并让 AI 生成阶段建议。</p>
+        </div>
+        <div id="workspace-empty" class="workspace-empty">从客户列表点击“详情”开始管理客户生命周期。</div>
+        <div id="workspace-content" class="workspace-content hidden">
+          <div class="workspace-profile" id="workspace-profile"></div>
+          <div class="workspace-form">
+            <label>阶段
+              <select id="activity-stage">
+                <option value="lead">线索</option>
+                <option value="replied">回复</option>
+                <option value="conversation">初步沟通</option>
+                <option value="meeting">约会/会议</option>
+                <option value="business_plan">商业计划</option>
+                <option value="trial_order">试订单</option>
+                <option value="agency_agreement">代理协议</option>
+                <option value="store_creation">门店创建</option>
+              </select>
+            </label>
+            <label>记录类型
+              <select id="activity-type">
+                <option value="reply">回复内容</option>
+                <option value="research">客户资料/背景调研</option>
+                <option value="meeting_note">会议纪要</option>
+                <option value="business_plan">商业计划</option>
+                <option value="trial_order">试订单</option>
+                <option value="agreement_review">代理协议风险</option>
+                <option value="store_plan">门店创建资料</option>
+                <option value="note">普通备注</option>
+              </select>
+            </label>
+            <label class="wide">阶段记录
+              <textarea id="activity-content" placeholder="粘贴客户回复、会议纪要、订单信息、协议条款、门店资料等"></textarea>
+            </label>
+            <div class="panel-actions">
+              <button id="save-activity-button">保存记录</button>
+              <button id="stage-agent-button" class="primary">AI 分析阶段</button>
+            </div>
+          </div>
+          <div class="stage-analysis" id="stage-analysis"></div>
+          <div class="email-composer">
+            <div class="composer-head">
+              <div>
+                <strong>邮件跟进</strong>
+                <span>可以自定义邮件内容，或让 AI 根据客户线索和阶段记录生成个性化邮件。</span>
+              </div>
+              <label>模式
+                <select id="email-mode">
+                  <option value="ai">AI 个性化生成</option>
+                  <option value="custom">自定义邮件</option>
+                </select>
+              </label>
+            </div>
+            <label>主题<input id="email-subject" placeholder="邮件主题" /></label>
+            <label>正文<textarea id="email-body" placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}"></textarea></label>
+            <div class="panel-actions">
+              <button id="draft-email-button">生成/套用草稿</button>
+              <button id="send-custom-email-button" class="primary">发送给当前客户</button>
+            </div>
+          </div>
+          <div class="activity-list" id="activity-list"></div>
+        </div>
+      </section>
+
       <section class="guide">
         <div class="guide-card active">
           <span>01</span>
@@ -224,7 +304,10 @@
                 <th>Step</th>
                 <th>社媒</th>
                 <th>邮件反馈</th>
+                <th>生命周期</th>
+                <th>客户画像</th>
                 <th>最近联系</th>
+                <th>操作</th>
                 <th>错误</th>
               </tr>
             </thead>

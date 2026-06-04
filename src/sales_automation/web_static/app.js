@@ -8,6 +8,12 @@ const statusOrder = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", 
 const notice = document.querySelector("#notice");
 const metrics = document.querySelector("#metrics");
 const followupGrid = document.querySelector("#followup-grid");
+const lifecycleGrid = document.querySelector("#lifecycle-grid");
+const workspaceEmpty = document.querySelector("#workspace-empty");
+const workspaceContent = document.querySelector("#workspace-content");
+const workspaceProfile = document.querySelector("#workspace-profile");
+const activityList = document.querySelector("#activity-list");
+const stageAnalysis = document.querySelector("#stage-analysis");
 const contactsBody = document.querySelector("#contacts-body");
 const readinessNode = document.querySelector("#readiness");
 const readyPill = document.querySelector("#ready-pill");
@@ -34,19 +40,23 @@ async function api(path, options = {}) {
 
 async function refresh() {
   try {
-    const [summary, contacts] = await Promise.all([
+    const [summary, contacts, lifecycle] = await Promise.all([
       api("/api/summary"),
       api(`/api/contacts?status=${encodeURIComponent(state.status)}&search=${encodeURIComponent(state.search)}&limit=100`),
+      api("/api/lifecycle"),
     ]);
     hideNotice();
     renderMetrics(summary);
     const rows = contacts.contacts || [];
+    window.latestContacts = rows;
     renderFollowups(rows);
+    renderLifecycle(lifecycle, rows);
     renderContacts(rows);
     refreshReadiness();
   } catch (error) {
     renderMetrics({ total_contacts: 0, sent_today: 0, statuses: {}, events_7d: {} });
     renderFollowups([]);
+    renderLifecycle({ stages: {}, outreach: {}, actions: [] }, []);
     renderContacts([]);
     showNotice(`数据库还不可用：${error.message}。先确认 .env/config.yaml，然后点“初始化/迁移数据库”。`, "error");
   }
@@ -160,6 +170,38 @@ function renderFollowupCard(card) {
   `;
 }
 
+const lifecycleStages = [
+  ["lead", "陌生线索"],
+  ["replied", "已回复"],
+  ["conversation", "初步沟通"],
+  ["meeting", "约会/会议"],
+  ["business_plan", "商业计划"],
+  ["store_visit", "到店参观"],
+  ["trial_order", "试订单"],
+  ["agency_agreement", "代理协议"],
+  ["hq_visit", "总部拜访"],
+  ["signed", "成功签约"],
+  ["maintenance", "持续维护"],
+  ["waiting_pool", "等待池"],
+  ["abandoned", "已放弃"],
+];
+
+function renderLifecycle(lifecycle, contacts) {
+  const stages = lifecycle.stages || {};
+  lifecycleGrid.innerHTML = lifecycleStages.map(([key, label]) => {
+    const count = stages[key] || 0;
+    const examples = contacts.filter((contact) => contact.lifecycle_stage === key).slice(0, 2);
+    const names = examples.map((contact) => `<span>${escapeHtml(fullName(contact))}</span>`).join("");
+    return `
+      <article class="lifecycle-card ${key}">
+        <strong>${escapeHtml(label)}</strong>
+        <b>${count}</b>
+        <div>${names || "<span>暂无客户</span>"}</div>
+      </article>
+    `;
+  }).join("");
+}
+
 function followupMeta(contact) {
   if (contact.status === "replied" || Number(contact.replied_count || 0) > 0) return "已回复";
   if (contact.status === "bounced" || Number(contact.bounced_count || 0) > 0) return "退信";
@@ -171,7 +213,7 @@ function renderContacts(contacts) {
   if (!contacts.length) {
     contactsBody.innerHTML = `
       <tr>
-        <td colspan="10">
+        <td colspan="13">
           <div class="empty-state">
             <strong>还没有客户</strong>
             <div>先用上方“自动获客”、CSV 导入，或手动新增一个联系人。</div>
@@ -200,7 +242,10 @@ function renderContacts(contacts) {
       <td>${contact.sequence_step || 0}</td>
       <td>${renderSocialProfiles(contact)}</td>
       <td>${renderEmailFeedback(contact)}</td>
+      <td>${renderLifecycleCell(contact)}</td>
+      <td>${renderProfileSummary(contact)}</td>
       <td>${formatDate(contact.last_contacted_at)}</td>
+      <td>${renderRowActions(contact)}</td>
       <td class="error-text" title="${escapeHtml(contact.enrich_error || "")}">${escapeHtml(contact.enrich_error || "")}</td>
     </tr>
   `).join("");
@@ -254,6 +299,76 @@ function statusLabel(status) {
     bounced: "已退信",
     unsubscribed: "已退订",
   }[status] || status;
+}
+
+function lifecycleLabel(stage) {
+  return Object.fromEntries(lifecycleStages)[stage] || stage || "陌生线索";
+}
+
+function dispositionLabel(disposition) {
+  return {
+    active: "推进中",
+    waiting: "等待",
+    abandoned: "已放弃",
+    won: "已签约",
+    lost: "流失",
+  }[disposition] || disposition || "推进中";
+}
+
+function renderLifecycleCell(contact) {
+  return `
+    <div class="lifecycle-cell">
+      <span class="stage-pill">${escapeHtml(lifecycleLabel(contact.lifecycle_stage))}</span>
+      <div class="muted">${escapeHtml(dispositionLabel(contact.disposition))}</div>
+      ${contact.next_action_at ? `<div class="muted">下次：${formatDate(contact.next_action_at)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderProfileSummary(contact) {
+  const insights = contact.profile_insights || {};
+  if (!contact.profile_summary && !Object.keys(insights).length) {
+    return `<div class="profile-summary muted">待生成画像</div>`;
+  }
+  const score = Number(insights.icp_fit_score ?? 0);
+  const intent = intentLabel(insights.intent_level);
+  const nextAction = insights.next_action || contact.profile_summary || "";
+  const tags = [
+    ...(insights.interests || []).slice(0, 2),
+    ...(insights.pain_points || []).slice(0, 1),
+  ].map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  return `
+    <div class="profile-insights" title="${escapeHtml(contact.profile_summary || "")}">
+      <div class="fit-line">
+        <b>${score || "--"}</b>
+        <span>${escapeHtml(intent)}</span>
+      </div>
+      <strong>${escapeHtml(insights.persona || contact.profile_summary || "客户画像")}</strong>
+      <p>${escapeHtml(nextAction || "暂无下一步建议")}</p>
+      ${tags ? `<div class="insight-tags">${tags}</div>` : ""}
+    </div>
+  `;
+}
+
+function intentLabel(level) {
+  return {
+    high: "高意向",
+    medium: "中意向",
+    low: "低意向",
+    unknown: "待判断",
+  }[level] || "待判断";
+}
+
+function renderRowActions(contact) {
+  return `
+    <div class="row-actions">
+      <button data-life-action="next" data-id="${contact.id}">推进</button>
+      <button data-life-action="wait" data-id="${contact.id}">等待</button>
+      <button data-life-action="abandon" data-id="${contact.id}">放弃</button>
+      <button data-life-action="profile" data-id="${contact.id}">画像</button>
+      <button data-life-action="detail" data-id="${contact.id}">详情</button>
+    </div>
+  `;
 }
 
 function renderEmailFeedback(contact) {
@@ -444,5 +559,255 @@ document.querySelector("#source-button").addEventListener("click", async () => {
     showNotice(error.message, "error");
   }
 });
+
+contactsBody.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-life-action]");
+  if (!button) return;
+  const contactId = Number(button.dataset.id);
+  const action = button.dataset.lifeAction;
+  try {
+    if (action === "profile") {
+      showNotice("正在生成客户画像...");
+      const result = await api("/api/profile-agent", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
+      const insights = result.insights || {};
+      showNotice(`画像已更新：拟合度 ${insights.icp_fit_score ?? "--"}，下一步：${insights.next_action || insights.summary || "已生成"}`);
+    } else if (action === "detail") {
+      await loadCustomerWorkspace(contactId);
+      showNotice("客户详情已打开");
+    } else {
+      const payload = lifecyclePayload(action, contactId);
+      await api("/api/lifecycle", { method: "POST", body: JSON.stringify(payload) });
+      showNotice("生命周期状态已更新");
+    }
+    await refresh();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#save-activity-button").addEventListener("click", async () => {
+  try {
+    if (!window.selectedContactId) throw new Error("请先选择客户");
+    const payload = {
+      contact_id: window.selectedContactId,
+      lifecycle_stage: document.querySelector("#activity-stage").value,
+      activity_type: document.querySelector("#activity-type").value,
+      content: document.querySelector("#activity-content").value.trim(),
+      created_by: "dashboard",
+    };
+    if (!payload.content) throw new Error("请填写阶段记录");
+    const activity = await api("/api/lifecycle-activity", { method: "POST", body: JSON.stringify(payload) });
+    showNotice("阶段记录已保存");
+    await loadCustomerWorkspace(window.selectedContactId);
+    await refresh();
+    return activity;
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#stage-agent-button").addEventListener("click", async () => {
+  try {
+    if (!window.selectedContactId) throw new Error("请先选择客户");
+    const payload = {
+      contact_id: window.selectedContactId,
+      lifecycle_stage: document.querySelector("#activity-stage").value,
+      activity_type: document.querySelector("#activity-type").value,
+      content: document.querySelector("#activity-content").value.trim(),
+    };
+    showNotice("AI 正在分析当前阶段...");
+    const result = await api("/api/stage-agent", { method: "POST", body: JSON.stringify(payload) });
+    stageAnalysis.innerHTML = renderStageAnalysis(result.analysis);
+    showNotice("AI 阶段分析已生成");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+activityList.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-analyze-activity]");
+  if (!button) return;
+  try {
+    showNotice("AI 正在重新分析记录...");
+    await api("/api/stage-agent", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_id: window.selectedContactId,
+        activity_id: Number(button.dataset.analyzeActivity),
+      }),
+    });
+    await loadCustomerWorkspace(window.selectedContactId);
+    showNotice("记录分析已更新");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#draft-email-button").addEventListener("click", async () => {
+  try {
+    if (!window.selectedContactId) throw new Error("请先选择客户");
+    showNotice("正在生成邮件草稿...");
+    const result = await api("/api/email-draft", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_id: window.selectedContactId,
+        mode: document.querySelector("#email-mode").value,
+        subject: document.querySelector("#email-subject").value,
+        body: document.querySelector("#email-body").value,
+      }),
+    });
+    document.querySelector("#email-subject").value = result.subject || "";
+    document.querySelector("#email-body").value = result.body || "";
+    showNotice("邮件草稿已生成，请检查后再发送");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#send-custom-email-button").addEventListener("click", async () => {
+  try {
+    if (!window.selectedContactId) throw new Error("请先选择客户");
+    const subject = document.querySelector("#email-subject").value.trim();
+    const body = document.querySelector("#email-body").value.trim();
+    if (!subject || !body) throw new Error("请先填写主题和正文");
+    if (!window.confirm("确认发送给当前客户？dry_run=false 时会真实发出。")) return;
+    showNotice("正在发送邮件...");
+    const result = await api("/api/send-custom", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_id: window.selectedContactId,
+        mode: document.querySelector("#email-mode").value,
+        subject,
+        body,
+      }),
+    });
+    showNotice(`邮件已发送：第 ${result.step} 封`);
+    await loadCustomerWorkspace(window.selectedContactId);
+    await refresh();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+function lifecyclePayload(action, contactId) {
+  const contact = findContactInTable(contactId);
+  if (action === "next") {
+    return {
+      contact_id: contactId,
+      lifecycle_stage: nextLifecycleStage(contact?.lifecycle_stage),
+      disposition: "active",
+      notes: "dashboard: move to next lifecycle stage",
+    };
+  }
+  if (action === "wait") {
+    const next = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    return {
+      contact_id: contactId,
+      lifecycle_stage: contact?.lifecycle_stage || "waiting_pool",
+      disposition: "waiting",
+      next_action_at: next,
+      notes: "dashboard: move to waiting follow-up pool",
+    };
+  }
+  return {
+    contact_id: contactId,
+    lifecycle_stage: "abandoned",
+    disposition: "abandoned",
+    lost_reason: "dashboard: manually abandoned",
+    notes: "dashboard: abandon customer lifecycle",
+  };
+}
+
+async function loadCustomerWorkspace(contactId) {
+  const detail = await api(`/api/contact-detail?contact_id=${encodeURIComponent(contactId)}`);
+  if (!detail.contact) throw new Error("客户不存在");
+  window.selectedContactId = contactId;
+  window.selectedContactDetail = detail;
+  workspaceEmpty.classList.add("hidden");
+  workspaceContent.classList.remove("hidden");
+  renderWorkspaceProfile(detail.contact);
+  renderActivityList(detail.activities || []);
+  stageAnalysis.innerHTML = "";
+  document.querySelector("#activity-stage").value = detail.contact.lifecycle_stage || "lead";
+  document.querySelector("#email-mode").value = "ai";
+  document.querySelector("#email-subject").value = `Quick question about ${detail.contact.company_name || "your business"}`;
+  document.querySelector("#email-body").value = "";
+  document.querySelector("#activity-content").value = "";
+  document.querySelector("#customer-workspace").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderWorkspaceProfile(contact) {
+  const insights = contact.profile_insights || {};
+  workspaceProfile.innerHTML = `
+    <div>
+      <strong>${escapeHtml(fullName(contact))}</strong>
+      <span>${escapeHtml(contact.job_title || "")} · ${escapeHtml(contact.company_name || "")}</span>
+    </div>
+    <div>
+      <b>${escapeHtml(lifecycleLabel(contact.lifecycle_stage))}</b>
+      <span>${escapeHtml(dispositionLabel(contact.disposition))}</span>
+    </div>
+    <div>
+      <b>${insights.icp_fit_score ?? "--"}</b>
+      <span>拟合度 / ${escapeHtml(intentLabel(insights.intent_level))}</span>
+    </div>
+    <p>${escapeHtml(contact.profile_summary || "还没有客户画像，点击列表里的“画像”生成。")}</p>
+  `;
+}
+
+function renderActivityList(activities) {
+  if (!activities.length) {
+    activityList.innerHTML = `<div class="empty-activity">还没有阶段记录。</div>`;
+    return;
+  }
+  activityList.innerHTML = activities.map((item) => `
+    <article class="activity-card">
+      <header>
+        <strong>${escapeHtml(lifecycleLabel(item.lifecycle_stage))} / ${escapeHtml(activityTypeLabel(item.activity_type))}</strong>
+        <span>${formatDate(item.created_at)}</span>
+      </header>
+      <p>${escapeHtml(item.content)}</p>
+      ${renderStageAnalysis(item.ai_analysis)}
+      <button data-analyze-activity="${item.id}">重新分析</button>
+    </article>
+  `).join("");
+}
+
+function activityTypeLabel(type) {
+  return {
+    reply: "回复内容",
+    research: "客户资料/背景调研",
+    meeting_note: "会议纪要",
+    business_plan: "商业计划",
+    trial_order: "试订单",
+    agreement_review: "代理协议风险",
+    store_plan: "门店创建资料",
+    note: "普通备注",
+  }[type] || type;
+}
+
+function renderStageAnalysis(analysis) {
+  if (!analysis || !Object.keys(analysis).length) return "";
+  const list = (label, items) => items?.length ? `<div><b>${label}</b>${items.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : "";
+  return `
+    <section class="analysis-card">
+      <strong>${escapeHtml(analysis.summary || "AI 阶段分析")}</strong>
+      ${list("下一步", analysis.next_steps)}
+      ${list("缺失资料", analysis.missing_info)}
+      ${list("风险", analysis.risks)}
+      ${list("准备材料", analysis.materials_to_prepare)}
+    </section>
+  `;
+}
+
+function findContactInTable(contactId) {
+  return window.latestContacts?.find((contact) => Number(contact.id) === Number(contactId));
+}
+
+function nextLifecycleStage(stage) {
+  const order = ["lead", "replied", "conversation", "meeting", "business_plan", "store_visit", "trial_order", "agency_agreement", "hq_visit", "signed", "maintenance"];
+  const index = order.indexOf(stage || "lead");
+  return order[Math.min(index + 1, order.length - 1)];
+}
 
 refresh();

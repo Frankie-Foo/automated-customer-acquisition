@@ -14,7 +14,7 @@ from .config import load_config
 from .db import Database, Repository
 from .importers import parse_contacts_csv
 from .production import readiness
-from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
+from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 
 
 def normalize_company_website(value: str | None) -> str:
@@ -81,6 +81,14 @@ def make_handler(config, repo: Repository):
                 limit = int(qs.get("limit", ["100"])[0])
                 self._json(lambda: {"contacts": repo.list_contacts(status=status, search=search, limit=limit)})
                 return
+            if parsed.path == "/api/lifecycle":
+                self._json(lambda: repo.lifecycle_summary())
+                return
+            if parsed.path == "/api/contact-detail":
+                qs = parse_qs(parsed.query)
+                contact_id = int(qs.get("contact_id", ["0"])[0])
+                self._json(lambda: repo.contact_detail(contact_id) or {})
+                return
             if parsed.path == "/api/export.csv":
                 qs = parse_qs(parsed.query)
                 status = qs.get("status", [""])[0] or None
@@ -145,6 +153,63 @@ def make_handler(config, repo: Repository):
                     repo.mark_status(int(payload["contact_id"]), payload["status"], notes=payload.get("notes"))
                     return {"ok": True}
                 self._json(mark)
+                return
+            if parsed.path == "/api/lifecycle":
+                def lifecycle() -> dict[str, Any]:
+                    return LifecycleService(repo).update(
+                        int(payload["contact_id"]),
+                        lifecycle_stage=payload.get("lifecycle_stage"),
+                        disposition=payload.get("disposition"),
+                        next_action_at=payload.get("next_action_at"),
+                        notes=payload.get("notes"),
+                        lost_reason=payload.get("lost_reason"),
+                        owner=payload.get("owner"),
+                    )
+                self._json(lifecycle)
+                return
+            if parsed.path == "/api/profile-agent":
+                self._json(lambda: {"insights": ProfileAgentService(config, repo).summarize(int(payload["contact_id"]))})
+                return
+            if parsed.path == "/api/lifecycle-activity":
+                def activity() -> dict[str, Any]:
+                    return repo.add_lifecycle_activity(
+                        int(payload["contact_id"]),
+                        lifecycle_stage=payload.get("lifecycle_stage") or "lead",
+                        activity_type=payload.get("activity_type") or "note",
+                        title=payload.get("title"),
+                        content=payload.get("content") or "",
+                        created_by=payload.get("created_by") or "dashboard",
+                    )
+                self._json(activity)
+                return
+            if parsed.path == "/api/stage-agent":
+                def stage_agent() -> dict[str, Any]:
+                    return {
+                        "analysis": StageAgentService(config, repo).analyze(
+                            int(payload["contact_id"]),
+                            activity_id=payload.get("activity_id"),
+                            content=payload.get("content"),
+                            stage=payload.get("lifecycle_stage"),
+                            activity_type=payload.get("activity_type"),
+                        )
+                    }
+                self._json(stage_agent)
+                return
+            if parsed.path == "/api/email-draft":
+                self._json(lambda: PersonalizedEmailService(config, repo).draft(
+                    int(payload["contact_id"]),
+                    mode=payload.get("mode") or "ai",
+                    custom_subject=payload.get("subject"),
+                    custom_body=payload.get("body"),
+                ))
+                return
+            if parsed.path == "/api/send-custom":
+                self._json(lambda: PersonalizedEmailService(config, repo).send(
+                    int(payload["contact_id"]),
+                    subject=payload.get("subject") or "",
+                    body=payload.get("body") or "",
+                    mode=payload.get("mode") or "custom",
+                ))
                 return
             if parsed.path == "/api/blacklist":
                 def blacklist() -> dict[str, Any]:

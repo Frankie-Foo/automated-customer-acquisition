@@ -339,7 +339,9 @@ select:focus {
   font-size: 11px;
 }
 
-.followups {
+.followups,
+.lifecycle-board,
+.customer-workspace {
   margin-bottom: 16px;
   padding: 16px;
   border: 1px solid var(--line);
@@ -581,6 +583,249 @@ select:focus {
   gap: 10px;
 }
 
+.lifecycle-grid {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(98px, 1fr));
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.lifecycle-card {
+  min-height: 108px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lifecycle-card strong {
+  display: block;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.lifecycle-card b {
+  display: block;
+  margin: 8px 0;
+  font-size: 24px;
+}
+
+.lifecycle-card div {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.lifecycle-card.replied,
+.lifecycle-card.conversation,
+.lifecycle-card.meeting,
+.lifecycle-card.business_plan,
+.lifecycle-card.store_visit,
+.lifecycle-card.trial_order,
+.lifecycle-card.agency_agreement,
+.lifecycle-card.hq_visit {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.lifecycle-card.signed,
+.lifecycle-card.maintenance {
+  border-color: #8bd5c6;
+  background: #f4fffb;
+}
+
+.lifecycle-card.waiting_pool {
+  border-color: #f4c472;
+  background: #fff8eb;
+}
+
+.lifecycle-card.abandoned {
+  border-color: #f1aaa3;
+  background: #fff7f6;
+}
+
+.workspace-empty {
+  padding: 28px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+  background: var(--surface-soft);
+}
+
+.workspace-content {
+  display: grid;
+  gap: 14px;
+}
+
+.workspace-profile {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) 180px 160px minmax(260px, 2fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.workspace-profile > div,
+.workspace-profile > p {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.workspace-profile strong,
+.workspace-profile b {
+  display: block;
+  font-size: 14px;
+}
+
+.workspace-profile span,
+.workspace-profile p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workspace-form {
+  display: grid;
+  grid-template-columns: 190px 220px minmax(320px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.workspace-form .wide {
+  min-width: 0;
+}
+
+textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
+  font: inherit;
+}
+
+.stage-analysis:empty {
+  display: none;
+}
+
+.email-composer {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #bfe5dc;
+  border-radius: 10px;
+  background: #f4fffb;
+}
+
+.composer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.composer-head strong {
+  display: block;
+  font-size: 15px;
+}
+
+.composer-head span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.composer-head label {
+  min-width: 180px;
+}
+
+.analysis-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #93c5fd;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
+.analysis-card > strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.analysis-card div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.analysis-card div b {
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.analysis-card div span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-list {
+  display: grid;
+  gap: 10px;
+}
+
+.activity-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.activity-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.activity-card header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activity-card p {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+
+.activity-card button {
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.empty-activity {
+  padding: 18px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  text-align: center;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(170px, 1fr));
@@ -624,7 +869,7 @@ table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1180px;
+  min-width: 1540px;
 }
 
 th,
@@ -798,6 +1043,100 @@ tbody tr:hover {
   border-color: #60a5fa;
 }
 
+.lifecycle-cell {
+  min-width: 130px;
+}
+
+.stage-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.profile-summary,
+.profile-insights {
+  max-width: 300px;
+}
+
+.profile-insights {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.fit-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fit-line b {
+  min-width: 34px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+}
+
+.fit-line span {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.profile-insights strong {
+  font-size: 12px;
+}
+
+.profile-insights p {
+  max-height: 54px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.insight-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.insight-tags span {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 180px;
+}
+
+.row-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .error-text {
   color: var(--danger);
   max-width: 260px;
@@ -825,6 +1164,15 @@ tbody tr:hover {
   }
 
   .followup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .lifecycle-grid {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
+  .workspace-profile,
+  .workspace-form {
     grid-template-columns: 1fr;
   }
 
