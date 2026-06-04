@@ -7,7 +7,7 @@ from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
 from .logging_utils import log
-from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SourcingService, WebhookService
+from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
 
     enrich = sub.add_parser("enrich", parents=[config_parent])
     enrich.add_argument("--limit", type=int, default=100)
+
+    social_enrich = sub.add_parser("social-enrich", parents=[config_parent])
+    social_enrich.add_argument("--limit", type=int, default=100)
 
     queue = sub.add_parser("queue", parents=[config_parent])
     queue.add_argument("--limit", type=int, default=100)
@@ -79,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         SourcingService(config, repo).source(criteria, args.limit)
     elif args.command == "enrich":
         EnrichmentService(config, repo).enrich(args.limit)
+    elif args.command == "social-enrich":
+        SocialEnrichmentService(config, repo).enrich(args.limit)
     elif args.command == "queue":
         QueueService(repo).queue(args.limit)
     elif args.command == "send":

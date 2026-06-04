@@ -97,6 +97,7 @@ function readinessLabel(name) {
     sender_email: "发件邮箱域名",
     dry_run: "真实发送开关",
     public_url: "公网访问地址",
+    social_enrichment: "社媒富化 API",
     llm: "AI 文案模型",
     slack: "Slack 通知",
   }[name] || name;
@@ -170,7 +171,7 @@ function renderContacts(contacts) {
   if (!contacts.length) {
     contactsBody.innerHTML = `
       <tr>
-        <td colspan="9">
+        <td colspan="10">
           <div class="empty-state">
             <strong>还没有客户</strong>
             <div>先用上方“自动获客”、CSV 导入，或手动新增一个联系人。</div>
@@ -185,6 +186,7 @@ function renderContacts(contacts) {
       <td>
         <strong>${escapeHtml(fullName(contact))}</strong>
         <div class="muted">${escapeHtml(contact.job_title || "")}</div>
+        ${renderLinkedInLink(contact)}
       </td>
       <td>
         <strong>${escapeHtml(contact.company_name || "")}</strong>
@@ -196,6 +198,7 @@ function renderContacts(contacts) {
       </td>
       <td><span class="badge ${escapeHtml(contact.status)}">${escapeHtml(statusLabel(contact.status))}</span></td>
       <td>${contact.sequence_step || 0}</td>
+      <td>${renderSocialProfiles(contact)}</td>
       <td>${renderEmailFeedback(contact)}</td>
       <td>${formatDate(contact.last_contacted_at)}</td>
       <td class="error-text" title="${escapeHtml(contact.enrich_error || "")}">${escapeHtml(contact.enrich_error || "")}</td>
@@ -205,6 +208,33 @@ function renderContacts(contacts) {
 
 function fullName(contact) {
   return [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "(No name)";
+}
+
+function renderLinkedInLink(contact) {
+  if (!isHttpUrl(contact.linkedin_url)) return "";
+  return `<a class="profile-link" href="${escapeHtml(contact.linkedin_url)}" target="_blank" rel="noopener">LinkedIn</a>`;
+}
+
+function renderSocialProfiles(contact) {
+  const profiles = contact.social_profiles || {};
+  const labels = {
+    linkedin: "LinkedIn",
+    twitter: "X",
+    github: "GitHub",
+    facebook: "Facebook",
+    website: "Website",
+  };
+  const links = Object.entries(labels)
+    .filter(([key]) => isHttpUrl(profiles[key]))
+    .map(([key, label]) => `<a class="social-link" href="${escapeHtml(profiles[key])}" target="_blank" rel="noopener">${label}</a>`)
+    .join("");
+  if (links) return `<div class="social-links">${links}</div>`;
+  if (contact.social_error) return `<span class="muted" title="${escapeHtml(contact.social_error)}">未找到</span>`;
+  return `<span class="muted">待富化</span>`;
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || ""));
 }
 
 function displayEmail(contact) {

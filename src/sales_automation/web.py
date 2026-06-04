@@ -14,7 +14,7 @@ from .config import load_config
 from .db import Database, Repository
 from .importers import parse_contacts_csv
 from .production import readiness
-from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SourcingService, WebhookService
+from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
 
 def normalize_company_website(value: str | None) -> str:
@@ -120,6 +120,9 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/enrich":
                 self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
+                return
+            if parsed.path == "/api/social-enrich":
+                self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
                 return
             if parsed.path == "/api/queue":
                 self._json(lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)))})

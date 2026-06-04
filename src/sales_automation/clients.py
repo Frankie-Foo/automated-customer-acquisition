@@ -93,6 +93,61 @@ class ProspeoClient:
         return data.get("data") or data
 
 
+class PeopleDataLabsClient:
+    def __init__(self, api_key: str, http: HttpClient | None = None):
+        self.api_key = api_key
+        self.http = http or HttpClient(timeout=45)
+
+    def enrich_person(self, contact: dict[str, Any]) -> dict[str, Any]:
+        params = {"api_key": self.api_key, "pretty": "false"}
+        linkedin_url = contact.get("linkedin_url")
+        if str(linkedin_url or "").startswith("http"):
+            params["profile"] = linkedin_url
+        elif is_full_email(contact.get("email")):
+            params["email"] = contact["email"]
+        else:
+            if contact.get("first_name"):
+                params["first_name"] = contact["first_name"]
+            if contact.get("last_name"):
+                params["last_name"] = contact["last_name"]
+            if contact.get("company_name"):
+                params["company"] = contact["company_name"]
+            if contact.get("company_domain"):
+                params["company_domain"] = contact["company_domain"]
+        if len(params) <= 2:
+            raise RuntimeError("PDL enrichment requires LinkedIn URL, email, or name + company")
+        url = "https://api.peopledatalabs.com/v5/person/enrich?" + urllib.parse.urlencode(params)
+        data = self.http.request("GET", url)
+        return data.get("data") or data
+
+
+class PeopleDBClient:
+    def __init__(self, api_key: str, http: HttpClient | None = None):
+        self.api_key = api_key
+        self.http = http or HttpClient(timeout=45)
+
+    def enrich_person(self, contact: dict[str, Any]) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        linkedin_id = _linkedin_public_identifier(contact.get("linkedin_url"))
+        if linkedin_id:
+            params["linkedin_public_identifier"] = linkedin_id
+        social_profiles = contact.get("social_profiles") if isinstance(contact.get("social_profiles"), dict) else {}
+        github_login = _github_login(social_profiles.get("github"))
+        if github_login:
+            params["github_login"] = github_login
+        if not params:
+            raise RuntimeError("PeopleDB enrichment requires a LinkedIn public identifier or GitHub login")
+        url = "https://peopledb.co/api/v1/people?" + urllib.parse.urlencode(params)
+        return self.http.request(
+            "GET",
+            url,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "X-API-Key": self.api_key,
+            },
+        )
+
+
 class HunterClient:
     def __init__(self, api_key: str, http: HttpClient | None = None):
         self.api_key = api_key
@@ -328,6 +383,26 @@ def _domain_from_website(value: str | None) -> str | None:
     if len(parts) > 2:
         host = ".".join(parts[-2:])
     return host
+
+
+def _linkedin_public_identifier(value: str | None) -> str | None:
+    if not value or "linkedin.com/in/" not in value:
+        return None
+    parsed = urllib.parse.urlparse(value if "://" in value else f"https://{value}")
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() == "in":
+        return parts[1]
+    return None
+
+
+def _github_login(value: str | None) -> str | None:
+    if not value:
+        return None
+    if "github.com/" not in value:
+        return value.strip().strip("/") or None
+    parsed = urllib.parse.urlparse(value if "://" in value else f"https://{value}")
+    parts = [part for part in parsed.path.split("/") if part]
+    return parts[0] if parts else None
 
 
 def _extract_response_text(data: dict[str, Any]) -> str:

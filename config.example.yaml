@@ -12,6 +12,8 @@ app:
 apis:
   ninjapear_key: ${NINJAPEAR_API_KEY}
   prospeo_key: ${PROSPEO_API_KEY}
+  peopledb_key: ${PEOPLEDB_API_KEY}
+  pdl_key: ${PDL_API_KEY}
   proxycurl_key: ${PROXYCURL_KEY}
   hunter_key: ${HUNTER_KEY}
   openai_key: ${OPENAI_API_KEY}

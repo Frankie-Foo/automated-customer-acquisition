@@ -175,10 +175,11 @@ class Repository:
         with self.db.connect() as conn:
             return conn.execute(
                 f"""
-                SELECT c.id, c.first_name, c.last_name, c.email, c.email_status, c.job_title,
+                SELECT c.id, c.linkedin_url, c.first_name, c.last_name, c.email, c.email_status, c.job_title,
                        c.company_name, c.company_domain, c.industry, c.location, c.status::text,
                        c.sequence_step, c.last_contacted_at, c.replied_at, c.enriched_at,
                        c.enrich_error, c.notes, c.created_at, c.source_person_id, c.source,
+                       c.social_profiles, c.social_enriched_at, c.social_error,
                        COALESCE(ev.sent_count, 0) AS sent_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
                        COALESCE(ev.clicked_count, 0) AS clicked_count,
@@ -235,6 +236,40 @@ class Repository:
                 WHERE id = %(id)s
                 """,
                 payload,
+            )
+
+    def list_for_social_enrichment(self, limit: int) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM contacts
+                WHERE (
+                    social_enriched_at IS NULL
+                    OR social_enriched_at < NOW() - INTERVAL '30 days'
+                  )
+                  AND (
+                    linkedin_url LIKE 'http%%'
+                    OR (email_status = 'valid' AND email IS NOT NULL)
+                    OR (first_name IS NOT NULL AND company_name IS NOT NULL)
+                  )
+                ORDER BY social_enriched_at NULLS FIRST, created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+
+    def update_social_profiles(self, contact_id: int, profiles: dict[str, Any], *, error: str | None = None) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET social_profiles = COALESCE(%s::jsonb, '{}'::jsonb),
+                    social_enriched_at = NOW(),
+                    social_error = %s
+                WHERE id = %s
+                """,
+                (json.dumps(profiles), error, contact_id),
             )
 
     def queue_contacts(self, limit: int) -> int:

@@ -15,6 +15,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("database", bool(config.database.get("host") and config.database.get("dbname")), "Database config is present"),
         _check("lead_source", bool(apis.get("prospeo_key") or apis.get("ninjapear_key")), "Prospeo or NinjaPear key is required for automated lead sourcing"),
         _check("enrichment", bool(apis.get("hunter_key") or apis.get("prospeo_key") or apis.get("ninjapear_key")), "Hunter, Prospeo, or NinjaPear key is required for email enrichment"),
+        _check("social_enrichment", bool(apis.get("peopledb_key") or apis.get("pdl_key")), "PeopleDB or People Data Labs key is optional for social profile enrichment"),
         _check("resend", bool(apis.get("resend_key")), "Resend key is required for real email sending"),
         _check("sender_email", _valid_sender(sender.get("email")), "Sender email must be a verified-domain address, not a placeholder"),
         _check("dry_run", sender.get("dry_run") is False, "Set sender.dry_run=false only after sender domain is verified"),
@@ -28,7 +29,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
 
 
 def _check(name: str, ok: bool, message: str, *, required: bool = True) -> dict[str, Any]:
-    if name in {"llm", "slack"}:
+    if name in {"llm", "slack", "social_enrichment"}:
         required = False
     return {"name": name, "ok": ok, "message": message, "required": required}
 
