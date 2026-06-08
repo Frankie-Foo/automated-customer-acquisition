@@ -11,6 +11,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
     sender = config.sender
     llm = config.raw.get("llm", {})
     app = config.raw.get("app", {})
+    quotas = config.raw.get("quotas", {})
     checks = [
         _check("database", bool(config.database.get("host") and config.database.get("dbname")), "Database config is present"),
         _check("lead_source", bool(apis.get("prospeo_key") or apis.get("ninjapear_key")), "Prospeo or NinjaPear key is required for automated lead sourcing"),
@@ -20,6 +21,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("sender_email", _valid_sender(sender.get("email")), "Sender email must be a verified-domain address, not a placeholder"),
         _check("dry_run", sender.get("dry_run") is False, "Set sender.dry_run=false only after sender domain is verified"),
         _check("public_url", _public_base_url_ready(app.get("public_base_url")), "Use a public HTTPS PUBLIC_BASE_URL for unsubscribe links, tracking pixels, and webhooks"),
+        _check("quotas", bool(quotas.get("global_daily_send_limit") and quotas.get("global_daily_source_limit")), "Global source/send quotas should be configured"),
         _check("llm", _llm_ready(apis, llm), "DeepSeek/OpenAI key is required for AI openers; fallback works without it"),
         _check("slack", bool(config.raw.get("notifications", {}).get("slack_webhook_url")), "Slack webhook is optional for reply/error notifications"),
     ]

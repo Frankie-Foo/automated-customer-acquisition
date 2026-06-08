@@ -1,6 +1,8 @@
 const state = {
   status: "",
   search: "",
+  user: null,
+  usage: null,
 };
 
 const statusOrder = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"];
@@ -17,6 +19,12 @@ const stageAnalysis = document.querySelector("#stage-analysis");
 const contactsBody = document.querySelector("#contacts-body");
 const readinessNode = document.querySelector("#readiness");
 const readyPill = document.querySelector("#ready-pill");
+const loginScreen = document.querySelector("#login-screen");
+const loginForm = document.querySelector("#login-form");
+const loginError = document.querySelector("#login-error");
+const accountName = document.querySelector("#account-name");
+const quotaStatus = document.querySelector("#quota-status");
+const logoutButton = document.querySelector("#logout-button");
 
 function showNotice(message, type = "") {
   notice.textContent = message;
@@ -34,8 +42,51 @@ async function api(path, options = {}) {
     ...options,
   });
   const data = await response.json();
+  if (response.status === 401 && path !== "/api/login") {
+    showLogin();
+    throw new Error("请先登录");
+  }
   if (!data.ok) throw new Error(data.error || "请求失败");
   return data.data;
+}
+
+async function loadSession() {
+  try {
+    const session = await api("/api/me");
+    state.user = session.user;
+    state.usage = session.usage;
+    renderAccount();
+    hideLogin();
+    await refresh();
+  } catch (error) {
+    showLogin();
+  }
+}
+
+function showLogin() {
+  loginScreen.classList.remove("hidden");
+}
+
+function hideLogin() {
+  loginScreen.classList.add("hidden");
+  loginError.textContent = "";
+}
+
+function renderAccount() {
+  if (!state.user) {
+    accountName.textContent = "未登录";
+    quotaStatus.textContent = "今日配额 --";
+    return;
+  }
+  const usage = state.usage || {};
+  accountName.textContent = state.user.display_name || state.user.username;
+  quotaStatus.textContent = `获客 ${usage.source_count || 0}/${state.user.daily_source_limit} · 发信 ${usage.send_count || 0}/${state.user.daily_send_limit}`;
+}
+
+function updateUsage(usage) {
+  if (!usage) return;
+  state.usage = usage;
+  renderAccount();
 }
 
 async function refresh() {
@@ -236,7 +287,7 @@ function renderContacts(contacts) {
       </td>
       <td>
         ${escapeHtml(displayEmail(contact))}
-        <div class="muted">${escapeHtml(contact.email_status || "")}</div>
+        <div class="muted">${escapeHtml(emailMeta(contact))}</div>
       </td>
       <td><span class="badge ${escapeHtml(contact.status)}">${escapeHtml(statusLabel(contact.status))}</span></td>
       <td>${contact.sequence_step || 0}</td>
@@ -285,6 +336,24 @@ function isHttpUrl(value) {
 function displayEmail(contact) {
   if (!contact.email || String(contact.email).includes("*")) return "待富化";
   return contact.email;
+}
+
+function emailMeta(contact) {
+  const parts = [contact.email_status || "unknown"];
+  if (contact.email_source) parts.push(sourceLabel(contact.email_source));
+  if (contact.email_confidence !== null && contact.email_confidence !== undefined) parts.push(`${contact.email_confidence}%`);
+  return parts.join(" · ");
+}
+
+function sourceLabel(source) {
+  return {
+    existing: "已有",
+    public_website: "官网",
+    ninjapear: "NinjaPear",
+    prospeo: "Prospeo",
+    hunter: "Hunter",
+    "pattern_guess+hunter_verify": "推断+验证",
+  }[source] || source;
 }
 
 function statusLabel(status) {
@@ -362,6 +431,10 @@ function intentLabel(level) {
 function renderRowActions(contact) {
   return `
     <div class="row-actions">
+      <button data-life-action="enrich-email" data-id="${contact.id}">邮箱</button>
+      <button data-life-action="enrich-social" data-id="${contact.id}">社媒</button>
+      <button data-life-action="queue-one" data-id="${contact.id}">入队</button>
+      <button data-life-action="send-one" data-id="${contact.id}">发送</button>
       <button data-life-action="next" data-id="${contact.id}">推进</button>
       <button data-life-action="wait" data-id="${contact.id}">等待</button>
       <button data-life-action="abandon" data-id="${contact.id}">放弃</button>
@@ -429,7 +502,8 @@ function normalizeCompanyWebsite(value) {
 
 async function runAction(action) {
   showNotice("正在执行，请稍等...");
-  const data = await api(`/api/${action}`, { method: "POST", body: JSON.stringify({}) });
+  const data = await api(`/api/${action}`, { method: "POST", body: JSON.stringify({ limit: 100 }) });
+  updateUsage(data.usage);
   showNotice(`完成：${JSON.stringify(data)}`);
   await refresh();
 }
@@ -454,6 +528,35 @@ document.querySelectorAll(".tab").forEach((button) => {
 });
 
 document.querySelector("#refresh-button").addEventListener("click", refresh);
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  loginError.textContent = "";
+  try {
+    const session = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: document.querySelector("#login-username").value.trim(),
+        password: document.querySelector("#login-password").value,
+      }),
+    });
+    state.user = session.user;
+    state.usage = session.usage;
+    renderAccount();
+    hideLogin();
+    await refresh();
+  } catch (error) {
+    loginError.textContent = error.message;
+  }
+});
+
+logoutButton.addEventListener("click", async () => {
+  await fetch("/api/logout");
+  state.user = null;
+  state.usage = null;
+  renderAccount();
+  showLogin();
+});
 
 document.querySelector("#export-button").addEventListener("click", () => {
   const params = new URLSearchParams();
@@ -552,6 +655,7 @@ document.querySelector("#source-button").addEventListener("click", async () => {
     if (!payload.role) throw new Error("Role 必填");
     showNotice("正在调用 Prospeo 自动获客，Limit 越大等待越久...");
     const result = await api("/api/source", { method: "POST", body: JSON.stringify(payload) });
+    updateUsage(result.usage);
     const outcome = result.result || [0, 0];
     showNotice(`自动获客完成：新增 ${outcome[0]} 条，重复 ${outcome[1]} 条`);
     await refresh();
@@ -566,7 +670,29 @@ contactsBody.addEventListener("click", async (event) => {
   const contactId = Number(button.dataset.id);
   const action = button.dataset.lifeAction;
   try {
-    if (action === "profile") {
+    if (action === "enrich-email") {
+      showNotice("正在富化当前客户邮箱...");
+      const result = await api("/api/enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
+      const fields = result.fields || {};
+      if (fields.email_status === "valid") {
+        showNotice(`已找到邮箱：${fields.email}`);
+      } else {
+        showNotice("没有找到已验证邮箱，稍后可以换数据源或补充更多客户信息再试", "error");
+      }
+    } else if (action === "enrich-social") {
+      showNotice("正在富化当前客户社媒...");
+      const result = await api("/api/social-enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
+      showNotice(result.ok ? "社媒资料已更新" : "没有找到可用社媒主页", result.ok ? "" : "error");
+    } else if (action === "queue-one") {
+      showNotice("正在把当前客户加入发送队列...");
+      const result = await api("/api/queue-one", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
+      showNotice(result.queued ? "已加入发送队列" : "未能入队：需要先有有效邮箱，且客户不能在黑名单里", result.queued ? "" : "error");
+    } else if (action === "send-one") {
+      showNotice("正在发送当前客户的下一封邮件...");
+      const result = await api("/api/send-one", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
+      updateUsage(result.usage);
+      showNotice(result.sent ? "邮件已发送" : "未发送：需要先入队、满足发送间隔，并且未超过每日发送上限", result.sent ? "" : "error");
+    } else if (action === "profile") {
       showNotice("正在生成客户画像...");
       const result = await api("/api/profile-agent", { method: "POST", body: JSON.stringify({ contact_id: contactId }) });
       const insights = result.insights || {};
@@ -752,7 +878,42 @@ function renderWorkspaceProfile(contact) {
       <span>拟合度 / ${escapeHtml(intentLabel(insights.intent_level))}</span>
     </div>
     <p>${escapeHtml(contact.profile_summary || "还没有客户画像，点击列表里的“画像”生成。")}</p>
+    ${renderEmailCandidates(contact)}
   `;
+}
+
+function renderEmailCandidates(contact) {
+  const candidates = Array.isArray(contact.email_candidates) ? contact.email_candidates : [];
+  if (!candidates.length) {
+    return `
+      <section class="email-candidates empty">
+        <header><strong>邮箱候选</strong><span>暂无候选</span></header>
+      </section>
+    `;
+  }
+  const rows = candidates.slice(0, 6).map((item) => `
+    <div class="candidate-row ${escapeHtml(item.category || "")}">
+      <strong>${escapeHtml(item.email || "")}</strong>
+      <span>${escapeHtml(sourceLabel(item.source || ""))}</span>
+      <span>${escapeHtml(candidateCategoryLabel(item.category))}</span>
+      <span>${escapeHtml(item.status || "unknown")}</span>
+      <b>${Number(item.confidence || 0)}%</b>
+    </div>
+  `).join("");
+  return `
+    <section class="email-candidates">
+      <header><strong>邮箱候选</strong><span>只把个人 valid 邮箱作为正式发信邮箱</span></header>
+      ${rows}
+    </section>
+  `;
+}
+
+function candidateCategoryLabel(category) {
+  return {
+    personal_work: "个人工作邮箱",
+    personal_free: "个人邮箱",
+    company_generic: "公司通用邮箱",
+  }[category] || "未分类";
 }
 
 function renderActivityList(activities) {
@@ -810,4 +971,4 @@ function nextLifecycleStage(stage) {
   return order[Math.min(index + 1, order.length - 1)];
 }
 
-refresh();
+loadSession();

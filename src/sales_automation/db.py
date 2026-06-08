@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
+from .auth import hash_password, new_session_token, session_expires_at, verify_password
 from .config import AppConfig
 from .status import validate_status
 
@@ -22,6 +23,14 @@ def _psycopg():
 class Database:
     def __init__(self, config: AppConfig):
         self.config = config
+
+    def is_available(self) -> bool:
+        try:
+            with self.connect() as conn:
+                conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
 
     @contextmanager
     def connect(self):
@@ -65,6 +74,296 @@ class Database:
 class Repository:
     def __init__(self, db: Database):
         self.db = db
+
+    def ensure_default_admin(self, username: str, password: str, display_name: str) -> None:
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT id FROM sales_users WHERE username = %s", (username,)).fetchone()
+            if row:
+                return
+            conn.execute(
+                """
+                INSERT INTO sales_users(username, password_hash, display_name, role)
+                VALUES (%s, %s, %s, 'admin')
+                """,
+                (username, hash_password(password), display_name),
+            )
+
+    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            user = conn.execute(
+                "SELECT * FROM sales_users WHERE username = %s AND active = TRUE",
+                (username,),
+            ).fetchone()
+            if not user or not verify_password(password, user["password_hash"]):
+                return None
+            return user
+
+    def create_user(
+        self,
+        *,
+        username: str,
+        password: str,
+        display_name: str,
+        role: str = "sales",
+        daily_source_limit: int = 100,
+        daily_send_limit: int = 100,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO sales_users(username, password_hash, display_name, role, daily_source_limit, daily_send_limit)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                """,
+                (username, hash_password(password), display_name, role, daily_source_limit, daily_send_limit),
+            ).fetchone()
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                FROM sales_users
+                ORDER BY id
+                """
+            ).fetchall()
+
+    def create_session(self, user_id: int) -> str:
+        token = new_session_token()
+        with self.db.connect() as conn:
+            conn.execute(
+                "INSERT INTO user_sessions(token, user_id, expires_at) VALUES (%s, %s, %s)",
+                (token, user_id, session_expires_at()),
+            )
+        return token
+
+    def get_session_user(self, token: str | None) -> dict[str, Any] | None:
+        if not token:
+            return None
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT u.*
+                FROM user_sessions s
+                JOIN sales_users u ON u.id = s.user_id
+                WHERE s.token = %s
+                  AND s.expires_at > NOW()
+                  AND u.active = TRUE
+                """,
+                (token,),
+            ).fetchone()
+
+    def delete_session(self, token: str | None) -> None:
+        if not token:
+            return
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM user_sessions WHERE token = %s", (token,))
+
+    def usage_for_user(self, user_id: int) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO user_daily_usage(user_id, usage_date)
+                VALUES (%s, CURRENT_DATE)
+                ON CONFLICT (user_id, usage_date) DO UPDATE SET user_id = EXCLUDED.user_id
+                RETURNING usage_date, source_count, send_count
+                """,
+                (user_id,),
+            ).fetchone()
+            return row
+
+    def consume_daily_quota(self, user_id: int, field: str, amount: int, limit: int) -> dict[str, Any]:
+        if field not in {"source_count", "send_count"}:
+            raise ValueError(f"Unsupported quota field: {field}")
+        amount = max(0, int(amount))
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO user_daily_usage(user_id, usage_date)
+                VALUES (%s, CURRENT_DATE)
+                ON CONFLICT (user_id, usage_date) DO UPDATE SET user_id = EXCLUDED.user_id
+                RETURNING usage_date, source_count, send_count
+                """,
+                (user_id,),
+            ).fetchone()
+            used = int(row[field] or 0)
+            if used + amount > limit:
+                raise RuntimeError(f"Daily quota exceeded: {used}/{limit}, requested {amount}")
+            updated = conn.execute(
+                f"""
+                UPDATE user_daily_usage
+                SET {field} = {field} + %s
+                WHERE user_id = %s AND usage_date = CURRENT_DATE
+                RETURNING usage_date, source_count, send_count
+                """,
+                (amount, user_id),
+            ).fetchone()
+            return updated
+
+    def global_usage(self) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO global_daily_usage(usage_date)
+                VALUES (CURRENT_DATE)
+                ON CONFLICT (usage_date) DO UPDATE SET usage_date = EXCLUDED.usage_date
+                RETURNING usage_date, source_count, send_count
+                """
+            ).fetchone()
+
+    def consume_user_and_global_quota(
+        self,
+        user_id: int,
+        field: str,
+        amount: int,
+        user_limit: int,
+        global_limit: int,
+    ) -> dict[str, Any]:
+        if field not in {"source_count", "send_count"}:
+            raise ValueError(f"Unsupported quota field: {field}")
+        amount = max(0, int(amount))
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_daily_usage(user_id, usage_date)
+                VALUES (%s, CURRENT_DATE)
+                ON CONFLICT (user_id, usage_date) DO NOTHING
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO global_daily_usage(usage_date)
+                VALUES (CURRENT_DATE)
+                ON CONFLICT (usage_date) DO NOTHING
+                """
+            )
+            user_usage = conn.execute(
+                """
+                SELECT usage_date, source_count, send_count
+                FROM user_daily_usage
+                WHERE user_id = %s AND usage_date = CURRENT_DATE
+                FOR UPDATE
+                """,
+                (user_id,),
+            ).fetchone()
+            global_usage = conn.execute(
+                """
+                SELECT usage_date, source_count, send_count
+                FROM global_daily_usage
+                WHERE usage_date = CURRENT_DATE
+                FOR UPDATE
+                """
+            ).fetchone()
+            if int(user_usage[field] or 0) + amount > user_limit:
+                raise RuntimeError(f"user_daily_quota_exceeded:{field}:{user_usage[field]}/{user_limit}")
+            if int(global_usage[field] or 0) + amount > global_limit:
+                raise RuntimeError(f"global_daily_quota_exceeded:{field}:{global_usage[field]}/{global_limit}")
+            updated_user = conn.execute(
+                f"""
+                UPDATE user_daily_usage
+                SET {field} = {field} + %s
+                WHERE user_id = %s AND usage_date = CURRENT_DATE
+                RETURNING usage_date, source_count, send_count
+                """,
+                (amount, user_id),
+            ).fetchone()
+            updated_global = conn.execute(
+                f"""
+                UPDATE global_daily_usage
+                SET {field} = {field} + %s
+                WHERE usage_date = CURRENT_DATE
+                RETURNING usage_date, source_count, send_count
+                """,
+                (amount,),
+            ).fetchone()
+            return {"user_usage": updated_user, "global_usage": updated_global}
+
+    def consume_global_quota(self, field: str, amount: int, limit: int) -> dict[str, Any]:
+        if field not in {"source_count", "send_count"}:
+            raise ValueError(f"Unsupported quota field: {field}")
+        amount = max(0, int(amount))
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO global_daily_usage(usage_date)
+                VALUES (CURRENT_DATE)
+                ON CONFLICT (usage_date) DO NOTHING
+                """
+            )
+            row = conn.execute(
+                """
+                SELECT usage_date, source_count, send_count
+                FROM global_daily_usage
+                WHERE usage_date = CURRENT_DATE
+                FOR UPDATE
+                """
+            ).fetchone()
+            if int(row[field] or 0) + amount > limit:
+                raise RuntimeError(f"global_daily_quota_exceeded:{field}:{row[field]}/{limit}")
+            return conn.execute(
+                f"""
+                UPDATE global_daily_usage
+                SET {field} = {field} + %s
+                WHERE usage_date = CURRENT_DATE
+                RETURNING usage_date, source_count, send_count
+                """,
+                (amount,),
+            ).fetchone()
+
+    def ensure_sender_account(self, account: dict[str, Any]) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO sender_accounts(name, email, provider, daily_limit, warmup_stage, active)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
+                ON CONFLICT (email) DO UPDATE
+                SET name = EXCLUDED.name,
+                    provider = EXCLUDED.provider,
+                    daily_limit = EXCLUDED.daily_limit,
+                    warmup_stage = EXCLUDED.warmup_stage,
+                    active = TRUE
+                RETURNING id, name, email, provider, daily_limit, warmup_stage, active, created_at
+                """,
+                (
+                    account.get("name") or account.get("email"),
+                    account.get("email"),
+                    account.get("provider", "resend"),
+                    int(account.get("daily_limit") or 100),
+                    account.get("warmup_stage", "production"),
+                ),
+            ).fetchone()
+
+    def sender_usage_today(self, sender_id: int) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO sender_daily_usage(sender_id, usage_date)
+                VALUES (%s, CURRENT_DATE)
+                ON CONFLICT (sender_id, usage_date) DO UPDATE SET sender_id = EXCLUDED.sender_id
+                RETURNING sender_id, usage_date, send_count
+                """,
+                (sender_id,),
+            ).fetchone()
+
+    def sender_total_sent_today(self) -> int:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(send_count), 0) AS count FROM sender_daily_usage WHERE usage_date = CURRENT_DATE"
+            ).fetchone()
+            return int(row["count"] or 0)
+
+    def record_sender_send(self, sender_id: int) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sender_daily_usage(sender_id, usage_date, send_count)
+                VALUES (%s, CURRENT_DATE, 1)
+                ON CONFLICT (sender_id, usage_date)
+                DO UPDATE SET send_count = sender_daily_usage.send_count + 1
+                """,
+                (sender_id,),
+            )
 
     def upsert_contacts(self, contacts: Iterable[dict[str, Any]]) -> tuple[int, int]:
         inserted = skipped = 0
@@ -197,6 +496,7 @@ class Repository:
                        c.company_name, c.company_domain, c.industry, c.location, c.status::text,
                        c.sequence_step, c.last_contacted_at, c.replied_at, c.enriched_at,
                        c.enrich_error, c.notes, c.created_at, c.source_person_id, c.source,
+                       c.email_source, c.email_confidence, c.email_candidates,
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
                        c.owner, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
@@ -240,6 +540,9 @@ class Repository:
             "industry": fields.get("industry"),
             "enrich_error": error,
             "status": status,
+            "email_source": fields.get("email_source"),
+            "email_confidence": fields.get("email_confidence"),
+            "email_candidates": fields.get("email_candidates", []),
         }
         with self.db.connect() as conn:
             conn.execute(
@@ -252,10 +555,16 @@ class Repository:
                     industry = COALESCE(%(industry)s, industry),
                     enriched_at = NOW(),
                     enrich_error = %(enrich_error)s,
+                    email_source = COALESCE(%(email_source)s, email_source),
+                    email_confidence = COALESCE(%(email_confidence)s, email_confidence),
+                    email_candidates = CASE
+                        WHEN %(email_candidates)s::jsonb = '[]'::jsonb THEN email_candidates
+                        ELSE %(email_candidates)s::jsonb
+                    END,
                     status = %(status)s
                 WHERE id = %(id)s
                 """,
-                payload,
+                {**payload, "email_candidates": json.dumps(payload["email_candidates"])},
             )
 
     def list_for_social_enrichment(self, limit: int) -> list[dict[str, Any]]:
@@ -455,6 +764,28 @@ class Repository:
             ).fetchall()
             return len(rows)
 
+    def queue_contact(self, contact_id: int) -> bool:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE contacts c
+                SET status = 'queued'
+                WHERE c.id = %s
+                  AND c.status = 'enriched'
+                  AND c.email_status = 'valid'
+                  AND c.email IS NOT NULL
+                  AND c.email NOT LIKE '%%*%%'
+                  AND c.email LIKE '%%@%%'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM blacklist b
+                    WHERE b.email = c.email OR b.domain = c.company_domain
+                  )
+                RETURNING c.id
+                """,
+                (contact_id,),
+            ).fetchone()
+            return bool(row)
+
     def due_for_sending(self, limit: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             return conn.execute(
@@ -471,6 +802,22 @@ class Repository:
                 """,
                 (limit,),
             ).fetchall()
+
+    def due_contact_for_sending(self, contact_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM contacts
+                WHERE id = %s
+                  AND email_status = 'valid'
+                  AND status IN ('queued', 'sent_1', 'sent_2')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM blacklist b
+                    WHERE b.email = contacts.email OR b.domain = contacts.company_domain
+                  )
+                """,
+                (contact_id,),
+            ).fetchone()
 
     def sent_today_count(self) -> int:
         with self.db.connect() as conn:

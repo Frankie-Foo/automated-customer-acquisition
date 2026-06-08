@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .auth import clear_session_cookie, default_admin_credentials, parse_session_cookie, public_user, session_cookie
 from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
+from .health import check_database, check_readiness
 from .importers import parse_contacts_csv
-from .production import readiness
+from .quotas import QuotaService
 from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 
 
@@ -36,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     repo = Repository(Database(config))
+    try:
+        repo.db.migrate()
+        repo.ensure_default_admin(*default_admin_credentials())
+    except Exception as exc:
+        print(f"Warning: database initialization skipped: {exc}")
     handler = make_handler(config, repo)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Dashboard running at http://{args.host}:{args.port}")
@@ -53,11 +60,34 @@ def make_handler(config, repo: Repository):
             if parsed.path.startswith("/static/"):
                 self._send_file(STATIC_DIR / parsed.path.removeprefix("/static/"))
                 return
+            if parsed.path == "/api/health":
+                health = check_readiness(config, repo)
+                self._send_json({"ok": health["database"]["ok"], "data": health}, status=200 if health["database"]["ok"] else 503)
+                return
+            if parsed.path in {"/unsubscribe", "/track/open"}:
+                pass
+            elif parsed.path.startswith("/api/") and not self._require_database():
+                return
+            if parsed.path == "/api/me":
+                user = self._current_user()
+                if not user:
+                    self._send_json({"ok": False, "error": "unauthorized"}, status=401)
+                    return
+                quota_snapshot = QuotaService(config, repo).snapshot(user)
+                self._send_json({"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}})
+                return
+            if parsed.path == "/api/logout":
+                token = parse_session_cookie(self.headers.get("Cookie"))
+                repo.delete_session(token)
+                self._send_json({"ok": True, "data": {"ok": True}}, headers={"Set-Cookie": clear_session_cookie()})
+                return
+            if parsed.path.startswith("/api/") and not self._require_user():
+                return
             if parsed.path == "/api/summary":
                 self._json(lambda: repo.dashboard_summary())
                 return
             if parsed.path == "/api/readiness":
-                self._json(lambda: readiness(config))
+                self._json(lambda: check_readiness(config, repo))
                 return
             if parsed.path == "/unsubscribe":
                 qs = parse_qs(parsed.query)
@@ -99,6 +129,24 @@ def make_handler(config, repo: Repository):
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             payload = self._read_json()
+            if parsed.path == "/api/login":
+                if not self._require_database():
+                    return
+                user = repo.authenticate_user(payload.get("username", ""), payload.get("password", ""))
+                if not user:
+                    self._send_json({"ok": False, "error": "用户名或密码错误"}, status=401)
+                    return
+                token = repo.create_session(int(user["id"]))
+                quota_snapshot = QuotaService(config, repo).snapshot(user)
+                self._send_json(
+                    {"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
+                    headers={"Set-Cookie": session_cookie(token)},
+                )
+                return
+            if parsed.path.startswith("/webhooks/"):
+                pass
+            elif parsed.path.startswith("/api/") and (not self._require_database() or not self._require_user()):
+                return
             if parsed.path == "/api/migrate":
                 self._json(lambda: {"applied": repo.db.migrate()})
                 return
@@ -124,19 +172,61 @@ def make_handler(config, repo: Repository):
                     "location": payload.get("location", ""),
                     "company_size": payload.get("company_size", ""),
                 }
-                self._json(lambda: {"result": SourcingService(config, repo).source(criteria, int(payload.get("limit", 25)))})
+                def source_with_quota() -> dict[str, Any]:
+                    user = self._current_user()
+                    requested = int(payload.get("limit", 25))
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    remaining = min(snapshot["source"]["remaining_user"], snapshot["source"]["remaining_global"])
+                    limit = min(requested, max(0, remaining))
+                    if limit <= 0:
+                        raise RuntimeError("今日获客配额已用完")
+                    result = SourcingService(config, repo).source(criteria, limit)
+                    quota_result = QuotaService(config, repo).consume(user, "source", limit)
+                    return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
+                self._json(source_with_quota)
                 return
             if parsed.path == "/api/enrich":
                 self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
                 return
+            if parsed.path == "/api/enrich-one":
+                self._json(lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
+                return
             if parsed.path == "/api/social-enrich":
                 self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
+                return
+            if parsed.path == "/api/social-enrich-one":
+                self._json(lambda: SocialEnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
             if parsed.path == "/api/queue":
                 self._json(lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)))})
                 return
+            if parsed.path == "/api/queue-one":
+                self._json(lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]))})
+                return
             if parsed.path == "/api/send":
-                self._json(lambda: {"sent": OutreachService(config, repo).send_due(int(payload.get("limit", 25)))})
+                def send_with_quota() -> dict[str, Any]:
+                    user = self._current_user()
+                    requested = int(payload.get("limit", 25))
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    remaining = min(snapshot["send"]["remaining_user"], snapshot["send"]["remaining_global"])
+                    limit = min(requested, max(0, remaining))
+                    if limit <= 0:
+                        raise RuntimeError("今日发信配额已用完")
+                    sent = OutreachService(config, repo).send_due(limit)
+                    quota_result = QuotaService(config, repo).consume(user, "send", sent)
+                    return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
+                self._json(send_with_quota)
+                return
+            if parsed.path == "/api/send-one":
+                def send_one_with_quota() -> dict[str, Any]:
+                    user = self._current_user()
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    if min(snapshot["send"]["remaining_user"], snapshot["send"]["remaining_global"]) <= 0:
+                        raise RuntimeError("今日发信配额已用完")
+                    sent = OutreachService(config, repo).send_contact(int(payload["contact_id"]))
+                    quota_result = QuotaService(config, repo).consume(user, "send", 1 if sent else 0)
+                    return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
+                self._json(send_one_with_quota)
                 return
             if parsed.path == "/api/scheduler":
                 def run_scheduler() -> dict[str, str]:
@@ -255,10 +345,32 @@ def make_handler(config, repo: Repository):
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
 
-        def _send_json(self, data: dict[str, Any], status: int = 200) -> None:
+        def _current_user(self) -> dict[str, Any] | None:
+            token = parse_session_cookie(self.headers.get("Cookie"))
+            try:
+                return repo.get_session_user(token)
+            except Exception:
+                return None
+
+        def _require_database(self) -> bool:
+            if check_database(repo)["ok"]:
+                return True
+            self._send_json({"ok": False, "error": "database_unavailable"}, status=503)
+            return False
+
+        def _require_user(self) -> dict[str, Any] | None:
+            user = self._current_user()
+            if user:
+                return user
+            self._send_json({"ok": False, "error": "unauthorized"}, status=401)
+            return None
+
+        def _send_json(self, data: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
             body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

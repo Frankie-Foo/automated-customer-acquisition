@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS global_daily_usage (
+  usage_date DATE PRIMARY KEY DEFAULT CURRENT_DATE,
+  source_count INTEGER NOT NULL DEFAULT 0,
+  send_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sender_accounts (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'resend',
+  daily_limit INTEGER NOT NULL DEFAULT 100,
+  warmup_stage TEXT NOT NULL DEFAULT 'production',
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sender_daily_usage (
+  sender_id BIGINT NOT NULL REFERENCES sender_accounts(id) ON DELETE CASCADE,
+  usage_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  send_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (sender_id, usage_date)
+);

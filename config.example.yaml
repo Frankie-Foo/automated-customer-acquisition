@@ -20,6 +20,7 @@ apis:
   deepseek_key: ${DEEPSEEK_API_KEY}
   resend_key: ${RESEND_API_KEY}
   sendgrid_key: ${SENDGRID_API_KEY}
+  github_token: ${GITHUB_TOKEN}
 
 llm:
   provider: deepseek
@@ -33,6 +34,16 @@ sender:
   daily_limit: 100
   dry_run: true
 
+sender_pool:
+  strategy: round_robin
+  accounts:
+    - name: Your Name
+      email: you@outreach-domain.com
+      provider: resend
+      daily_limit: 100
+      warmup_stage: production
+      dry_run: true
+
 notifications:
   slack_webhook_url: ${SLACK_WEBHOOK_URL}
 
@@ -43,8 +54,27 @@ sourcing:
   provider: prospeo
   default_limit: 100
 
+email_discovery:
+  providers:
+    - prospeo
+    - ninjapear
+    - hunter
+    - github
+    - pattern_guess
+    - smtp_verify
+    - gravatar
+    - public_website
+  max_candidates: 10
+  smtp_verify_enabled: false
+
 queue:
   batch_size: 100
+
+quotas:
+  global_daily_send_limit: 300
+  global_daily_source_limit: 500
+  default_user_daily_send: 80
+  default_user_daily_source: 100
 
 sequence:
   - step: 1

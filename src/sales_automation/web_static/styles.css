@@ -35,6 +35,58 @@ body {
   letter-spacing: 0;
 }
 
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(238, 243, 246, 0.88);
+  backdrop-filter: blur(12px);
+}
+
+.login-screen.hidden {
+  display: none;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.login-card h1 {
+  font-size: 24px;
+}
+
+.login-card p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.login-card label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.login-card input {
+  height: 40px;
+}
+
+.login-error {
+  min-height: 18px;
+  color: var(--danger);
+  font-weight: 700;
+}
+
 h1,
 h2,
 p {
@@ -667,6 +719,48 @@ select:focus {
   align-items: stretch;
 }
 
+.workspace-profile .email-candidates {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.email-candidates header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.candidate-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 110px 120px 90px 56px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.candidate-row.company_generic {
+  border-color: #f3c37a;
+  background: #fff9ed;
+}
+
+.candidate-row strong,
+.candidate-row b {
+  font-size: 12px;
+}
+
+.candidate-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .workspace-profile > div,
 .workspace-profile > p {
   margin: 0;
@@ -1004,6 +1098,25 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.account-box {
+  display: grid;
+  gap: 3px;
+  min-width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.account-box strong {
+  font-size: 13px;
+}
+
+.account-box span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .profile-link {
   display: inline-flex;
   align-items: center;
@@ -1128,12 +1241,12 @@ tbody tr:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  min-width: 180px;
+  min-width: 250px;
 }
 
 .row-actions button {
   min-height: 28px;
-  padding: 0 8px;
+  padding: 0 7px;
   font-size: 12px;
 }
 

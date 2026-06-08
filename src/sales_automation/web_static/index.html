@@ -7,6 +7,18 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
+    <section id="login-screen" class="login-screen hidden">
+      <form id="login-form" class="login-card">
+        <div class="mark">LA</div>
+        <h1>登录获客系统</h1>
+        <p>请输入分配给你的账号。管理员默认账号仅用于初始化，上线前需要改密码。</p>
+        <label>账号<input id="login-username" autocomplete="username" value="admin" /></label>
+        <label>密码<input id="login-password" type="password" autocomplete="current-password" placeholder="输入密码" /></label>
+        <button class="primary" type="submit">登录</button>
+        <div id="login-error" class="login-error"></div>
+      </form>
+    </section>
+
     <aside class="sidebar">
       <div class="brand">
         <div class="mark">LA</div>
@@ -39,6 +51,11 @@
           <p>采集线索、富化邮箱、加入发送队列，并持续追踪打开、回复、退订等反馈。</p>
         </div>
         <div class="top-actions">
+          <div class="account-box">
+            <strong id="account-name">未登录</strong>
+            <span id="quota-status">今日配额 --</span>
+          </div>
+          <button id="logout-button">退出</button>
           <button id="export-button">导出客户</button>
           <button id="refresh-button">刷新</button>
         </div>
@@ -182,7 +199,7 @@
             <label>目标职位<input id="source-role" placeholder="Founder / VP of Engineering" /></label>
             <label>行业<input id="source-industry" placeholder="SaaS，可选" /></label>
             <label>地区<input id="source-location" placeholder="United States，可选" /></label>
-            <label>数量<input id="source-limit" type="number" min="1" max="25" value="1" /></label>
+            <label>数量<input id="source-limit" type="number" min="1" max="100" value="1" /></label>
           </div>
           <div class="panel-actions">
             <button id="source-button" class="primary">开始自动获客</button>
@@ -228,10 +245,10 @@
           </div>
           <div class="action-grid">
             <button data-action="migrate">初始化/迁移数据库</button>
-            <button data-action="enrich">富化邮箱（最多 25 条）</button>
-            <button data-action="social-enrich">富化社媒（最多 25 条）</button>
-            <button data-action="queue">加入队列（最多 25 条）</button>
-            <button data-action="send">发送/演练（最多 25 封）</button>
+            <button data-action="enrich">富化邮箱（最多 100 条）</button>
+            <button data-action="social-enrich">富化社媒（最多 100 条）</button>
+            <button data-action="queue">加入队列（最多 100 条）</button>
+            <button data-action="send">发送/演练（最多 100 封）</button>
             <button data-action="scheduler" class="primary">跑一轮调度</button>
           </div>
         </div>

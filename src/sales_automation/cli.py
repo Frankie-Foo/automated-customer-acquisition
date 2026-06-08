@@ -7,6 +7,7 @@ from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
 from .logging_utils import log
+from .quotas import QuotaService
 from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
 
@@ -63,6 +64,16 @@ def main(argv: list[str] | None = None) -> int:
     webhook.add_argument("--provider", required=True)
     webhook.add_argument("--payload", required=True)
 
+    user_add = sub.add_parser("user-add", parents=[config_parent])
+    user_add.add_argument("--username", required=True)
+    user_add.add_argument("--password", required=True)
+    user_add.add_argument("--display-name", required=True)
+    user_add.add_argument("--role", default="sales")
+    user_add.add_argument("--source-limit", type=int, default=100)
+    user_add.add_argument("--send-limit", type=int, default=100)
+
+    sub.add_parser("user-list", parents=[config_parent])
+
     args = parser.parse_args(argv)
     config = load_config(args.config)
     repo = Repository(Database(config))
@@ -79,7 +90,11 @@ def main(argv: list[str] | None = None) -> int:
             "location": args.location,
             "company_size": args.company_size,
         }
-        SourcingService(config, repo).source(criteria, args.limit)
+        quota = QuotaService(config, repo)
+        limit = min(args.limit, quota.remaining_global("source"))
+        inserted, skipped = SourcingService(config, repo).source(criteria, limit)
+        quota.consume_global("source", inserted)
+        log("quota.global_source_consumed", inserted=inserted, skipped=skipped)
     elif args.command == "enrich":
         EnrichmentService(config, repo).enrich(args.limit)
     elif args.command == "social-enrich":
@@ -87,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "queue":
         QueueService(repo).queue(args.limit)
     elif args.command == "send":
-        OutreachService(config, repo).send_due(args.limit)
+        quota = QuotaService(config, repo)
+        limit = min(args.limit, quota.remaining_global("send"))
+        sent = OutreachService(config, repo).send_due(limit)
+        quota.consume_global("send", sent)
+        log("quota.global_send_consumed", sent=sent)
     elif args.command == "scheduler":
         SchedulerService(config, repo).run_once(args.enrich_limit, args.queue_limit, args.send_limit)
     elif args.command == "mark":
@@ -104,6 +123,28 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "webhook":
         notifier = SlackClient(config.raw.get("notifications", {}).get("slack_webhook_url"))
         WebhookService(repo, notifier).process_file(args.provider, Path(args.payload))
+    elif args.command == "user-add":
+        user = repo.create_user(
+            username=args.username,
+            password=args.password,
+            display_name=args.display_name,
+            role=args.role,
+            daily_source_limit=args.source_limit,
+            daily_send_limit=args.send_limit,
+        )
+        log("user.added", id=user["id"], username=user["username"], role=user["role"])
+    elif args.command == "user-list":
+        for user in repo.list_users():
+            log(
+                "user",
+                id=user["id"],
+                username=user["username"],
+                display_name=user["display_name"],
+                role=user["role"],
+                source_limit=user["daily_source_limit"],
+                send_limit=user["daily_send_limit"],
+                active=user["active"],
+            )
     return 0
 
 
