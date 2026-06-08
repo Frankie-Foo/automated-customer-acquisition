@@ -1,0 +1,16 @@
+sender_pool:
+  strategy: round_robin
+  accounts:
+    - name: sales01
+      email: sales01@mail.frelys.xyz
+      provider: resend
+      daily_limit: 100
+      warmup_stage: warmup
+      dry_run: false
+    - name: sales02
+      email: sales02@mail.frelys.xyz
+      provider: resend
+      daily_limit: 100
+      warmup_stage: warmup
+      dry_run: false
+    # Continue sales03 through sales30 with the same shape.

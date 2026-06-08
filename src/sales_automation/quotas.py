@@ -75,5 +75,5 @@ class QuotaService:
     def _global_limit(self, action: str) -> int:
         quotas = self.config.raw.get("quotas", {})
         if action == "source":
-            return int(quotas.get("global_daily_source_limit") or 500)
-        return int(quotas.get("global_daily_send_limit") or 300)
+            return int(quotas.get("global_daily_source_limit") or 3000)
+        return int(quotas.get("global_daily_send_limit") or 3000)

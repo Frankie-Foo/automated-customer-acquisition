@@ -122,11 +122,53 @@ class Repository:
         with self.db.connect() as conn:
             return conn.execute(
                 """
-                SELECT id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
-                FROM sales_users
-                ORDER BY id
+                SELECT u.id, u.username, u.display_name, u.role, u.daily_source_limit, u.daily_send_limit,
+                       u.active, u.created_at,
+                       COALESCE(usage.source_count, 0) AS source_count_today,
+                       COALESCE(usage.send_count, 0) AS send_count_today
+                FROM sales_users u
+                LEFT JOIN user_daily_usage usage
+                  ON usage.user_id = u.id AND usage.usage_date = CURRENT_DATE
+                ORDER BY u.id
                 """
             ).fetchall()
+
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        daily_source_limit: int | None = None,
+        daily_send_limit: int | None = None,
+        active: bool | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE sales_users
+                SET display_name = COALESCE(%s, display_name),
+                    role = COALESCE(%s, role),
+                    daily_source_limit = COALESCE(%s, daily_source_limit),
+                    daily_send_limit = COALESCE(%s, daily_send_limit),
+                    active = COALESCE(%s, active)
+                WHERE id = %s
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                """,
+                (display_name, role, daily_source_limit, daily_send_limit, active, user_id),
+            ).fetchone()
+
+    def reset_user_password(self, user_id: int, password: str) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE sales_users
+                SET password_hash = %s
+                WHERE id = %s
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                """,
+                (hash_password(password), user_id),
+            ).fetchone()
 
     def create_session(self, user_id: int) -> str:
         token = new_session_token()
@@ -321,8 +363,7 @@ class Repository:
                 SET name = EXCLUDED.name,
                     provider = EXCLUDED.provider,
                     daily_limit = EXCLUDED.daily_limit,
-                    warmup_stage = EXCLUDED.warmup_stage,
-                    active = TRUE
+                    warmup_stage = EXCLUDED.warmup_stage
                 RETURNING id, name, email, provider, daily_limit, warmup_stage, active, created_at
                 """,
                 (
@@ -365,18 +406,61 @@ class Repository:
                 (sender_id,),
             )
 
-    def upsert_contacts(self, contacts: Iterable[dict[str, Any]]) -> tuple[int, int]:
+    def list_sender_accounts(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT s.id, s.name, s.email, s.provider, s.daily_limit, s.warmup_stage,
+                       s.active, s.created_at, COALESCE(usage.send_count, 0) AS send_count_today
+                FROM sender_accounts s
+                LEFT JOIN sender_daily_usage usage
+                  ON usage.sender_id = s.id AND usage.usage_date = CURRENT_DATE
+                ORDER BY s.id
+                """
+            ).fetchall()
+
+    def update_sender_account(
+        self,
+        sender_id: int,
+        *,
+        name: str | None = None,
+        email: str | None = None,
+        provider: str | None = None,
+        daily_limit: int | None = None,
+        warmup_stage: str | None = None,
+        active: bool | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE sender_accounts
+                SET name = COALESCE(%s, name),
+                    email = COALESCE(%s, email),
+                    provider = COALESCE(%s, provider),
+                    daily_limit = COALESCE(%s, daily_limit),
+                    warmup_stage = COALESCE(%s, warmup_stage),
+                    active = COALESCE(%s, active)
+                WHERE id = %s
+                RETURNING id, name, email, provider, daily_limit, warmup_stage, active, created_at
+                """,
+                (name, email, provider, daily_limit, warmup_stage, active, sender_id),
+            ).fetchone()
+
+    def upsert_contacts(self, contacts: Iterable[dict[str, Any]], *, owner_user_id: int | None = None) -> tuple[int, int]:
         inserted = skipped = 0
         sql = """
         INSERT INTO contacts (
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
-          company_domain, industry, location, company_size, status, source_person_id, source
+          company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
-          %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s
+          %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
+          %(owner_user_id)s, %(owner)s
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
+            owner_user_id = COALESCE(contacts.owner_user_id, EXCLUDED.owner_user_id),
+            owner = COALESCE(contacts.owner, EXCLUDED.owner),
             email = CASE
                 WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email NOT LIKE '%%*%%' THEN EXCLUDED.email
                 ELSE contacts.email
@@ -407,7 +491,10 @@ class Repository:
         """
         with self.db.connect() as conn:
             for contact in contacts:
-                row = conn.execute(sql, _contact_defaults(contact)).fetchone()
+                defaults = _contact_defaults(contact)
+                defaults["owner_user_id"] = owner_user_id or contact.get("owner_user_id")
+                defaults["owner"] = contact.get("owner")
+                row = conn.execute(sql, defaults).fetchone()
                 if row and row["inserted"]:
                     inserted += 1
                 else:
@@ -417,6 +504,15 @@ class Repository:
     def get_contact(self, contact_id: int) -> dict[str, Any] | None:
         with self.db.connect() as conn:
             return conn.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,)).fetchone()
+
+    def get_contact_for_user(self, contact_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
+        if user.get("role") == "admin":
+            return self.get_contact(contact_id)
+        with self.db.connect() as conn:
+            return conn.execute(
+                "SELECT * FROM contacts WHERE id = %s AND owner_user_id = %s",
+                (contact_id, user["id"]),
+            ).fetchone()
 
     def list_for_enrichment(self, limit: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
@@ -431,39 +527,55 @@ class Repository:
                 (limit,),
             ).fetchall()
 
-    def dashboard_summary(self) -> dict[str, Any]:
+    def dashboard_summary(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        owner_filter, owner_params = self._owner_filter("c", user)
         with self.db.connect() as conn:
             statuses = conn.execute(
-                "SELECT status::text AS status, COUNT(*) AS count FROM contacts GROUP BY status ORDER BY status"
+                f"SELECT status::text AS status, COUNT(*) AS count FROM contacts c {owner_filter} GROUP BY status ORDER BY status",
+                tuple(owner_params),
             ).fetchall()
             events = conn.execute(
-                """
-                SELECT event_type::text AS event_type, COUNT(*) AS count
-                FROM email_events
-                WHERE occurred_at >= NOW() - INTERVAL '7 days'
+                f"""
+                SELECT e.event_type::text AS event_type, COUNT(*) AS count
+                FROM email_events e
+                JOIN contacts c ON c.id = e.contact_id
+                WHERE e.occurred_at >= NOW() - INTERVAL '7 days'
+                  {self._owner_filter_sql("c", user, prefix="AND")}
                 GROUP BY event_type
                 ORDER BY event_type
-                """
+                """,
+                tuple(owner_params),
             ).fetchall()
             sent_today = conn.execute(
-                "SELECT COUNT(*) AS count FROM email_events WHERE event_type = 'sent' AND occurred_at::date = CURRENT_DATE"
+                f"""
+                SELECT COUNT(*) AS count
+                FROM email_events e
+                JOIN contacts c ON c.id = e.contact_id
+                WHERE e.event_type = 'sent' AND e.occurred_at::date = CURRENT_DATE
+                  {self._owner_filter_sql("c", user, prefix="AND")}
+                """,
+                tuple(owner_params),
             ).fetchone()
-            total = conn.execute("SELECT COUNT(*) AS count FROM contacts").fetchone()
+            total = conn.execute(f"SELECT COUNT(*) AS count FROM contacts c {owner_filter}", tuple(owner_params)).fetchone()
             lifecycle = conn.execute(
-                """
+                f"""
                 SELECT lifecycle_stage, COUNT(*) AS count
-                FROM contacts
+                FROM contacts c
+                {owner_filter}
                 GROUP BY lifecycle_stage
                 ORDER BY lifecycle_stage
-                """
+                """,
+                tuple(owner_params),
             ).fetchall()
             disposition = conn.execute(
-                """
+                f"""
                 SELECT disposition, COUNT(*) AS count
-                FROM contacts
+                FROM contacts c
+                {owner_filter}
                 GROUP BY disposition
                 ORDER BY disposition
-                """
+                """,
+                tuple(owner_params),
             ).fetchall()
         return {
             "total_contacts": int(total["count"]),
@@ -474,13 +586,26 @@ class Repository:
             "dispositions": {row["disposition"]: int(row["count"]) for row in disposition},
         }
 
-    def list_contacts(self, *, status: str | None = None, search: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_contacts(
+        self,
+        *,
+        status: str | None = None,
+        search: str | None = None,
+        limit: int = 100,
+        user: dict[str, Any] | None = None,
+        filter_key: str | None = None,
+    ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("c.owner_user_id = %s")
+            params.append(user["id"])
         if status:
             validate_status(status)
             clauses.append("c.status = %s")
             params.append(status)
+        if filter_key:
+            self._append_contact_filter(clauses, filter_key)
         if search:
             clauses.append(
                 "(c.first_name ILIKE %s OR c.last_name ILIKE %s OR c.email ILIKE %s OR c.company_name ILIKE %s OR c.job_title ILIKE %s)"
@@ -499,7 +624,7 @@ class Repository:
                        c.email_source, c.email_confidence, c.email_candidates,
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
-                       c.owner, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
+                       c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
                        COALESCE(ev.sent_count, 0) AS sent_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
                        COALESCE(ev.clicked_count, 0) AS clicked_count,
@@ -528,6 +653,113 @@ class Repository:
                 """,
                 tuple(params),
             ).fetchall()
+
+    def _owner_filter(self, alias: str, user: dict[str, Any] | None = None, *, prefix: str = "WHERE") -> tuple[str, list[Any]]:
+        if user and user.get("role") != "admin":
+            return f"{prefix} {alias}.owner_user_id = %s", [user["id"]]
+        return "", []
+
+    def _owner_filter_sql(self, alias: str, user: dict[str, Any] | None = None, *, prefix: str = "WHERE") -> str:
+        if user and user.get("role") != "admin":
+            return f"{prefix} {alias}.owner_user_id = %s"
+        return ""
+
+    def _append_contact_filter(self, clauses: list[str], filter_key: str) -> None:
+        filters = {
+            "mine": "c.owner_user_id IS NOT NULL",
+            "needs_enrichment": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
+            "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched'",
+            "opened_no_reply": "COALESCE(ev.opened_count, 0) > 0 AND c.status NOT IN ('replied', 'bounced', 'unsubscribed')",
+            "replied": "(c.status = 'replied' OR COALESCE(ev.replied_count, 0) > 0)",
+            "bounced": "(c.status = 'bounced' OR COALESCE(ev.bounced_count, 0) > 0)",
+            "second_touch_due": "c.status = 'sent_1'",
+            "third_touch_due": "c.status = 'sent_2'",
+            "waiting_pool": "c.lifecycle_stage = 'waiting_pool'",
+            "abandoned": "(c.lifecycle_stage = 'abandoned' OR c.disposition = 'abandoned')",
+        }
+        clause = filters.get(filter_key)
+        if clause:
+            clauses.append(clause)
+
+    def operations_report(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        owner_filter, owner_params = self._owner_filter("c", user, prefix="AND")
+        with self.db.connect() as conn:
+            totals = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) FILTER (WHERE c.created_at::date = CURRENT_DATE) AS new_contacts_today,
+                  COUNT(*) FILTER (WHERE c.email_status = 'valid' AND c.enriched_at::date = CURRENT_DATE) AS valid_emails_today,
+                  COUNT(*) FILTER (WHERE c.status = 'queued') AS queued,
+                  COUNT(*) FILTER (WHERE c.status = 'bounced') AS bounced,
+                  COUNT(*) FILTER (WHERE c.status = 'replied') AS replied
+                FROM contacts c
+                WHERE TRUE {owner_filter}
+                """,
+                tuple(owner_params),
+            ).fetchone()
+            events = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) FILTER (WHERE e.event_type = 'sent') AS sent_today,
+                  COUNT(*) FILTER (WHERE e.event_type = 'opened') AS opened_today,
+                  COUNT(*) FILTER (WHERE e.event_type = 'clicked') AS clicked_today,
+                  COUNT(*) FILTER (WHERE e.event_type = 'replied') AS replied_events_today,
+                  COUNT(*) FILTER (WHERE e.event_type = 'bounced') AS bounced_events_today,
+                  COUNT(DISTINCT e.contact_id) FILTER (WHERE e.event_type = 'opened' AND c.status NOT IN ('replied', 'bounced', 'unsubscribed')) AS opened_no_reply
+                FROM email_events e
+                JOIN contacts c ON c.id = e.contact_id
+                WHERE e.occurred_at::date = CURRENT_DATE {owner_filter}
+                """,
+                tuple(owner_params),
+            ).fetchone()
+            by_user = conn.execute(
+                """
+                SELECT u.id, u.username, u.display_name, u.role, u.active,
+                       u.daily_source_limit, u.daily_send_limit,
+                       COALESCE(usage.source_count, 0) AS source_count_today,
+                       COALESCE(usage.send_count, 0) AS send_count_today,
+                       COUNT(c.id) AS owned_contacts
+                FROM sales_users u
+                LEFT JOIN user_daily_usage usage
+                  ON usage.user_id = u.id AND usage.usage_date = CURRENT_DATE
+                LEFT JOIN contacts c ON c.owner_user_id = u.id
+                GROUP BY u.id, usage.source_count, usage.send_count
+                ORDER BY u.id
+                """
+            ).fetchall()
+            provider_stats = conn.execute(
+                """
+                SELECT provider, stat_date, calls, candidates, valid_candidates, selected, errors, credits_used, last_error
+                FROM email_provider_stats
+                WHERE stat_date >= CURRENT_DATE - INTERVAL '7 days'
+                ORDER BY stat_date DESC, provider
+                """
+            ).fetchall()
+            failures = conn.execute(
+                f"""
+                SELECT reason, COUNT(*) AS count
+                FROM (
+                  SELECT COALESCE(NULLIF(enrich_error, ''), '邮箱/富化无错误') AS reason
+                  FROM contacts c
+                  WHERE enrich_error IS NOT NULL {owner_filter}
+                  UNION ALL
+                  SELECT '退信需处理' AS reason
+                  FROM contacts c
+                  WHERE c.status = 'bounced' {owner_filter}
+                ) items
+                GROUP BY reason
+                ORDER BY count DESC
+                LIMIT 20
+                """,
+                tuple(owner_params + owner_params),
+            ).fetchall()
+        return {
+            "totals": {key: int(value or 0) for key, value in dict(totals).items()},
+            "events": {key: int(value or 0) for key, value in dict(events).items()},
+            "by_user": by_user,
+            "provider_stats": provider_stats,
+            "failures": failures,
+        }
 
     def update_enrichment(self, contact_id: int, fields: dict[str, Any], *, error: str | None = None) -> None:
         status = "enriched" if fields.get("email_status") == "valid" else "new"
@@ -567,6 +799,38 @@ class Repository:
                 {**payload, "email_candidates": json.dumps(payload["email_candidates"])},
             )
 
+    def record_email_provider_stat(
+        self,
+        provider: str,
+        *,
+        calls: int = 0,
+        candidates: int = 0,
+        valid_candidates: int = 0,
+        selected: int = 0,
+        errors: int = 0,
+        credits_used: int = 0,
+        last_error: str | None = None,
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO email_provider_stats(
+                    provider, stat_date, calls, candidates, valid_candidates, selected, errors, credits_used, last_error
+                )
+                VALUES (%s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (provider, stat_date) DO UPDATE
+                SET calls = email_provider_stats.calls + EXCLUDED.calls,
+                    candidates = email_provider_stats.candidates + EXCLUDED.candidates,
+                    valid_candidates = email_provider_stats.valid_candidates + EXCLUDED.valid_candidates,
+                    selected = email_provider_stats.selected + EXCLUDED.selected,
+                    errors = email_provider_stats.errors + EXCLUDED.errors,
+                    credits_used = email_provider_stats.credits_used + EXCLUDED.credits_used,
+                    last_error = COALESCE(EXCLUDED.last_error, email_provider_stats.last_error),
+                    updated_at = NOW()
+                """,
+                (provider, calls, candidates, valid_candidates, selected, errors, credits_used, last_error),
+            )
+
     def list_for_social_enrichment(self, limit: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             return conn.execute(
@@ -601,32 +865,40 @@ class Repository:
                 (json.dumps(profiles), error, contact_id),
             )
 
-    def lifecycle_summary(self) -> dict[str, Any]:
+    def lifecycle_summary(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        owner_where, owner_params = self._owner_filter("c", user)
+        owner_and, owner_and_params = self._owner_filter("c", user, prefix="AND")
         with self.db.connect() as conn:
             stages = conn.execute(
-                """
+                f"""
                 SELECT lifecycle_stage, COUNT(*) AS count
-                FROM contacts
+                FROM contacts c
+                {owner_where}
                 GROUP BY lifecycle_stage
-                """
+                """,
+                tuple(owner_params),
             ).fetchall()
             outreach = conn.execute(
-                """
+                f"""
                 SELECT outreach_stage, COUNT(*) AS count
-                FROM contacts
+                FROM contacts c
+                {owner_where}
                 GROUP BY outreach_stage
-                """
+                """,
+                tuple(owner_params),
             ).fetchall()
             action_rows = conn.execute(
-                """
+                f"""
                 SELECT id, first_name, last_name, company_name, lifecycle_stage, disposition,
                        next_action_at, profile_summary
-                FROM contacts
+                FROM contacts c
                 WHERE disposition IN ('active', 'waiting')
                   AND (next_action_at IS NULL OR next_action_at <= NOW() + INTERVAL '7 days')
+                  {owner_and}
                 ORDER BY next_action_at NULLS FIRST, created_at DESC
                 LIMIT 12
-                """
+                """,
+                tuple(owner_and_params),
             ).fetchall()
         return {
             "stages": {row["lifecycle_stage"]: int(row["count"]) for row in stages},
@@ -673,8 +945,8 @@ class Repository:
                 (summary, json.dumps(insights) if insights is not None else None, contact_id),
             )
 
-    def contact_detail(self, contact_id: int) -> dict[str, Any] | None:
-        contact = self.get_contact(contact_id)
+    def contact_detail(self, contact_id: int, *, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        contact = self.get_contact_for_user(contact_id, user) if user else self.get_contact(contact_id)
         if not contact:
             return None
         return {"contact": contact, "activities": self.list_lifecycle_activities(contact_id)}
@@ -738,10 +1010,11 @@ class Repository:
                 (json.dumps(analysis), activity_id),
             )
 
-    def queue_contacts(self, limit: int) -> int:
+    def queue_contacts(self, limit: int, *, user: dict[str, Any] | None = None) -> int:
+        owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 UPDATE contacts c
                 SET status = 'queued'
                 WHERE id IN (
@@ -755,19 +1028,21 @@ class Repository:
                       SELECT 1 FROM blacklist b
                       WHERE b.email = contacts.email OR b.domain = contacts.company_domain
                     )
+                    {owner_filter}
                   ORDER BY created_at
                   LIMIT %s
                 )
                 RETURNING c.id
                 """,
-                (limit,),
+                tuple(owner_params + [limit]),
             ).fetchall()
             return len(rows)
 
-    def queue_contact(self, contact_id: int) -> bool:
+    def queue_contact(self, contact_id: int, *, user: dict[str, Any] | None = None) -> bool:
+        owner_filter, owner_params = self._owner_filter("c", user, prefix="AND")
         with self.db.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 UPDATE contacts c
                 SET status = 'queued'
                 WHERE c.id = %s
@@ -780,16 +1055,18 @@ class Repository:
                     SELECT 1 FROM blacklist b
                     WHERE b.email = c.email OR b.domain = c.company_domain
                   )
+                  {owner_filter}
                 RETURNING c.id
                 """,
-                (contact_id,),
+                tuple([contact_id] + owner_params),
             ).fetchone()
             return bool(row)
 
-    def due_for_sending(self, limit: int) -> list[dict[str, Any]]:
+    def due_for_sending(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT * FROM contacts
                 WHERE email_status = 'valid'
                   AND status IN ('queued', 'sent_1', 'sent_2')
@@ -797,16 +1074,18 @@ class Repository:
                     SELECT 1 FROM blacklist b
                     WHERE b.email = contacts.email OR b.domain = contacts.company_domain
                   )
+                  {owner_filter}
                 ORDER BY last_contacted_at NULLS FIRST, created_at
                 LIMIT %s
                 """,
-                (limit,),
+                tuple(owner_params + [limit]),
             ).fetchall()
 
-    def due_contact_for_sending(self, contact_id: int) -> dict[str, Any] | None:
+    def due_contact_for_sending(self, contact_id: int, *, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT * FROM contacts
                 WHERE id = %s
                   AND email_status = 'valid'
@@ -815,8 +1094,9 @@ class Repository:
                     SELECT 1 FROM blacklist b
                     WHERE b.email = contacts.email OR b.domain = contacts.company_domain
                   )
+                  {owner_filter}
                 """,
-                (contact_id,),
+                tuple([contact_id] + owner_params),
             ).fetchone()
 
     def sent_today_count(self) -> int:
@@ -948,15 +1228,19 @@ class Repository:
             writer.writerows(rows)
         return len(rows)
 
-    def export_contacts_csv_text(self, status: str | None = None) -> str:
-        params: tuple[Any, ...] = ()
-        where = ""
+    def export_contacts_csv_text(self, status: str | None = None, *, user: dict[str, Any] | None = None) -> str:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("owner_user_id = %s")
+            params.append(user["id"])
         if status:
             validate_status(status)
-            where = "WHERE status = %s"
-            params = (status,)
+            clauses.append("status = %s")
+            params.append(status)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self.db.connect() as conn:
-            rows = conn.execute(f"SELECT * FROM contacts {where} ORDER BY created_at", params).fetchall()
+            rows = conn.execute(f"SELECT * FROM contacts {where} ORDER BY created_at", tuple(params)).fetchall()
         if not rows:
             return ""
         import io

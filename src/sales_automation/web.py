@@ -16,6 +16,7 @@ from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_contacts_csv
 from .quotas import QuotaService
+from .sender_pool import SenderPoolManager
 from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 
 
@@ -84,7 +85,7 @@ def make_handler(config, repo: Repository):
             if parsed.path.startswith("/api/") and not self._require_user():
                 return
             if parsed.path == "/api/summary":
-                self._json(lambda: repo.dashboard_summary())
+                self._json(lambda: repo.dashboard_summary(user=self._current_user()))
                 return
             if parsed.path == "/api/readiness":
                 self._json(lambda: check_readiness(config, repo))
@@ -108,21 +109,40 @@ def make_handler(config, repo: Repository):
                 qs = parse_qs(parsed.query)
                 status = qs.get("status", [""])[0] or None
                 search = qs.get("search", [""])[0] or None
+                filter_key = qs.get("filter", [""])[0] or None
                 limit = int(qs.get("limit", ["100"])[0])
-                self._json(lambda: {"contacts": repo.list_contacts(status=status, search=search, limit=limit)})
+                self._json(lambda: {"contacts": repo.list_contacts(status=status, search=search, filter_key=filter_key, limit=limit, user=self._current_user())})
                 return
             if parsed.path == "/api/lifecycle":
-                self._json(lambda: repo.lifecycle_summary())
+                self._json(lambda: repo.lifecycle_summary(user=self._current_user()))
+                return
+            if parsed.path == "/api/ops-report":
+                self._json(lambda: repo.operations_report(user=self._current_user()))
+                return
+            if parsed.path == "/api/admin/users":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: {"users": repo.list_users()})
+                return
+            if parsed.path == "/api/admin/senders":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def senders() -> dict[str, Any]:
+                    SenderPoolManager(config, repo).sync_accounts()
+                    return {"senders": repo.list_sender_accounts()}
+                self._json(senders)
                 return
             if parsed.path == "/api/contact-detail":
                 qs = parse_qs(parsed.query)
                 contact_id = int(qs.get("contact_id", ["0"])[0])
-                self._json(lambda: repo.contact_detail(contact_id) or {})
+                self._json(lambda: repo.contact_detail(contact_id, user=self._current_user()) or {})
                 return
             if parsed.path == "/api/export.csv":
                 qs = parse_qs(parsed.query)
                 status = qs.get("status", [""])[0] or None
-                self._send_csv(repo.export_contacts_csv_text(status=status))
+                self._send_csv(repo.export_contacts_csv_text(status=status, user=self._current_user()))
                 return
             self.send_error(404)
 
@@ -152,14 +172,19 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/contacts":
                 def create_contact() -> dict[str, Any]:
-                    inserted, skipped = repo.upsert_contacts([payload])
+                    user = self._current_user()
+                    payload.setdefault("owner", user.get("display_name") or user.get("username"))
+                    inserted, skipped = repo.upsert_contacts([payload], owner_user_id=int(user["id"]))
                     return {"inserted": inserted, "skipped": skipped}
                 self._json(create_contact)
                 return
             if parsed.path == "/api/import/csv":
                 def import_csv() -> dict[str, Any]:
+                    user = self._current_user()
                     contacts = parse_contacts_csv(payload.get("csv", ""), default_source=payload.get("source") or "csv_import")
-                    inserted, skipped = repo.upsert_contacts(contacts)
+                    for contact in contacts:
+                        contact.setdefault("owner", user.get("display_name") or user.get("username"))
+                    inserted, skipped = repo.upsert_contacts(contacts, owner_user_id=int(user["id"]))
                     return {"parsed": len(contacts), "inserted": inserted, "skipped": skipped}
                 self._json(import_csv)
                 return
@@ -180,7 +205,12 @@ def make_handler(config, repo: Repository):
                     limit = min(requested, max(0, remaining))
                     if limit <= 0:
                         raise RuntimeError("今日获客配额已用完")
-                    result = SourcingService(config, repo).source(criteria, limit)
+                    result = SourcingService(config, repo).source(
+                        criteria,
+                        limit,
+                        owner_user_id=int(user["id"]),
+                        owner=user.get("display_name") or user.get("username"),
+                    )
                     quota_result = QuotaService(config, repo).consume(user, "source", limit)
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(source_with_quota)
@@ -189,19 +219,23 @@ def make_handler(config, repo: Repository):
                 self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
                 return
             if parsed.path == "/api/enrich-one":
+                if not self._require_contact_access(int(payload["contact_id"])):
+                    return
                 self._json(lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
             if parsed.path == "/api/social-enrich":
                 self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
                 return
             if parsed.path == "/api/social-enrich-one":
+                if not self._require_contact_access(int(payload["contact_id"])):
+                    return
                 self._json(lambda: SocialEnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
             if parsed.path == "/api/queue":
-                self._json(lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)))})
+                self._json(lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)), user=self._current_user())})
                 return
             if parsed.path == "/api/queue-one":
-                self._json(lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]))})
+                self._json(lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]), user=self._current_user())})
                 return
             if parsed.path == "/api/send":
                 def send_with_quota() -> dict[str, Any]:
@@ -212,7 +246,7 @@ def make_handler(config, repo: Repository):
                     limit = min(requested, max(0, remaining))
                     if limit <= 0:
                         raise RuntimeError("今日发信配额已用完")
-                    sent = OutreachService(config, repo).send_due(limit)
+                    sent = OutreachService(config, repo).send_due(limit, user=user)
                     quota_result = QuotaService(config, repo).consume(user, "send", sent)
                     return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(send_with_quota)
@@ -223,7 +257,7 @@ def make_handler(config, repo: Repository):
                     snapshot = QuotaService(config, repo).snapshot(user)
                     if min(snapshot["send"]["remaining_user"], snapshot["send"]["remaining_global"]) <= 0:
                         raise RuntimeError("今日发信配额已用完")
-                    sent = OutreachService(config, repo).send_contact(int(payload["contact_id"]))
+                    sent = OutreachService(config, repo).send_contact(int(payload["contact_id"]), user=user)
                     quota_result = QuotaService(config, repo).consume(user, "send", 1 if sent else 0)
                     return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(send_one_with_quota)
@@ -240,12 +274,16 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/mark":
                 def mark() -> dict[str, Any]:
+                    if not self._has_contact_access(int(payload["contact_id"])):
+                        raise RuntimeError("Contact not found")
                     repo.mark_status(int(payload["contact_id"]), payload["status"], notes=payload.get("notes"))
                     return {"ok": True}
                 self._json(mark)
                 return
             if parsed.path == "/api/lifecycle":
                 def lifecycle() -> dict[str, Any]:
+                    if not self._has_contact_access(int(payload["contact_id"])):
+                        raise RuntimeError("Contact not found")
                     return LifecycleService(repo).update(
                         int(payload["contact_id"]),
                         lifecycle_stage=payload.get("lifecycle_stage"),
@@ -258,10 +296,14 @@ def make_handler(config, repo: Repository):
                 self._json(lifecycle)
                 return
             if parsed.path == "/api/profile-agent":
+                if not self._require_contact_access(int(payload["contact_id"])):
+                    return
                 self._json(lambda: {"insights": ProfileAgentService(config, repo).summarize(int(payload["contact_id"]))})
                 return
             if parsed.path == "/api/lifecycle-activity":
                 def activity() -> dict[str, Any]:
+                    if not self._has_contact_access(int(payload["contact_id"])):
+                        raise RuntimeError("Contact not found")
                     return repo.add_lifecycle_activity(
                         int(payload["contact_id"]),
                         lifecycle_stage=payload.get("lifecycle_stage") or "lead",
@@ -274,6 +316,8 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/stage-agent":
                 def stage_agent() -> dict[str, Any]:
+                    if not self._has_contact_access(int(payload["contact_id"])):
+                        raise RuntimeError("Contact not found")
                     return {
                         "analysis": StageAgentService(config, repo).analyze(
                             int(payload["contact_id"]),
@@ -286,6 +330,8 @@ def make_handler(config, repo: Repository):
                 self._json(stage_agent)
                 return
             if parsed.path == "/api/email-draft":
+                if not self._require_contact_access(int(payload["contact_id"])):
+                    return
                 self._json(lambda: PersonalizedEmailService(config, repo).draft(
                     int(payload["contact_id"]),
                     mode=payload.get("mode") or "ai",
@@ -294,12 +340,67 @@ def make_handler(config, repo: Repository):
                 ))
                 return
             if parsed.path == "/api/send-custom":
-                self._json(lambda: PersonalizedEmailService(config, repo).send(
-                    int(payload["contact_id"]),
-                    subject=payload.get("subject") or "",
-                    body=payload.get("body") or "",
-                    mode=payload.get("mode") or "custom",
-                ))
+                def send_custom() -> dict[str, Any]:
+                    user = self._current_user()
+                    if not repo.get_contact_for_user(int(payload["contact_id"]), user):
+                        raise RuntimeError("Contact not found")
+                    return PersonalizedEmailService(config, repo).send(
+                        int(payload["contact_id"]),
+                        subject=payload.get("subject") or "",
+                        body=payload.get("body") or "",
+                        mode=payload.get("mode") or "custom",
+                        user=user,
+                    )
+                self._json(send_custom)
+                return
+            if parsed.path == "/api/admin/users":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def add_user() -> dict[str, Any]:
+                    return repo.create_user(
+                        username=payload["username"],
+                        password=payload["password"],
+                        display_name=payload.get("display_name") or payload["username"],
+                        role=payload.get("role") or "sales",
+                        daily_source_limit=int(payload.get("daily_source_limit") or 100),
+                        daily_send_limit=int(payload.get("daily_send_limit") or 100),
+                    )
+                self._json(add_user)
+                return
+            if parsed.path == "/api/admin/user":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def update_user() -> dict[str, Any]:
+                    user_id = int(payload["user_id"])
+                    if payload.get("password"):
+                        repo.reset_user_password(user_id, payload["password"])
+                    return repo.update_user(
+                        user_id,
+                        display_name=payload.get("display_name"),
+                        role=payload.get("role"),
+                        daily_source_limit=int(payload["daily_source_limit"]) if payload.get("daily_source_limit") is not None else None,
+                        daily_send_limit=int(payload["daily_send_limit"]) if payload.get("daily_send_limit") is not None else None,
+                        active=payload.get("active"),
+                    )
+                self._json(update_user)
+                return
+            if parsed.path == "/api/admin/sender":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def update_sender() -> dict[str, Any]:
+                    return repo.update_sender_account(
+                        int(payload["sender_id"]),
+                        name=payload.get("name"),
+                        email=payload.get("email"),
+                        provider=payload.get("provider"),
+                        daily_limit=int(payload["daily_limit"]) if payload.get("daily_limit") is not None else None,
+                        warmup_stage=payload.get("warmup_stage"),
+                        active=payload.get("active"),
+                    )
+                self._json(update_sender)
                 return
             if parsed.path == "/api/blacklist":
                 def blacklist() -> dict[str, Any]:
@@ -364,6 +465,25 @@ def make_handler(config, repo: Repository):
                 return user
             self._send_json({"ok": False, "error": "unauthorized"}, status=401)
             return None
+
+        def _require_admin(self) -> dict[str, Any] | None:
+            user = self._require_user()
+            if not user:
+                return None
+            if user.get("role") == "admin":
+                return user
+            self._send_json({"ok": False, "error": "admin_required"}, status=403)
+            return None
+
+        def _has_contact_access(self, contact_id: int) -> bool:
+            user = self._current_user()
+            return bool(user and repo.get_contact_for_user(contact_id, user))
+
+        def _require_contact_access(self, contact_id: int) -> bool:
+            if self._has_contact_access(contact_id):
+                return True
+            self._send_json({"ok": False, "error": "contact_not_found"}, status=404)
+            return False
 
         def _send_json(self, data: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
             body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")

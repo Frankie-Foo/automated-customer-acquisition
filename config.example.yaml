@@ -71,9 +71,9 @@ queue:
   batch_size: 100
 
 quotas:
-  global_daily_send_limit: 300
-  global_daily_source_limit: 500
-  default_user_daily_send: 80
+  global_daily_send_limit: 3000
+  global_daily_source_limit: 3000
+  default_user_daily_send: 100
   default_user_daily_source: 100
 
 sequence:

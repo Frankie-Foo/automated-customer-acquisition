@@ -67,3 +67,13 @@ def test_consume_global_only_for_cli_scheduler():
 
     assert result["global_usage"]["send_count"] == 2
     assert result["remaining_global"] == 1
+
+
+def test_default_global_quota_supports_30_users():
+    repo = FakeRepo()
+    empty_config = SimpleNamespace(raw={})
+
+    result = QuotaService(empty_config, repo).consume_global("source", 100)
+
+    assert result["global_limit"] == 3000
+    assert result["remaining_global"] == 2900

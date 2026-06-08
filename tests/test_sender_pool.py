@@ -68,6 +68,29 @@ def test_sender_daily_limit_excludes_account():
     assert second["email"] == "b@example.com"
 
 
+def test_inactive_sender_is_excluded():
+    repo = FakeRepo()
+    repo.accounts["a@example.com"] = {
+        "id": 1,
+        "name": "A",
+        "email": "a@example.com",
+        "provider": "resend",
+        "daily_limit": 100,
+        "warmup_stage": "production",
+        "active": False,
+        "created_at": datetime.now(UTC),
+    }
+    repo.usage[1] = 0
+    config = cfg(raw={"sender_pool": {"accounts": [
+        {"name": "A", "email": "a@example.com", "provider": "resend", "daily_limit": 100},
+        {"name": "B", "email": "b@example.com", "provider": "resend", "daily_limit": 100},
+    ]}})
+
+    sender = SenderPoolManager(config, repo).pick_sender()
+
+    assert sender["email"] == "b@example.com"
+
+
 def test_warmup_limit_grows_by_account_age():
     repo = FakeRepo()
     created = datetime.now(UTC) - timedelta(days=2)

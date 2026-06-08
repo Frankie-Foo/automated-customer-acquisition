@@ -6,12 +6,14 @@
 
 - 登录账号
 - 每账号每日获客/发信配额
+- 销售账号只看自己名下客户，管理员可看全局
 - 多来源邮箱挖掘
 - 邮件发送、打开追踪、退订、生命周期和 AI 画像
+- 管理员控制台、团队运营日报、Provider 统计
 
 ## 必要资源
 
-- 一台稳定服务器，建议 2C4G 起步
+- 一台稳定服务器，30 人建议 4C8G / 100GB SSD 起步
 - PostgreSQL 正式库
 - 一个正式访问域名，例如 `https://sales.frelys.xyz`
 - Resend 已验证发件域名
@@ -47,6 +49,8 @@ RESEND_API_KEY=
 RESEND_WEBHOOK_SECRET=
 ```
 
+可以从 `deployment/production.env.example` 复制生产环境变量模板。
+
 ## Docker 部署
 
 ```bash
@@ -80,6 +84,16 @@ docker compose exec salesbot salesbot --config config.yaml user-add \
 ```bash
 docker compose exec salesbot salesbot --config config.yaml user-list
 ```
+
+本地或服务器上也可以批量创建 30 个销售账号：
+
+```powershell
+.\scripts\create_30_sales_users.ps1 -Config config.yaml -Prefix sales -Count 30
+```
+
+脚本会把账号和随机密码导出到 `outputs/sales_users_*.csv`。这个文件包含密码，不要提交到 Git，不要发到公共群。
+
+管理员登录后可以在“管理员控制台”新增销售账号、调整每人配额、停用/启用账号、重置密码、查看发件账号池和 warmup 状态。
 
 ## 邮箱挖掘策略
 
@@ -122,8 +136,8 @@ email_discovery:
 
 ```yaml
 quotas:
-  global_daily_send_limit: 300
-  global_daily_source_limit: 500
+  global_daily_send_limit: 3000
+  global_daily_source_limit: 3000
   default_user_daily_send: 80
   default_user_daily_source: 100
 ```
@@ -138,9 +152,46 @@ sender_pool:
       email: sales01@mail.frelys.xyz
       provider: resend
       daily_limit: 100
-      warmup_stage: production
+      warmup_stage: warmup
       dry_run: false
 ```
+
+30 人各自账号时，先把 30 个发件邮箱配置到 `sender_pool.accounts[]`。示例见 `deployment/sender_pool.30.example.yaml`。
+
+Warmup 建议：
+
+- 第 1-3 天：每账号 10-20 封/天
+- 第 4-7 天：每账号 30-50 封/天
+- 第 2 周：每账号 60-80 封/天
+- 第 3 周：稳定到 100 封/天
+
+系统会按 `warmup_stage=warmup` 和账号创建时间自动压低可发送上限；确认域名声誉稳定后再切到 `production`。
+
+## 团队运营
+
+首页“团队运营与日报”会展示：
+
+- 今日新增线索
+- 今日有效邮箱
+- 今日发送/打开/回复/退信
+- 今日需处理客户
+- 每个销售的获客/发信配额使用
+- 邮箱 Provider 调用、候选、valid、选中和错误数
+- 失败原因统计
+
+客户列表支持筛选：我的客户、待富化、有邮箱待发送、已打开未回复、已回复、退信需处理、第 2 次触达待发送、第 3 次触达待发送、等待池、已放弃。
+
+普通销售只能看到自己名下客户；管理员可以看到全部客户和团队报表。
+
+## 备份
+
+上线后至少每天备份 PostgreSQL 一次，保留 7 天：
+
+```bash
+pg_dump "$DATABASE_URL" | gzip > "backup_$(date +%F).sql.gz"
+```
+
+上线前需要做一次恢复演练，确认备份文件能恢复到临时库。
 
 ## 上线前必须确认
 
@@ -151,3 +202,6 @@ sender_pool:
 - 退订链接可打开
 - 数据库有备份
 - 管理员默认密码已更换
+- 30 个销售账号可以登录
+- 30 个发件账号已配置并处于 warmup
+- 小流量真实发送能在 QQ/Gmail/企业邮箱收到

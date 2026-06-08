@@ -7,7 +7,7 @@ import smtplib
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .clients import HunterClient, NinjaPearClient, ProspeoClient, is_full_email
 
@@ -225,17 +225,38 @@ class SmtpVerifyProvider:
 
 
 class EmailDiscoveryEngine:
-    def __init__(self, providers: list[EmailProvider], *, max_candidates: int = 10):
+    def __init__(
+        self,
+        providers: list[EmailProvider],
+        *,
+        max_candidates: int = 10,
+        stats_recorder: Callable[..., None] | None = None,
+    ):
         self.providers = providers
         self.max_candidates = max_candidates
+        self.stats_recorder = stats_recorder
 
     def discover(self, contact: dict[str, Any], domain: str | None) -> dict[str, Any]:
         all_candidates: list[EmailCandidate] = []
         selected: EmailCandidate | None = None
         for provider in self.providers:
-            candidates = provider.discover(contact, domain)
+            provider_name = _provider_name(provider)
+            try:
+                candidates = provider.discover(contact, domain)
+            except Exception as exc:
+                self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500])
+                raise
             all_candidates.extend(candidates)
-            selected = selected or _select_valid_personal(candidates)
+            provider_selected = _select_valid_personal(candidates)
+            selected = selected or provider_selected
+            self._record_provider(
+                provider_name,
+                calls=1,
+                candidates=len(candidates),
+                valid_candidates=sum(1 for item in candidates if item.status == "valid"),
+                selected=1 if provider_selected else 0,
+                credits_used=_provider_credit_cost(provider_name),
+            )
         fields: dict[str, Any] = {"email_status": "unknown"}
         if selected:
             fields.update(
@@ -250,8 +271,16 @@ class EmailDiscoveryEngine:
             fields["email_candidates"] = [asdict(candidate) for candidate in _dedupe_candidates(all_candidates)[: self.max_candidates]]
         return fields
 
+    def _record_provider(self, provider: str, **fields: Any) -> None:
+        if not self.stats_recorder:
+            return
+        try:
+            self.stats_recorder(provider, **fields)
+        except Exception:
+            pass
 
-def build_email_discovery_engine(config: Any) -> EmailDiscoveryEngine:
+
+def build_email_discovery_engine(config: Any, *, stats_recorder: Callable[..., None] | None = None) -> EmailDiscoveryEngine:
     apis = config.apis
     discovery_cfg = config.raw.get("email_discovery", {})
     provider_names = discovery_cfg.get("providers") or ["prospeo", "ninjapear", "hunter", "pattern_guess", "public_website"]
@@ -277,7 +306,15 @@ def build_email_discovery_engine(config: Any) -> EmailDiscoveryEngine:
             providers.append(SmtpVerifyProvider())
         elif name == "public_website":
             providers.append(PublicWebsiteEmailProvider())
-    return EmailDiscoveryEngine(providers, max_candidates=max_candidates)
+    return EmailDiscoveryEngine(providers, max_candidates=max_candidates, stats_recorder=stats_recorder)
+
+
+def _provider_credit_cost(provider: str) -> int:
+    return 1 if provider in {"prospeo", "ninjapear", "hunter", "pattern_guess"} else 0
+
+
+def _provider_name(provider: EmailProvider) -> str:
+    return str(getattr(provider, "name", provider.__class__.__name__))
 
 
 def _select_valid_personal(candidates: list[EmailCandidate]) -> EmailCandidate | None:

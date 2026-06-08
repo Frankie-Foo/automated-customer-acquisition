@@ -16,9 +16,11 @@ class SenderPoolManager:
         accounts = self._configured_accounts()
         if not accounts:
             raise RuntimeError("No sender account configured")
-        registered = [self.repo.ensure_sender_account(account) for account in accounts]
+        registered = self.sync_accounts()
         available: list[dict[str, Any]] = []
         for account, row in zip(accounts, registered):
+            if row.get("active") is False:
+                continue
             usage = self.repo.sender_usage_today(int(row["id"]))
             limit = self._effective_limit({**account, **row})
             if int(usage["send_count"] or 0) < limit:
@@ -35,6 +37,9 @@ class SenderPoolManager:
         sender_id = sender.get("id")
         if sender_id:
             self.repo.record_sender_send(int(sender_id))
+
+    def sync_accounts(self) -> list[dict[str, Any]]:
+        return [self.repo.ensure_sender_account(account) for account in self._configured_accounts()]
 
     def _configured_accounts(self) -> list[dict[str, Any]]:
         pool = self.config.raw.get("sender_pool", {})

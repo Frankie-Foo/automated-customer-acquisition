@@ -1,5 +1,6 @@
 const state = {
   status: "",
+  filter: "",
   search: "",
   user: null,
   usage: null,
@@ -9,6 +10,10 @@ const statusOrder = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", 
 
 const notice = document.querySelector("#notice");
 const metrics = document.querySelector("#metrics");
+const opsReportContent = document.querySelector("#ops-report-content");
+const adminConsole = document.querySelector("#admin-console");
+const adminUsersTable = document.querySelector("#admin-users-table");
+const adminSendersTable = document.querySelector("#admin-senders-table");
 const followupGrid = document.querySelector("#followup-grid");
 const lifecycleGrid = document.querySelector("#lifecycle-grid");
 const workspaceEmpty = document.querySelector("#workspace-empty");
@@ -81,6 +86,7 @@ function renderAccount() {
   const usage = state.usage || {};
   accountName.textContent = state.user.display_name || state.user.username;
   quotaStatus.textContent = `获客 ${usage.source_count || 0}/${state.user.daily_source_limit} · 发信 ${usage.send_count || 0}/${state.user.daily_send_limit}`;
+  adminConsole.classList.toggle("hidden", state.user.role !== "admin");
 }
 
 function updateUsage(usage) {
@@ -93,7 +99,7 @@ async function refresh() {
   try {
     const [summary, contacts, lifecycle] = await Promise.all([
       api("/api/summary"),
-      api(`/api/contacts?status=${encodeURIComponent(state.status)}&search=${encodeURIComponent(state.search)}&limit=100`),
+      api(`/api/contacts?status=${encodeURIComponent(state.status)}&filter=${encodeURIComponent(state.filter)}&search=${encodeURIComponent(state.search)}&limit=100`),
       api("/api/lifecycle"),
     ]);
     hideNotice();
@@ -103,13 +109,38 @@ async function refresh() {
     renderFollowups(rows);
     renderLifecycle(lifecycle, rows);
     renderContacts(rows);
+    await refreshOpsReport();
+    await refreshAdminConsole();
     refreshReadiness();
   } catch (error) {
     renderMetrics({ total_contacts: 0, sent_today: 0, statuses: {}, events_7d: {} });
     renderFollowups([]);
     renderLifecycle({ stages: {}, outreach: {}, actions: [] }, []);
     renderContacts([]);
+    renderOpsReport({});
     showNotice(`数据库还不可用：${error.message}。先确认 .env/config.yaml，然后点“初始化/迁移数据库”。`, "error");
+  }
+}
+
+async function refreshOpsReport() {
+  try {
+    renderOpsReport(await api("/api/ops-report"));
+  } catch {
+    renderOpsReport({});
+  }
+}
+
+async function refreshAdminConsole() {
+  if (state.user?.role !== "admin") return;
+  try {
+    const [users, senders] = await Promise.all([
+      api("/api/admin/users"),
+      api("/api/admin/senders"),
+    ]);
+    renderAdminUsers(users.users || []);
+    renderAdminSenders(senders.senders || []);
+  } catch (error) {
+    adminUsersTable.innerHTML = `<div class="empty-state">管理员数据加载失败：${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -158,6 +189,7 @@ function readinessLabel(name) {
     sender_email: "发件邮箱域名",
     dry_run: "真实发送开关",
     public_url: "公网访问地址",
+    admin_password: "管理员密码",
     social_enrichment: "社媒富化 API",
     llm: "AI 文案模型",
     slack: "Slack 通知",
@@ -218,6 +250,125 @@ function renderFollowupCard(card) {
       </div>
       <ul>${items || empty}</ul>
     </article>
+  `;
+}
+
+function renderOpsReport(report) {
+  const totals = report.totals || {};
+  const events = report.events || {};
+  const providerRows = (report.provider_stats || []).slice(0, 8).map((row) => `
+    <tr>
+      <td>${escapeHtml(row.provider)}</td>
+      <td>${row.calls || 0}</td>
+      <td>${row.candidates || 0}</td>
+      <td>${row.valid_candidates || 0}</td>
+      <td>${row.selected || 0}</td>
+      <td>${row.errors || 0}</td>
+    </tr>
+  `).join("");
+  const userRows = (report.by_user || []).map((user) => `
+    <tr>
+      <td>${escapeHtml(user.display_name || user.username)}</td>
+      <td>${user.source_count_today || 0}/${user.daily_source_limit}</td>
+      <td>${user.send_count_today || 0}/${user.daily_send_limit}</td>
+      <td>${user.owned_contacts || 0}</td>
+      <td>${user.active ? "启用" : "停用"}</td>
+    </tr>
+  `).join("");
+  const failureRows = (report.failures || []).slice(0, 6).map((item) => `
+    <li><span>${escapeHtml(item.reason)}</span><b>${item.count}</b></li>
+  `).join("");
+  opsReportContent.innerHTML = `
+    <div class="ops-cards">
+      ${renderOpsCard("今日新增线索", totals.new_contacts_today)}
+      ${renderOpsCard("今日有效邮箱", totals.valid_emails_today)}
+      ${renderOpsCard("今日发送", events.sent_today)}
+      ${renderOpsCard("今日打开", events.opened_today)}
+      ${renderOpsCard("今日回复", (totals.replied || 0) + (events.replied_events_today || 0))}
+      ${renderOpsCard("今日退信", (totals.bounced || 0) + (events.bounced_events_today || 0))}
+      ${renderOpsCard("今日需处理", (events.opened_no_reply || 0) + (totals.replied || 0) + (totals.bounced || 0))}
+    </div>
+    <div class="ops-grid">
+      <section>
+        <h3>销售配额日报</h3>
+        <table class="mini-table"><thead><tr><th>销售</th><th>获客</th><th>发信</th><th>客户</th><th>状态</th></tr></thead><tbody>${userRows || "<tr><td colspan='5'>暂无数据</td></tr>"}</tbody></table>
+      </section>
+      <section>
+        <h3>邮箱 Provider 统计</h3>
+        <table class="mini-table"><thead><tr><th>Provider</th><th>调用</th><th>候选</th><th>Valid</th><th>选中</th><th>错误</th></tr></thead><tbody>${providerRows || "<tr><td colspan='6'>暂无数据</td></tr>"}</tbody></table>
+      </section>
+      <section>
+        <h3>失败原因</h3>
+        <ul class="failure-list">${failureRows || "<li><span>暂无失败</span><b>0</b></li>"}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderOpsCard(label, value) {
+  return `<article><span>${escapeHtml(label)}</span><strong>${Number(value || 0)}</strong></article>`;
+}
+
+function renderAdminUsers(users) {
+  if (!users.length) {
+    adminUsersTable.innerHTML = `<div class="empty-state">暂无用户</div>`;
+    return;
+  }
+  adminUsersTable.innerHTML = `
+    <table class="mini-table">
+      <thead><tr><th>ID</th><th>账号</th><th>角色</th><th>获客</th><th>发信</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>
+        ${users.map((user) => `
+          <tr>
+            <td>${user.id}</td>
+            <td><strong>${escapeHtml(user.display_name)}</strong><div class="muted">${escapeHtml(user.username)}</div></td>
+            <td>${escapeHtml(user.role)}</td>
+            <td><input class="mini-input" data-user-source="${user.id}" type="number" value="${user.daily_source_limit}" /></td>
+            <td><input class="mini-input" data-user-send="${user.id}" type="number" value="${user.daily_send_limit}" /></td>
+            <td>${user.active ? "启用" : "停用"}</td>
+            <td class="row-actions">
+              <button data-admin-user-save="${user.id}">保存</button>
+              <button data-admin-user-toggle="${user.id}" data-active="${user.active ? "false" : "true"}">${user.active ? "停用" : "启用"}</button>
+              <button data-admin-user-reset="${user.id}">重置密码</button>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderAdminSenders(senders) {
+  if (!senders.length) {
+    adminSendersTable.innerHTML = `<div class="empty-state">暂无发件账号。先在 config.yaml 的 sender_pool.accounts[] 配置。</div>`;
+    return;
+  }
+  adminSendersTable.innerHTML = `
+    <table class="mini-table">
+      <thead><tr><th>ID</th><th>发件邮箱</th><th>Provider</th><th>今日</th><th>上限</th><th>Warmup</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>
+        ${senders.map((sender) => `
+          <tr>
+            <td>${sender.id}</td>
+            <td><strong>${escapeHtml(sender.name)}</strong><div class="muted">${escapeHtml(sender.email)}</div></td>
+            <td>${escapeHtml(sender.provider)}</td>
+            <td>${sender.send_count_today || 0}</td>
+            <td><input class="mini-input" data-sender-limit="${sender.id}" type="number" value="${sender.daily_limit}" /></td>
+            <td>
+              <select class="mini-input" data-sender-warmup="${sender.id}">
+                <option value="warmup" ${sender.warmup_stage === "warmup" ? "selected" : ""}>warmup</option>
+                <option value="production" ${sender.warmup_stage === "production" ? "selected" : ""}>production</option>
+              </select>
+            </td>
+            <td>${sender.active ? "启用" : "停用"}</td>
+            <td class="row-actions">
+              <button data-admin-sender-save="${sender.id}">保存</button>
+              <button data-admin-sender-toggle="${sender.id}" data-active="${sender.active ? "false" : "true"}">${sender.active ? "停用" : "启用"}</button>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
   `;
 }
 
@@ -569,10 +720,88 @@ document.querySelector("#status-filter").addEventListener("change", (event) => {
   refresh();
 });
 
+document.querySelector("#contact-filter").addEventListener("change", (event) => {
+  state.filter = event.target.value;
+  refresh();
+});
+
 document.querySelector("#search-input").addEventListener("input", (event) => {
   state.search = event.target.value;
   window.clearTimeout(window.searchTimer);
   window.searchTimer = window.setTimeout(refresh, 250);
+});
+
+document.querySelector("#admin-create-user").addEventListener("click", async () => {
+  try {
+    const payload = {
+      username: document.querySelector("#admin-new-username").value.trim(),
+      display_name: document.querySelector("#admin-new-display").value.trim(),
+      password: document.querySelector("#admin-new-password").value,
+      role: "sales",
+      daily_source_limit: Number(document.querySelector("#admin-new-source-limit").value || 100),
+      daily_send_limit: Number(document.querySelector("#admin-new-send-limit").value || 100),
+    };
+    if (!payload.username || !payload.password) throw new Error("账号和密码必填");
+    await api("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
+    showNotice("销售账号已创建");
+    document.querySelector("#admin-new-password").value = "";
+    await refreshAdminConsole();
+    await refreshOpsReport();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+adminUsersTable.addEventListener("click", async (event) => {
+  const save = event.target.closest("[data-admin-user-save]");
+  const toggle = event.target.closest("[data-admin-user-toggle]");
+  const reset = event.target.closest("[data-admin-user-reset]");
+  if (!save && !toggle && !reset) return;
+  try {
+    const userId = Number((save || toggle || reset).dataset.adminUserSave || (save || toggle || reset).dataset.adminUserToggle || (save || toggle || reset).dataset.adminUserReset);
+    const payload = { user_id: userId };
+    if (save) {
+      payload.daily_source_limit = Number(document.querySelector(`[data-user-source="${userId}"]`).value || 100);
+      payload.daily_send_limit = Number(document.querySelector(`[data-user-send="${userId}"]`).value || 100);
+    }
+    if (toggle) {
+      payload.active = toggle.dataset.active === "true";
+    }
+    if (reset) {
+      const password = window.prompt("输入新密码，至少 8 位");
+      if (!password) return;
+      if (password.length < 8) throw new Error("密码至少 8 位");
+      payload.password = password;
+    }
+    await api("/api/admin/user", { method: "POST", body: JSON.stringify(payload) });
+    showNotice("用户已更新");
+    await refreshAdminConsole();
+    await refreshOpsReport();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+adminSendersTable.addEventListener("click", async (event) => {
+  const save = event.target.closest("[data-admin-sender-save]");
+  const toggle = event.target.closest("[data-admin-sender-toggle]");
+  if (!save && !toggle) return;
+  try {
+    const senderId = Number((save || toggle).dataset.adminSenderSave || (save || toggle).dataset.adminSenderToggle);
+    const payload = { sender_id: senderId };
+    if (save) {
+      payload.daily_limit = Number(document.querySelector(`[data-sender-limit="${senderId}"]`).value || 100);
+      payload.warmup_stage = document.querySelector(`[data-sender-warmup="${senderId}"]`).value;
+    }
+    if (toggle) {
+      payload.active = toggle.dataset.active === "true";
+    }
+    await api("/api/admin/sender", { method: "POST", body: JSON.stringify(payload) });
+    showNotice("发件账号已更新");
+    await refreshAdminConsole();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
 });
 
 document.querySelector("#mark-button").addEventListener("click", async () => {

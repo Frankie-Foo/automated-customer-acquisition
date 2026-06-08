@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -22,6 +23,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("dry_run", sender.get("dry_run") is False, "Set sender.dry_run=false only after sender domain is verified"),
         _check("public_url", _public_base_url_ready(app.get("public_base_url")), "Use a public HTTPS PUBLIC_BASE_URL for unsubscribe links, tracking pixels, and webhooks"),
         _check("quotas", bool(quotas.get("global_daily_send_limit") and quotas.get("global_daily_source_limit")), "Global source/send quotas should be configured"),
+        _check("admin_password", _admin_password_ready(), "Change SALESBOT_ADMIN_PASSWORD before production"),
         _check("llm", _llm_ready(apis, llm), "DeepSeek/OpenAI key is required for AI openers; fallback works without it"),
         _check("slack", bool(config.raw.get("notifications", {}).get("slack_webhook_url")), "Slack webhook is optional for reply/error notifications"),
     ]
@@ -54,3 +56,8 @@ def _public_base_url_ready(value: str | None) -> bool:
     if parsed.scheme != "https":
         return False
     return parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+
+
+def _admin_password_ready() -> bool:
+    password = os.environ.get("SALESBOT_ADMIN_PASSWORD", "")
+    return bool(password) and password != "admin123456" and len(password) >= 12

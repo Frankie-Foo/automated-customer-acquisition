@@ -31,6 +31,8 @@
       <nav class="nav">
         <a href="#pipeline" class="active">客户列表</a>
         <a href="#workbench">获客操作</a>
+        <a href="#ops-report">团队运营</a>
+        <a href="#admin-console">管理员</a>
         <a href="#readiness">上线检查</a>
       </nav>
 
@@ -64,6 +66,17 @@
       <section id="notice" class="notice hidden"></section>
 
       <section class="metrics" id="metrics"></section>
+
+      <section class="ops-report" id="ops-report">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Team operations</span>
+            <h2>团队运营与日报</h2>
+          </div>
+          <p>查看今日获客、有效邮箱、发送、打开、回复、退信和各销售配额使用情况。</p>
+        </div>
+        <div id="ops-report-content" class="ops-report-content"></div>
+      </section>
 
       <section class="followups" id="followups">
         <div class="followup-head">
@@ -305,6 +318,21 @@
                 <option>unsubscribed</option>
               </select>
             </label>
+            <label>视图
+              <select id="contact-filter">
+                <option value="">全部客户</option>
+                <option value="mine">我的客户</option>
+                <option value="needs_enrichment">待富化</option>
+                <option value="ready_to_send">有邮箱待发送</option>
+                <option value="opened_no_reply">已打开未回复</option>
+                <option value="replied">已回复</option>
+                <option value="bounced">退信需处理</option>
+                <option value="second_touch_due">第2次触达待发送</option>
+                <option value="third_touch_due">第3次触达待发送</option>
+                <option value="waiting_pool">等待池</option>
+                <option value="abandoned">已放弃</option>
+              </select>
+            </label>
             <label>Search<input id="search-input" placeholder="姓名、公司、邮箱、职位" /></label>
           </div>
         </div>
@@ -330,6 +358,37 @@
             </thead>
             <tbody id="contacts-body"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="admin-console" class="admin-console hidden">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Admin console</span>
+            <h2>管理员控制台</h2>
+          </div>
+          <p>创建销售账号、调整配额、管理发件账号和 warmup 状态。</p>
+        </div>
+        <div class="admin-grid">
+          <div class="admin-card">
+            <h3>新增销售账号</h3>
+            <div class="form-grid compact">
+              <label>账号<input id="admin-new-username" placeholder="sales01" /></label>
+              <label>姓名<input id="admin-new-display" placeholder="销售01" /></label>
+              <label>密码<input id="admin-new-password" type="password" placeholder="强密码" /></label>
+              <label>获客配额<input id="admin-new-source-limit" type="number" value="100" /></label>
+              <label>发信配额<input id="admin-new-send-limit" type="number" value="100" /></label>
+            </div>
+            <div class="panel-actions"><button id="admin-create-user" class="primary">创建账号</button></div>
+          </div>
+          <div class="admin-card">
+            <h3>用户与配额</h3>
+            <div id="admin-users-table" class="admin-table"></div>
+          </div>
+          <div class="admin-card">
+            <h3>发件账号池</h3>
+            <div id="admin-senders-table" class="admin-table"></div>
+          </div>
         </div>
       </section>
     </main>

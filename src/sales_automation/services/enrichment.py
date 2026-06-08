@@ -69,7 +69,7 @@ class EnrichmentService:
         prospeo: ProspeoClient | None,
     ) -> dict[str, Any]:
         domain = contact.get("company_domain")
-        fields = build_email_discovery_engine(self.config).discover(contact, domain)
+        fields = build_email_discovery_engine(self.config, stats_recorder=self.repo.record_email_provider_stat).discover(contact, domain)
         if proxycurl and domain:
             company = proxycurl.company_lookup(domain)
             fields["company_size"] = company.get("company_size") or company.get("employee_count")

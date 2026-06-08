@@ -13,7 +13,7 @@ class SourcingService:
         self.config = config
         self.repo = repo
 
-    def source(self, criteria: dict[str, Any], limit: int) -> tuple[int, int]:
+    def source(self, criteria: dict[str, Any], limit: int, *, owner_user_id: int | None = None, owner: str | None = None) -> tuple[int, int]:
         provider = self.config.raw.get("sourcing", {}).get("provider", "prospeo")
         prospeo_key = self.config.apis.get("prospeo_key", "")
         ninjapear_key = self.config.apis.get("ninjapear_key", "")
@@ -51,7 +51,10 @@ class SourcingService:
                 raise RuntimeError("Missing apis.prospeo_key or apis.ninjapear_key")
             contacts = ProxycurlClient(key).search_people(criteria, limit)
         contacts = [contact for contact in contacts if contact.get("linkedin_url")]
-        inserted, skipped = self.repo.upsert_contacts(contacts)
+        for contact in contacts:
+            if owner:
+                contact.setdefault("owner", owner)
+        inserted, skipped = self.repo.upsert_contacts(contacts, owner_user_id=owner_user_id)
         log("source.completed", inserted=inserted, skipped=skipped)
         return inserted, skipped
 

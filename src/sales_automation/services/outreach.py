@@ -29,7 +29,7 @@ class PersonalizedEmailService:
             }
         return self._ai_draft(contact)
 
-    def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom") -> dict[str, Any]:
+    def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom", user: dict[str, Any] | None = None) -> dict[str, Any]:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
@@ -56,13 +56,14 @@ class PersonalizedEmailService:
             subject,
             html_body,
             text,
-            metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode},
+            metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": user.get("id") if user else None},
         )
         metadata = {
             "dry_run": sender.get("dry_run", True),
             "mode": mode,
             "sender_id": sender.get("id"),
             "sender_email": sender.get("email"),
+            "user_id": user.get("id") if user else None,
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
         if recorded:
@@ -142,21 +143,21 @@ class OutreachService:
         self.config = config
         self.repo = repo
 
-    def send_due(self, limit: int) -> int:
+    def send_due(self, limit: int, *, user: dict[str, Any] | None = None) -> int:
         ai = self._ai_client()
         sent = 0
-        for contact in self.repo.due_for_sending(limit):
-            if self._send_contact(contact, ai):
+        for contact in self.repo.due_for_sending(limit, user=user):
+            if self._send_contact(contact, ai, user=user):
                 sent += 1
         log("send.completed", sent=sent)
         return sent
 
-    def send_contact(self, contact_id: int) -> bool:
+    def send_contact(self, contact_id: int, *, user: dict[str, Any] | None = None) -> bool:
         ai = self._ai_client()
-        contact = self.repo.due_contact_for_sending(contact_id)
+        contact = self.repo.due_contact_for_sending(contact_id, user=user)
         if not contact:
             return False
-        sent = self._send_contact(contact, ai)
+        sent = self._send_contact(contact, ai, user=user)
         log("send.contact_completed", contact_id=contact_id, sent=sent)
         return sent
 
@@ -171,7 +172,7 @@ class OutreachService:
             model=llm_cfg.get("model", "deepseek-chat"),
         )
 
-    def _send_contact(self, contact: dict[str, Any], ai: LLMClient) -> bool:
+    def _send_contact(self, contact: dict[str, Any], ai: LLMClient, *, user: dict[str, Any] | None = None) -> bool:
         step_cfg = self._next_step_config(contact)
         if not step_cfg or not self._step_due(contact, step_cfg):
             return False
@@ -195,12 +196,13 @@ class OutreachService:
             subject,
             html_body,
             text,
-            metadata={"contact_id": contact["id"], "sequence_step": step_cfg["step"]},
+            metadata={"contact_id": contact["id"], "sequence_step": step_cfg["step"], "user_id": user.get("id") if user else None},
         )
         metadata = {
             "dry_run": sender.get("dry_run", True),
             "sender_id": sender.get("id"),
             "sender_email": sender.get("email"),
+            "user_id": user.get("id") if user else None,
         }
         sent = self.repo.record_sent(contact["id"], int(step_cfg["step"]), subject, message_id, metadata)
         if sent:

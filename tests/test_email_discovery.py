@@ -37,6 +37,19 @@ def test_waterfall_continues_collecting_candidates_after_valid():
     assert {item["source"] for item in result["email_candidates"]} == {"prospeo", "public_website"}
 
 
+def test_provider_stats_recorder_is_called():
+    stats = []
+
+    result = EmailDiscoveryEngine([PersonalProvider()], stats_recorder=lambda provider, **fields: stats.append((provider, fields))).discover({}, "example.com")
+
+    assert result["email"] == "ada@example.com"
+    assert stats[0][0] == "PersonalProvider"
+    assert stats[0][1]["calls"] == 1
+    assert stats[0][1]["candidates"] == 1
+    assert stats[0][1]["valid_candidates"] == 1
+    assert stats[0][1]["selected"] == 1
+
+
 def test_github_provider_extracts_company_commit_email(monkeypatch):
     class Response:
         status = 200
