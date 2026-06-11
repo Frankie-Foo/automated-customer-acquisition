@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  salesbot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      SALESBOT_REQUIRE_PRODUCTION_READY: "true"
+      SALESBOT_DB_WAIT_TIMEOUT: 120
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8765"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - salesbot
+    environment:
+      SALES_DOMAIN: ${SALES_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  postgres-backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    command: >
+      sh -c 'while true; do
+        export PGPASSWORD="$${DB_PASSWORD}";
+        pg_dump -h "$${DB_HOST}" -p "$${DB_PORT}" -U "$${DB_USER}" "$${DB_NAME}" | gzip > "/backups/salesbot_$$(date +%F_%H%M%S).sql.gz";
+        find /backups -name "salesbot_*.sql.gz" -mtime +7 -delete;
+        sleep 86400;
+      done'
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

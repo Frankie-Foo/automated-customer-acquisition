@@ -1,9 +1,10 @@
-.env
-config.yaml
-.venv
 .git
-.pytest_cache
+.venv
 __pycache__
-logs
+*.pyc
+.pytest_cache
+.env
 outputs
-work
+deployment/backups
+*.sql.gz
+*.log

@@ -21,6 +21,8 @@ apis:
   resend_key: ${RESEND_API_KEY}
   sendgrid_key: ${SENDGRID_API_KEY}
   github_token: ${GITHUB_TOKEN}
+  google_cse_key: ${GOOGLE_CSE_API_KEY}
+  google_cse_id: ${GOOGLE_CSE_ID}
 
 llm:
   provider: deepseek
@@ -53,6 +55,13 @@ webhooks:
 sourcing:
   provider: prospeo
   default_limit: 100
+  linkedin_public_search:
+    max_queries_per_run: 10
+    min_lead_score: 50
+    auto_domain_lookup: true
+    auto_generate_email_candidates: true
+    auto_verify_threshold: 70
+    max_paid_verifications_per_contact: 2
 
 email_discovery:
   providers:

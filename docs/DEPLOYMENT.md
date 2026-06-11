@@ -51,20 +51,50 @@ RESEND_WEBHOOK_SECRET=
 
 可以从 `deployment/production.env.example` 复制生产环境变量模板。
 
-## Docker 部署
+## 推荐生产部署
+
+```bash
+cp deployment/production.env.example deployment/production.env
+vim deployment/production.env
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml up -d --build
+```
+
+这套 compose 会启动：
+
+- `postgres`：同机 PostgreSQL
+- `salesbot`：应用服务，启动时自动等待数据库并执行迁移
+- `caddy`：自动申请 HTTPS 证书并反向代理到应用
+- `postgres-backup`：每天自动备份数据库，默认保留 7 天
+
+生产访问地址是 `PUBLIC_BASE_URL`，例如：
+
+```text
+https://sales.frelys.xyz
+```
+
+查看状态：
+
+```bash
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml ps
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml logs -f salesbot
+```
+
+上线自检：
+
+```bash
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml exec salesbot salesbot --config config.yaml doctor --strict
+```
+
+如果使用外部云数据库，不使用 compose 内置 PostgreSQL，可以保留 `salesbot` 和 `caddy`，把 `deployment/production.env` 里的 `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME` 改为云数据库连接信息。
+
+## 本地或单容器调试
 
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
 ```
 
-服务默认监听：
-
-```text
-http://服务器IP:8765
-```
-
-生产建议用 Nginx/Caddy 反向代理到 HTTPS 域名。
+服务默认监听 `http://服务器IP:8765`。这个方式适合调试；正式上线优先用 `deployment/docker-compose.production.yml`。
 
 ## 创建销售账号
 
@@ -185,10 +215,27 @@ Warmup 建议：
 
 ## 备份
 
-上线后至少每天备份 PostgreSQL 一次，保留 7 天：
+生产 compose 已内置每日备份，文件在：
+
+```text
+deployment/backups/
+```
+
+手动备份：
 
 ```bash
-pg_dump "$DATABASE_URL" | gzip > "backup_$(date +%F).sql.gz"
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml exec postgres \
+  sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+  | gzip > "deployment/backups/manual_$(date +%F_%H%M%S).sql.gz"
+```
+
+恢复到空库前先停应用：
+
+```bash
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml stop salesbot
+gzip -dc deployment/backups/你的备份.sql.gz | docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml exec -T postgres \
+  sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml start salesbot
 ```
 
 上线前需要做一次恢复演练，确认备份文件能恢复到临时库。

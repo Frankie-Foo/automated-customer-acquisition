@@ -7,6 +7,7 @@ from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
 from .logging_utils import log
+from .production import readiness
 from .quotas import QuotaService
 from .services import EnrichmentService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
@@ -19,6 +20,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("migrate", parents=[config_parent])
+    doctor = sub.add_parser("doctor", parents=[config_parent])
+    doctor.add_argument("--strict", action="store_true", help="Exit non-zero when required production checks are not ready")
+    doctor.add_argument("--database-only", action="store_true", help="Only check PostgreSQL connectivity")
 
     source = sub.add_parser("source", parents=[config_parent])
     source.add_argument("--title")
@@ -81,6 +85,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate":
         applied = repo.db.migrate()
         log("migrate.completed", applied=applied)
+    elif args.command == "doctor":
+        db_ok = repo.db.is_available()
+        if args.database_only:
+            log("doctor.database", ok=db_ok)
+            return 0 if db_ok else 1
+        data = readiness(config)
+        checks = [{"name": "database_connection", "ok": db_ok, "required": True, "message": "PostgreSQL connection succeeds"}, *data["checks"]]
+        ready = db_ok and all(check["ok"] for check in checks if check.get("required"))
+        for check in checks:
+            log("doctor.check", name=check["name"], ok=check["ok"], required=check.get("required", True), message=check.get("message"))
+        log("doctor.completed", ready=ready)
+        if args.strict and not ready:
+            return 1
     elif args.command == "source":
         criteria = {
             "title": args.title or args.role,

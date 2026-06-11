@@ -10,17 +10,22 @@ from .config import AppConfig
 def readiness(config: AppConfig) -> dict[str, Any]:
     apis = config.apis
     sender = config.sender
+    sender_pool = config.raw.get("sender_pool", {})
     llm = config.raw.get("llm", {})
     app = config.raw.get("app", {})
     quotas = config.raw.get("quotas", {})
     checks = [
         _check("database", bool(config.database.get("host") and config.database.get("dbname")), "Database config is present"),
-        _check("lead_source", bool(apis.get("prospeo_key") or apis.get("ninjapear_key")), "Prospeo or NinjaPear key is required for automated lead sourcing"),
+        _check(
+            "lead_source",
+            bool(apis.get("prospeo_key") or apis.get("ninjapear_key") or (apis.get("google_cse_key") and apis.get("google_cse_id"))),
+            "Prospeo, NinjaPear, or Google CSE is required for automated lead sourcing",
+        ),
         _check("enrichment", bool(apis.get("hunter_key") or apis.get("prospeo_key") or apis.get("ninjapear_key")), "Hunter, Prospeo, or NinjaPear key is required for email enrichment"),
         _check("social_enrichment", bool(apis.get("peopledb_key") or apis.get("pdl_key")), "PeopleDB or People Data Labs key is optional for social profile enrichment"),
         _check("resend", bool(apis.get("resend_key")), "Resend key is required for real email sending"),
-        _check("sender_email", _valid_sender(sender.get("email")), "Sender email must be a verified-domain address, not a placeholder"),
-        _check("dry_run", sender.get("dry_run") is False, "Set sender.dry_run=false only after sender domain is verified"),
+        _check("sender_email", _sender_ready(sender, sender_pool), "At least one verified-domain sender email is required"),
+        _check("dry_run", _dry_run_ready(sender, sender_pool), "Set sender dry_run=false only after sender domain is verified"),
         _check("public_url", _public_base_url_ready(app.get("public_base_url")), "Use a public HTTPS PUBLIC_BASE_URL for unsubscribe links, tracking pixels, and webhooks"),
         _check("quotas", bool(quotas.get("global_daily_send_limit") and quotas.get("global_daily_source_limit")), "Global source/send quotas should be configured"),
         _check("admin_password", _admin_password_ready(), "Change SALESBOT_ADMIN_PASSWORD before production"),
@@ -42,6 +47,20 @@ def _valid_sender(email: str | None) -> bool:
     if not email or "@" not in email:
         return False
     return not email.endswith("@outreach-domain.com") and email != "you@outreach-domain.com"
+
+
+def _sender_ready(sender: dict[str, Any], sender_pool: dict[str, Any]) -> bool:
+    accounts = [account for account in sender_pool.get("accounts", []) if account.get("active", True)]
+    if accounts:
+        return all(_valid_sender(account.get("email")) for account in accounts)
+    return _valid_sender(sender.get("email"))
+
+
+def _dry_run_ready(sender: dict[str, Any], sender_pool: dict[str, Any]) -> bool:
+    accounts = [account for account in sender_pool.get("accounts", []) if account.get("active", True)]
+    if accounts:
+        return all(account.get("dry_run") is False for account in accounts)
+    return sender.get("dry_run") is False
 
 
 def _llm_ready(apis: dict[str, Any], llm: dict[str, Any]) -> bool:

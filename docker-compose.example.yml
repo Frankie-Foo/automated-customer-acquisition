@@ -21,6 +21,8 @@ services:
       PEOPLEDB_API_KEY: ${PEOPLEDB_API_KEY}
       PDL_API_KEY: ${PDL_API_KEY}
       PROXYCURL_KEY: ${PROXYCURL_KEY}
+      GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY}
+      GOOGLE_CSE_ID: ${GOOGLE_CSE_ID}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       RESEND_API_KEY: ${RESEND_API_KEY}
@@ -28,3 +30,10 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
       RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET}
+      SALESBOT_REQUIRE_PRODUCTION_READY: ${SALESBOT_REQUIRE_PRODUCTION_READY:-false}
+      SALESBOT_DB_WAIT_TIMEOUT: ${SALESBOT_DB_WAIT_TIMEOUT:-90}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/live', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

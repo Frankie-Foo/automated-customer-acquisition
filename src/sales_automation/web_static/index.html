@@ -196,6 +196,7 @@
       <section id="workbench" class="workbench">
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="source">自动获客</button>
+          <button class="tab" data-tab="linkedin-search">LinkedIn 公网搜索</button>
           <button class="tab" data-tab="csv">CSV 导入</button>
           <button class="tab" data-tab="manual">手动新增</button>
           <button class="tab" data-tab="runbook">批量处理</button>
@@ -217,6 +218,30 @@
           <div class="panel-actions">
             <button id="source-button" class="primary">开始自动获客</button>
           </div>
+        </div>
+
+        <div class="tab-panel" id="tab-linkedin-search">
+          <div class="helper">
+            <strong>从 Google 公开索引找 LinkedIn 个人主页</strong>
+            <p>不登录 LinkedIn，不抓后台页面；只解析公开搜索结果。第一版只入候选池和客户列表，不自动发信。</p>
+          </div>
+          <div class="form-grid">
+            <label>目标职位<input id="linkedin-role" placeholder="Brand Manager / Distributor / Founder" /></label>
+            <label>行业关键词<input id="linkedin-industry" placeholder="luxury / watch / consumer electronics" /></label>
+            <label>地区<input id="linkedin-location" placeholder="United States / UAE / Singapore" /></label>
+            <label>公司关键词<input id="linkedin-company" placeholder="Hermes / Rolex，可选" /></label>
+            <label>数量<input id="linkedin-limit" type="number" min="1" max="100" value="10" /></label>
+          </div>
+          <div class="option-row">
+            <label><input id="linkedin-auto-domain" type="checkbox" checked /> 自动补公司官网域名</label>
+            <label><input id="linkedin-auto-candidates" type="checkbox" checked /> 自动生成邮箱候选</label>
+            <label><input id="linkedin-high-verify" type="checkbox" checked /> 只验证高置信候选</label>
+          </div>
+          <div class="panel-actions">
+            <button id="linkedin-search-button" class="primary">开始公网搜索</button>
+            <button id="linkedin-refresh-button">刷新搜索结果</button>
+          </div>
+          <div id="linkedin-search-output" class="search-output"></div>
         </div>
 
         <div class="tab-panel" id="tab-csv">

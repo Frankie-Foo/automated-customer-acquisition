@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
@@ -451,16 +452,23 @@ class Repository:
         sql = """
         INSERT INTO contacts (
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
-          company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner
+          company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner,
+          email_candidates, lead_score, search_task_id
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
           %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
-          %(owner_user_id)s, %(owner)s
+          %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
             owner_user_id = COALESCE(contacts.owner_user_id, EXCLUDED.owner_user_id),
             owner = COALESCE(contacts.owner, EXCLUDED.owner),
+            lead_score = COALESCE(EXCLUDED.lead_score, contacts.lead_score),
+            search_task_id = COALESCE(EXCLUDED.search_task_id, contacts.search_task_id),
+            email_candidates = CASE
+                WHEN EXCLUDED.email_candidates <> '[]'::jsonb THEN EXCLUDED.email_candidates
+                ELSE contacts.email_candidates
+            END,
             email = CASE
                 WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email NOT LIKE '%%*%%' THEN EXCLUDED.email
                 ELSE contacts.email
@@ -494,6 +502,9 @@ class Repository:
                 defaults = _contact_defaults(contact)
                 defaults["owner_user_id"] = owner_user_id or contact.get("owner_user_id")
                 defaults["owner"] = contact.get("owner")
+                defaults["email_candidates"] = json.dumps(contact.get("email_candidates") or [])
+                defaults["lead_score"] = contact.get("lead_score")
+                defaults["search_task_id"] = contact.get("search_task_id")
                 row = conn.execute(sql, defaults).fetchone()
                 if row and row["inserted"]:
                     inserted += 1
@@ -504,6 +515,31 @@ class Repository:
     def get_contact(self, contact_id: int) -> dict[str, Any] | None:
         with self.db.connect() as conn:
             return conn.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,)).fetchone()
+
+    def get_contact_by_linkedin_url(self, linkedin_url: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute("SELECT * FROM contacts WHERE linkedin_url = %s", (linkedin_url,)).fetchone()
+
+    def find_duplicate_contact(self, contact: dict[str, Any]) -> dict[str, Any] | None:
+        first = (contact.get("first_name") or "").strip()
+        last = (contact.get("last_name") or "").strip()
+        company = (contact.get("company_name") or "").strip()
+        domain = (contact.get("company_domain") or "").strip().lower()
+        if not first or not last or not (company or domain):
+            return None
+        clauses = ["LOWER(first_name) = LOWER(%s)", "LOWER(last_name) = LOWER(%s)"]
+        params: list[Any] = [first, last]
+        if domain:
+            clauses.append("LOWER(COALESCE(company_domain, '')) = LOWER(%s)")
+            params.append(domain)
+        else:
+            clauses.append("LOWER(COALESCE(company_name, '')) = LOWER(%s)")
+            params.append(company)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"SELECT * FROM contacts WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
 
     def get_contact_for_user(self, contact_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
         if user.get("role") == "admin":
@@ -625,6 +661,7 @@ class Repository:
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
+                       c.lead_score, c.search_task_id,
                        COALESCE(ev.sent_count, 0) AS sent_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
                        COALESCE(ev.clicked_count, 0) AS clicked_count,
@@ -797,6 +834,218 @@ class Repository:
                 WHERE id = %(id)s
                 """,
                 {**payload, "email_candidates": json.dumps(payload["email_candidates"])},
+            )
+
+    def create_lead_search_task(
+        self,
+        *,
+        criteria: dict[str, Any],
+        provider: str,
+        requested_limit: int,
+        created_by_user_id: int,
+        owner_user_id: int,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO lead_search_tasks(criteria, provider, requested_limit, created_by_user_id, owner_user_id)
+                VALUES (%s::jsonb, %s, %s, %s, %s)
+                RETURNING id, criteria, provider, status, requested_limit, query_count, result_count,
+                          promoted_count, skipped_count, error, created_at, completed_at
+                """,
+                (json.dumps(criteria), provider, requested_limit, created_by_user_id, owner_user_id),
+            ).fetchone()
+
+    def complete_lead_search_task(
+        self,
+        task_id: int,
+        *,
+        query_count: int,
+        result_count: int,
+        promoted_count: int,
+        skipped_count: int,
+        error: str | None = None,
+    ) -> None:
+        status = "failed" if error else "completed"
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE lead_search_tasks
+                SET status = %s,
+                    query_count = %s,
+                    result_count = %s,
+                    promoted_count = %s,
+                    skipped_count = %s,
+                    error = %s,
+                    completed_at = NOW()
+                WHERE id = %s
+                """,
+                (status, query_count, result_count, promoted_count, skipped_count, error, task_id),
+            )
+
+    def list_lead_search_tasks(self, *, user: dict[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+        where = ""
+        params: list[Any] = []
+        if user.get("role") != "admin":
+            where = "WHERE owner_user_id = %s"
+            params.append(user["id"])
+        params.append(limit)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, criteria, provider, status, requested_limit, query_count, result_count,
+                       promoted_count, skipped_count, error, created_at, completed_at
+                FROM lead_search_tasks
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def create_lead_search_result(self, task_id: int, parsed: dict[str, Any], *, status: str) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO lead_search_results(
+                    task_id, raw_title, raw_snippet, raw_url, linkedin_url, first_name, last_name,
+                    job_title, company_name, company_domain, location, lead_score, email_candidates, status, failure_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                RETURNING id, task_id, raw_title, raw_snippet, raw_url, linkedin_url, first_name, last_name,
+                          job_title, company_name, company_domain, location, lead_score, email_candidates,
+                          promoted_contact_id, status, failure_reason, created_at
+                """,
+                (
+                    task_id,
+                    parsed.get("raw_title"),
+                    parsed.get("raw_snippet"),
+                    parsed.get("raw_url"),
+                    parsed.get("linkedin_url"),
+                    parsed.get("first_name"),
+                    parsed.get("last_name"),
+                    parsed.get("job_title"),
+                    parsed.get("company_name"),
+                    parsed.get("company_domain"),
+                    parsed.get("location"),
+                    int(parsed.get("lead_score") or 0),
+                    json.dumps(parsed.get("email_candidates") or []),
+                    status,
+                    parsed.get("failure_reason"),
+                ),
+            ).fetchone()
+
+    def list_lead_search_results(self, task_id: int, *, user: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT r.id, r.task_id, r.raw_title, r.raw_snippet, r.raw_url, r.linkedin_url,
+                       r.first_name, r.last_name, r.job_title, r.company_name, r.company_domain,
+                       r.location, r.lead_score, r.email_candidates, r.promoted_contact_id,
+                       r.status, r.failure_reason, r.created_at
+                FROM lead_search_results r
+                JOIN lead_search_tasks t ON t.id = r.task_id
+                WHERE r.task_id = %s
+                  AND (%s = 'admin' OR t.owner_user_id = %s)
+                ORDER BY r.lead_score DESC, r.created_at
+                LIMIT %s
+                """,
+                (task_id, user.get("role"), user["id"], limit),
+            ).fetchall()
+
+    def get_lead_search_result_for_user(self, result_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT r.*, t.owner_user_id
+                FROM lead_search_results r
+                JOIN lead_search_tasks t ON t.id = r.task_id
+                WHERE r.id = %s
+                  AND (%s = 'admin' OR t.owner_user_id = %s)
+                """,
+                (result_id, user.get("role"), user["id"]),
+            ).fetchone()
+
+    def mark_lead_search_result_promoted(self, result_id: int, contact_id: int) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE lead_search_results
+                SET promoted_contact_id = %s,
+                    status = 'promoted'
+                WHERE id = %s
+                """,
+                (contact_id, result_id),
+            )
+
+    def update_lead_search_result_status(self, result_id: int, status: str, failure_reason: str | None = None) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE lead_search_results SET status = %s, failure_reason = COALESCE(%s, failure_reason) WHERE id = %s",
+                (status, failure_reason, result_id),
+            )
+
+    def email_patterns_for_domain(self, domain: str) -> list[str]:
+        normalized = (domain or "").lower().removeprefix("www.")
+        if not normalized:
+            return []
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT email, first_name, last_name
+                FROM contacts
+                WHERE company_domain = %s
+                  AND email_status = 'valid'
+                  AND email IS NOT NULL
+                  AND email NOT LIKE '%%*%%'
+                ORDER BY enriched_at DESC NULLS LAST, created_at DESC
+                LIMIT 50
+                """,
+                (normalized,),
+            ).fetchall()
+        patterns: list[str] = []
+        for row in rows:
+            pattern = _infer_email_pattern(row["email"], row.get("first_name"), row.get("last_name"))
+            if pattern and pattern not in patterns:
+                patterns.append(pattern)
+        return patterns
+
+    def adopt_email_candidate(self, contact_id: int, selected: dict[str, Any]) -> None:
+        email = str(selected.get("email") or "").strip().lower()
+        if not email:
+            raise ValueError("email candidate is empty")
+        with self.db.connect() as conn:
+            contact = conn.execute("SELECT email_candidates FROM contacts WHERE id = %s", (contact_id,)).fetchone()
+            candidates = contact["email_candidates"] if contact and isinstance(contact["email_candidates"], list) else []
+            updated_candidates = []
+            for item in candidates:
+                if str(item.get("email") or "").lower() == email:
+                    updated_candidates.append({**item, **selected, "status": selected.get("status") or "valid", "adopted": True})
+                else:
+                    updated_candidates.append(item)
+            if not updated_candidates:
+                updated_candidates = [{**selected, "email": email, "adopted": True}]
+            conn.execute(
+                """
+                UPDATE contacts
+                SET email = %s,
+                    email_status = %s,
+                    email_source = %s,
+                    email_confidence = %s,
+                    email_candidates = %s::jsonb,
+                    status = 'enriched',
+                    enriched_at = NOW(),
+                    enrich_error = NULL
+                WHERE id = %s
+                """,
+                (
+                    email,
+                    selected.get("status") or "valid",
+                    selected.get("source"),
+                    int(selected.get("confidence") or 0),
+                    json.dumps(updated_candidates),
+                    contact_id,
+                ),
             )
 
     def record_email_provider_stat(
@@ -1269,3 +1518,29 @@ def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
         "source_person_id": contact.get("source_person_id"),
         "source": contact.get("source"),
     }
+
+
+def _infer_email_pattern(email: str, first_name: str | None, last_name: str | None) -> str | None:
+    if "@" not in str(email or ""):
+        return None
+    first = _email_token(first_name)
+    last = _email_token(last_name)
+    local = email.split("@", 1)[0].lower()
+    if first and last:
+        if local == f"{first}.{last}":
+            return "{first}.{last}"
+        if local == f"{first}{last}":
+            return "{first}{last}"
+        if local == f"{first[0]}.{last}":
+            return "{f}.{last}"
+        if local == f"{first}{last[0]}":
+            return "{first}{l}"
+        if local == f"{last}.{first}":
+            return "{last}.{first}"
+    if first and local == first:
+        return "{first}"
+    return None
+
+
+def _email_token(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())

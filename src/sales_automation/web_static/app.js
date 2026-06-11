@@ -4,6 +4,7 @@ const state = {
   search: "",
   user: null,
   usage: null,
+  linkedinTaskId: null,
 };
 
 const statusOrder = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"];
@@ -30,6 +31,7 @@ const loginError = document.querySelector("#login-error");
 const accountName = document.querySelector("#account-name");
 const quotaStatus = document.querySelector("#quota-status");
 const logoutButton = document.querySelector("#logout-button");
+const linkedinSearchOutput = document.querySelector("#linkedin-search-output");
 
 function showNotice(message, type = "") {
   notice.textContent = message;
@@ -111,6 +113,7 @@ async function refresh() {
     renderContacts(rows);
     await refreshOpsReport();
     await refreshAdminConsole();
+    await refreshLinkedInSearchTasks();
     refreshReadiness();
   } catch (error) {
     renderMetrics({ total_contacts: 0, sent_today: 0, statuses: {}, events_7d: {} });
@@ -503,6 +506,10 @@ function sourceLabel(source) {
     ninjapear: "NinjaPear",
     prospeo: "Prospeo",
     hunter: "Hunter",
+    linkedin_public_search: "LinkedIn 公网搜索",
+    linkedin_public_search_guess: "LinkedIn 推断",
+    "linkedin_public_search+hunter_verify": "LinkedIn+Hunter 验证",
+    "linkedin_public_search+prospeo": "LinkedIn+Prospeo",
     "pattern_guess+hunter_verify": "推断+验证",
   }[source] || source;
 }
@@ -893,6 +900,64 @@ document.querySelector("#source-button").addEventListener("click", async () => {
   }
 });
 
+document.querySelector("#linkedin-search-button").addEventListener("click", async () => {
+  try {
+    const payload = {
+      role: document.querySelector("#linkedin-role").value.trim(),
+      industry: document.querySelector("#linkedin-industry").value.trim(),
+      location: document.querySelector("#linkedin-location").value.trim(),
+      company_keyword: document.querySelector("#linkedin-company").value.trim(),
+      limit: Number(document.querySelector("#linkedin-limit").value || 10),
+      auto_domain_lookup: document.querySelector("#linkedin-auto-domain").checked,
+      auto_generate_email_candidates: document.querySelector("#linkedin-auto-candidates").checked,
+      high_confidence_verify: document.querySelector("#linkedin-high-verify").checked,
+    };
+    if (!payload.role && !payload.industry && !payload.company_keyword) {
+      throw new Error("至少填写职位、行业或公司关键词");
+    }
+    showNotice("正在通过 Google 公开索引搜索 LinkedIn 个人主页...");
+    const response = await api("/api/source/linkedin-public-search", { method: "POST", body: JSON.stringify(payload) });
+    updateUsage(response.usage);
+    state.linkedinTaskId = response.result.task_id;
+    showNotice(`LinkedIn 公网搜索完成：解析 ${response.result.results} 条，入库 ${response.result.promoted} 条，跳过 ${response.result.skipped} 条`);
+    await refresh();
+    await loadLinkedInSearchResults(state.linkedinTaskId);
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#linkedin-refresh-button").addEventListener("click", async () => {
+  try {
+    await refreshLinkedInSearchTasks();
+    if (state.linkedinTaskId) await loadLinkedInSearchResults(state.linkedinTaskId);
+    showNotice("LinkedIn 搜索结果已刷新");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
+linkedinSearchOutput.addEventListener("click", async (event) => {
+  const taskButton = event.target.closest("[data-search-task]");
+  const promoteButton = event.target.closest("[data-promote-result]");
+  try {
+    if (taskButton) {
+      state.linkedinTaskId = Number(taskButton.dataset.searchTask);
+      await loadLinkedInSearchResults(state.linkedinTaskId);
+      return;
+    }
+    if (promoteButton) {
+      const resultId = Number(promoteButton.dataset.promoteResult);
+      const result = await api("/api/search-results/promote", { method: "POST", body: JSON.stringify({ result_id: resultId }) });
+      showNotice(result.contact_id ? `已入库联系人 #${result.contact_id}` : "已处理，可能是重复客户");
+      await refresh();
+      if (state.linkedinTaskId) await loadLinkedInSearchResults(state.linkedinTaskId);
+    }
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
 contactsBody.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-life-action]");
   if (!button) return;
@@ -998,6 +1063,21 @@ activityList.addEventListener("click", async (event) => {
   }
 });
 
+workspaceContent.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-adopt-email]");
+  if (!button) return;
+  try {
+    const contactId = Number(button.dataset.contactId);
+    const email = button.dataset.adoptEmail;
+    await api("/api/email-candidates/adopt", { method: "POST", body: JSON.stringify({ contact_id: contactId, email }) });
+    showNotice(`已采用候选邮箱：${email}`);
+    await loadCustomerWorkspace(contactId);
+    await refresh();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+
 document.querySelector("#draft-email-button").addEventListener("click", async () => {
   try {
     if (!window.selectedContactId) throw new Error("请先选择客户");
@@ -1043,6 +1123,104 @@ document.querySelector("#send-custom-email-button").addEventListener("click", as
     showNotice(error.message, "error");
   }
 });
+
+async function refreshLinkedInSearchTasks() {
+  if (!linkedinSearchOutput || !state.user) return;
+  const response = await api("/api/search-tasks");
+  const tasks = response.tasks || [];
+  if (!tasks.length) {
+    linkedinSearchOutput.innerHTML = `
+      <div class="empty-state compact">
+        <strong>还没有 LinkedIn 公网搜索任务</strong>
+        <p>填写上方条件后开始搜索，结果会先进入候选池和客户列表，不会自动发邮件。</p>
+      </div>
+    `;
+    return;
+  }
+  if (!state.linkedinTaskId) state.linkedinTaskId = tasks[0].id;
+  linkedinSearchOutput.innerHTML = `
+    <div class="search-task-strip">
+      ${tasks.slice(0, 8).map((task) => `
+        <button class="${Number(task.id) === Number(state.linkedinTaskId) ? "active" : ""}" data-search-task="${task.id}">
+          <strong>#${task.id} ${escapeHtml(task.status)}</strong>
+          <span>${escapeHtml(searchTaskTitle(task))}</span>
+          <small>结果 ${task.result_count || 0} · 入库 ${task.promoted_count || 0}</small>
+        </button>
+      `).join("")}
+    </div>
+    <div id="linkedin-result-panel" class="search-result-panel"></div>
+  `;
+  await loadLinkedInSearchResults(state.linkedinTaskId);
+}
+
+async function loadLinkedInSearchResults(taskId) {
+  if (!taskId) return;
+  const panel = document.querySelector("#linkedin-result-panel");
+  if (!panel) return;
+  const response = await api(`/api/search-results?task_id=${encodeURIComponent(taskId)}`);
+  const rows = response.results || [];
+  panel.innerHTML = renderLinkedInSearchResults(rows);
+}
+
+function renderLinkedInSearchResults(rows) {
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>该任务暂无结果</strong><p>如果 Google CSE 没有返回内容，可以放宽职位或地区关键词。</p></div>`;
+  }
+  return `
+    <div class="linkedin-results">
+      ${rows.map((row) => `
+        <article class="linkedin-result ${escapeHtml(row.status || "")}">
+          <header>
+            <div>
+              <strong>${escapeHtml(fullName(row) || row.raw_title || "未解析姓名")}</strong>
+              <span>${escapeHtml(row.job_title || "职位待确认")} · ${escapeHtml(row.company_name || "公司待确认")}</span>
+            </div>
+            <b>${Number(row.lead_score || 0)}</b>
+          </header>
+          <p>${escapeHtml(row.raw_snippet || "")}</p>
+          <div class="result-meta">
+            <span>${escapeHtml(row.company_domain || "域名待补")}</span>
+            <span>${escapeHtml(row.location || "地区待确认")}</span>
+            <span>${escapeHtml(searchResultStatus(row.status))}</span>
+            ${row.failure_reason ? `<span class="danger-text">${escapeHtml(row.failure_reason)}</span>` : ""}
+          </div>
+          <div class="result-candidates">
+            ${renderInlineEmailCandidates(row.email_candidates || [])}
+          </div>
+          <footer>
+            <a href="${escapeHtml(row.linkedin_url || row.raw_url || "#")}" target="_blank" rel="noopener">打开 LinkedIn</a>
+            ${row.promoted_contact_id ? `<span>已入库 #${row.promoted_contact_id}</span>` : `<button data-promote-result="${row.id}">入库</button>`}
+          </footer>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderInlineEmailCandidates(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return `<span class="muted">暂无邮箱候选</span>`;
+  return candidates.slice(0, 4).map((item) => `
+    <span class="candidate-chip ${escapeHtml(item.category || "")}">
+      ${escapeHtml(item.email || "")}
+      <small>${Number(item.confidence || 0)}%</small>
+    </span>
+  `).join("");
+}
+
+function searchTaskTitle(task) {
+  const criteria = task.criteria || {};
+  return [criteria.role || criteria.title, criteria.industry, criteria.location, criteria.company_keyword].filter(Boolean).join(" / ") || "公开搜索";
+}
+
+function searchResultStatus(status) {
+  return {
+    candidate: "候选",
+    low_score: "低分跳过",
+    promoted: "已入库",
+    duplicate: "重复",
+    failed: "失败",
+  }[status] || status || "未知";
+}
 
 function lifecyclePayload(action, contactId) {
   const contact = findContactInTable(contactId);
@@ -1127,6 +1305,7 @@ function renderEmailCandidates(contact) {
       <span>${escapeHtml(candidateCategoryLabel(item.category))}</span>
       <span>${escapeHtml(item.status || "unknown")}</span>
       <b>${Number(item.confidence || 0)}%</b>
+      ${item.category === "personal_work" ? `<button data-adopt-email="${escapeHtml(item.email || "")}" data-contact-id="${contact.id}">采用</button>` : ""}
     </div>
   `).join("");
   return `

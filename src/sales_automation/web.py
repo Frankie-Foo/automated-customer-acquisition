@@ -15,6 +15,7 @@ from .config import load_config
 from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_contacts_csv
+from .linkedin_public_search import LinkedInPublicSearchService
 from .quotas import QuotaService
 from .sender_pool import SenderPoolManager
 from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
@@ -52,11 +53,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def make_handler(config, repo: Repository):
+    public_base_url = str(config.raw.get("app", {}).get("public_base_url") or "")
+    secure_cookie = public_base_url.startswith("https://")
+
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+                return
+            if parsed.path == "/api/live":
+                self._send_json({"ok": True, "data": {"status": "live"}})
                 return
             if parsed.path.startswith("/static/"):
                 self._send_file(STATIC_DIR / parsed.path.removeprefix("/static/"))
@@ -80,7 +87,7 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/logout":
                 token = parse_session_cookie(self.headers.get("Cookie"))
                 repo.delete_session(token)
-                self._send_json({"ok": True, "data": {"ok": True}}, headers={"Set-Cookie": clear_session_cookie()})
+                self._send_json({"ok": True, "data": {"ok": True}}, headers={"Set-Cookie": clear_session_cookie(secure=secure_cookie)})
                 return
             if parsed.path.startswith("/api/") and not self._require_user():
                 return
@@ -118,6 +125,14 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/ops-report":
                 self._json(lambda: repo.operations_report(user=self._current_user()))
+                return
+            if parsed.path == "/api/search-tasks":
+                self._json(lambda: {"tasks": repo.list_lead_search_tasks(user=self._current_user())})
+                return
+            if parsed.path == "/api/search-results":
+                qs = parse_qs(parsed.query)
+                task_id = int(qs.get("task_id", ["0"])[0])
+                self._json(lambda: {"results": repo.list_lead_search_results(task_id, user=self._current_user())})
                 return
             if parsed.path == "/api/admin/users":
                 admin = self._require_admin()
@@ -160,7 +175,7 @@ def make_handler(config, repo: Repository):
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
                 self._send_json(
                     {"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
-                    headers={"Set-Cookie": session_cookie(token)},
+                    headers={"Set-Cookie": session_cookie(token, secure=secure_cookie)},
                 )
                 return
             if parsed.path.startswith("/webhooks/"):
@@ -214,6 +229,36 @@ def make_handler(config, repo: Repository):
                     quota_result = QuotaService(config, repo).consume(user, "source", limit)
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(source_with_quota)
+                return
+            if parsed.path == "/api/source/linkedin-public-search":
+                criteria = {
+                    "role": payload.get("role", "") or payload.get("title", ""),
+                    "title": payload.get("role", "") or payload.get("title", ""),
+                    "industry": payload.get("industry", ""),
+                    "location": payload.get("location", ""),
+                    "company_keyword": payload.get("company_keyword", ""),
+                    "auto_domain_lookup": bool(payload.get("auto_domain_lookup", True)),
+                    "auto_generate_email_candidates": bool(payload.get("auto_generate_email_candidates", True)),
+                    "high_confidence_verify": bool(payload.get("high_confidence_verify", True)),
+                }
+                def linkedin_source_with_quota() -> dict[str, Any]:
+                    user = self._current_user()
+                    requested = int(payload.get("limit", 25))
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    remaining = min(snapshot["source"]["remaining_user"], snapshot["source"]["remaining_global"])
+                    limit = min(requested, max(0, remaining))
+                    if limit <= 0:
+                        raise RuntimeError("今日获客配额已用完")
+                    result = LinkedInPublicSearchService(config, repo).run(criteria, limit, user=user)
+                    quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("results") or 0))
+                    return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
+                self._json(linkedin_source_with_quota)
+                return
+            if parsed.path == "/api/search-results/promote":
+                self._json(lambda: LinkedInPublicSearchService(config, repo).promote_result(int(payload["result_id"]), user=self._current_user()))
+                return
+            if parsed.path == "/api/email-candidates/adopt":
+                self._json(lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()))
                 return
             if parsed.path == "/api/enrich":
                 self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
@@ -489,6 +534,7 @@ def make_handler(config, repo: Repository):
             body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._send_security_headers()
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
@@ -516,6 +562,7 @@ def make_handler(config, repo: Repository):
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", "attachment; filename=contacts.csv")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -527,6 +574,7 @@ def make_handler(config, repo: Repository):
             body = path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -535,6 +583,7 @@ def make_handler(config, repo: Repository):
             body = text.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -544,9 +593,18 @@ def make_handler(config, repo: Repository):
             self.send_response(200)
             self.send_header("Content-Type", "image/gif")
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; connect-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+            if secure_cookie:
+                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
         def log_message(self, format: str, *args: Any) -> None:
             return

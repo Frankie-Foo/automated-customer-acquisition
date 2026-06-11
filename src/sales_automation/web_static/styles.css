@@ -713,6 +713,26 @@ select:focus {
   display: block;
 }
 
+.option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 2px 0 14px;
+}
+
+.option-row label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  color: var(--text);
+}
+
+.option-row input {
+  width: auto;
+  min-height: auto;
+}
+
 .helper {
   padding: 12px 14px;
   margin-bottom: 14px;
@@ -835,7 +855,7 @@ select:focus {
 
 .candidate-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 110px 120px 90px 56px;
+  grid-template-columns: minmax(220px, 1fr) 110px 120px 90px 56px auto;
   gap: 8px;
   align-items: center;
   padding: 8px 10px;
@@ -856,6 +876,12 @@ select:focus {
 
 .candidate-row span {
   color: var(--muted);
+  font-size: 12px;
+}
+
+.candidate-row button {
+  min-height: 28px;
+  padding: 0 10px;
   font-size: 12px;
 }
 
@@ -1029,6 +1055,130 @@ textarea {
   grid-template-columns: minmax(220px, 420px);
 }
 
+.search-output {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.search-task-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.search-task-strip button {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  min-height: 86px;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--surface-soft);
+}
+
+.search-task-strip button.active {
+  border-color: #8bd5c6;
+  background: var(--surface-tint);
+}
+
+.search-task-strip span,
+.search-task-strip small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-result-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.linkedin-results {
+  display: grid;
+  gap: 10px;
+}
+
+.linkedin-result {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.linkedin-result.promoted {
+  border-color: #8bd5c6;
+  background: #fbfffe;
+}
+
+.linkedin-result.low_score {
+  border-color: #f4c472;
+  background: #fffaf1;
+}
+
+.linkedin-result header,
+.linkedin-result footer,
+.result-meta,
+.result-candidates {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.linkedin-result header {
+  justify-content: space-between;
+}
+
+.linkedin-result header span,
+.linkedin-result p,
+.linkedin-result footer,
+.result-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.linkedin-result header b {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 18px;
+}
+
+.result-meta span,
+.candidate-chip {
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.candidate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.candidate-chip small {
+  color: var(--muted);
+}
+
+.candidate-chip.company_generic {
+  border-color: #f3c37a;
+  background: #fff9ed;
+}
+
+.danger-text {
+  color: var(--danger) !important;
+}
+
 .list-section {
   padding: 16px;
 }
@@ -1183,6 +1333,13 @@ tbody tr:hover {
   padding: 34px 12px;
   text-align: center;
   color: var(--muted);
+}
+
+.empty-state.compact {
+  padding: 18px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
 }
 
 .empty-state strong {

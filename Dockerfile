@@ -9,10 +9,16 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY templates ./templates
 COPY migrations ./migrations
+COPY scripts ./scripts
 COPY config.example.yaml ./config.yaml
 
 RUN pip install --no-cache-dir .
+RUN chmod +x /app/scripts/docker-entrypoint.sh
 
 EXPOSE 8765
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/live', timeout=3).read()"
+
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["salesbot-web", "--config", "config.yaml", "--host", "0.0.0.0", "--port", "8765"]

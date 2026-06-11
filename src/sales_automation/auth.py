@@ -44,23 +44,27 @@ def parse_session_cookie(header: str | None) -> str | None:
     return morsel.value if morsel else None
 
 
-def session_cookie(token: str, *, max_age_seconds: int = 60 * 60 * 24 * 7) -> str:
+def session_cookie(token: str, *, max_age_seconds: int = 60 * 60 * 24 * 7, secure: bool = False) -> str:
     jar = cookies.SimpleCookie()
     jar[SESSION_COOKIE] = token
     jar[SESSION_COOKIE]["path"] = "/"
     jar[SESSION_COOKIE]["httponly"] = True
     jar[SESSION_COOKIE]["samesite"] = "Lax"
     jar[SESSION_COOKIE]["max-age"] = str(max_age_seconds)
+    if secure:
+        jar[SESSION_COOKIE]["secure"] = True
     return jar.output(header="").strip()
 
 
-def clear_session_cookie() -> str:
+def clear_session_cookie(*, secure: bool = False) -> str:
     jar = cookies.SimpleCookie()
     jar[SESSION_COOKIE] = ""
     jar[SESSION_COOKIE]["path"] = "/"
     jar[SESSION_COOKIE]["httponly"] = True
     jar[SESSION_COOKIE]["samesite"] = "Lax"
     jar[SESSION_COOKIE]["max-age"] = "0"
+    if secure:
+        jar[SESSION_COOKIE]["secure"] = True
     return jar.output(header="").strip()
 
 
