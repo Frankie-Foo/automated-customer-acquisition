@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from sales_automation.rendering import render_string, render_template
+from sales_automation.web import static_path
 
 
 def test_render_string_replaces_missing_with_empty():
@@ -13,4 +14,10 @@ def test_render_template_returns_text_and_html(tmp_path: Path):
     text, html = render_template(path, {"first_name": "Ada"})
     assert text == "Hi Ada\n<a>"
     assert "Hi Ada<br>&lt;a&gt;" == html
+
+
+def test_web_static_files_are_package_resources():
+    assert static_path("index.html").exists()
+    assert static_path("app.js").exists()
+    assert static_path("styles.css").exists()
 

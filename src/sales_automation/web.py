@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+from importlib import resources
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +30,10 @@ def normalize_company_website(value: str | None) -> str:
     return _domain_from_website(value) or ""
 
 STATIC_DIR = Path(__file__).parent / "web_static"
+
+
+def static_path(name: str) -> Path:
+    return Path(str(resources.files("sales_automation").joinpath("web_static", name)))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,13 +65,13 @@ def make_handler(config, repo: Repository):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
-                self._send_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+                self._send_file(static_path("index.html"), "text/html; charset=utf-8")
                 return
             if parsed.path == "/api/live":
                 self._send_json({"ok": True, "data": {"status": "live"}})
                 return
             if parsed.path.startswith("/static/"):
-                self._send_file(STATIC_DIR / parsed.path.removeprefix("/static/"))
+                self._send_file(static_path(parsed.path.removeprefix("/static/")))
                 return
             if parsed.path == "/api/health":
                 health = check_readiness(config, repo)
