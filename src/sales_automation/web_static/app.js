@@ -28,6 +28,8 @@ const readyPill = document.querySelector("#ready-pill");
 const loginScreen = document.querySelector("#login-screen");
 const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
+const passwordChangeForm = document.querySelector("#password-change-form");
+const passwordChangeError = document.querySelector("#password-change-error");
 const accountName = document.querySelector("#account-name");
 const quotaStatus = document.querySelector("#quota-status");
 const logoutButton = document.querySelector("#logout-button");
@@ -63,6 +65,10 @@ async function loadSession() {
     state.user = session.user;
     state.usage = session.usage;
     renderAccount();
+    if (state.user.must_change_password) {
+      showPasswordChange();
+      return;
+    }
     hideLogin();
     await refresh();
   } catch (error) {
@@ -72,11 +78,21 @@ async function loadSession() {
 
 function showLogin() {
   loginScreen.classList.remove("hidden");
+  loginForm.classList.remove("hidden");
+  passwordChangeForm.classList.add("hidden");
 }
 
 function hideLogin() {
   loginScreen.classList.add("hidden");
   loginError.textContent = "";
+  passwordChangeError.textContent = "";
+}
+
+function showPasswordChange() {
+  loginScreen.classList.remove("hidden");
+  loginForm.classList.add("hidden");
+  passwordChangeForm.classList.remove("hidden");
+  passwordChangeError.textContent = "";
 }
 
 function renderAccount() {
@@ -328,7 +344,10 @@ function renderAdminUsers(users) {
             <td>${escapeHtml(user.role)}</td>
             <td><input class="mini-input" data-user-source="${user.id}" type="number" value="${user.daily_source_limit}" /></td>
             <td><input class="mini-input" data-user-send="${user.id}" type="number" value="${user.daily_send_limit}" /></td>
-            <td>${user.active ? "启用" : "停用"}</td>
+            <td>
+              ${user.active ? "启用" : "停用"}
+              ${user.must_change_password ? `<div class="muted">需改密</div>` : ""}
+            </td>
             <td class="row-actions">
               <button data-admin-user-save="${user.id}">保存</button>
               <button data-admin-user-toggle="${user.id}" data-active="${user.active ? "false" : "true"}">${user.active ? "停用" : "启用"}</button>
@@ -691,20 +710,53 @@ loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginError.textContent = "";
   try {
+    const password = document.querySelector("#login-password").value;
     const session = await api("/api/login", {
       method: "POST",
       body: JSON.stringify({
         username: document.querySelector("#login-username").value.trim(),
-        password: document.querySelector("#login-password").value,
+        password,
       }),
     });
     state.user = session.user;
     state.usage = session.usage;
+    document.querySelector("#current-password").value = password;
     renderAccount();
+    if (state.user.must_change_password) {
+      showPasswordChange();
+      return;
+    }
     hideLogin();
     await refresh();
   } catch (error) {
     loginError.textContent = error.message;
+  }
+});
+
+passwordChangeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  passwordChangeError.textContent = "";
+  try {
+    const currentPassword = document.querySelector("#current-password").value;
+    const newPassword = document.querySelector("#new-password").value;
+    const confirmPassword = document.querySelector("#confirm-password").value;
+    if (newPassword.length < 12) throw new Error("新密码至少 12 位");
+    if (newPassword !== confirmPassword) throw new Error("两次输入的新密码不一致");
+    const result = await api("/api/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    state.user = result.user;
+    document.querySelector("#login-password").value = "";
+    document.querySelector("#current-password").value = "";
+    document.querySelector("#new-password").value = "";
+    document.querySelector("#confirm-password").value = "";
+    renderAccount();
+    hideLogin();
+    showNotice("密码已更新");
+    await refresh();
+  } catch (error) {
+    passwordChangeError.textContent = error.message;
   }
 });
 

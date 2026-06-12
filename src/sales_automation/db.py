@@ -108,15 +108,20 @@ class Repository:
         role: str = "sales",
         daily_source_limit: int = 100,
         daily_send_limit: int = 100,
+        must_change_password: bool = True,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
             return conn.execute(
                 """
-                INSERT INTO sales_users(username, password_hash, display_name, role, daily_source_limit, daily_send_limit)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                INSERT INTO sales_users(
+                    username, password_hash, display_name, role, daily_source_limit, daily_send_limit,
+                    must_change_password, password_changed_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          active, must_change_password, created_at
                 """,
-                (username, hash_password(password), display_name, role, daily_source_limit, daily_send_limit),
+                (username, hash_password(password), display_name, role, daily_source_limit, daily_send_limit, must_change_password, must_change_password),
             ).fetchone()
 
     def list_users(self) -> list[dict[str, Any]]:
@@ -124,7 +129,7 @@ class Repository:
             return conn.execute(
                 """
                 SELECT u.id, u.username, u.display_name, u.role, u.daily_source_limit, u.daily_send_limit,
-                       u.active, u.created_at,
+                       u.active, u.must_change_password, u.created_at,
                        COALESCE(usage.source_count, 0) AS source_count_today,
                        COALESCE(usage.send_count, 0) AS send_count_today
                 FROM sales_users u
@@ -154,7 +159,8 @@ class Repository:
                     daily_send_limit = COALESCE(%s, daily_send_limit),
                     active = COALESCE(%s, active)
                 WHERE id = %s
-                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          active, must_change_password, created_at
                 """,
                 (display_name, role, daily_source_limit, daily_send_limit, active, user_id),
             ).fetchone()
@@ -164,11 +170,34 @@ class Repository:
             return conn.execute(
                 """
                 UPDATE sales_users
-                SET password_hash = %s
+                SET password_hash = %s,
+                    must_change_password = TRUE,
+                    password_changed_at = NULL
                 WHERE id = %s
-                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit, active, created_at
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          active, must_change_password, created_at
                 """,
                 (hash_password(password), user_id),
+            ).fetchone()
+
+    def change_own_password(self, user_id: int, current_password: str, new_password: str) -> dict[str, Any]:
+        if len(new_password or "") < 12:
+            raise RuntimeError("新密码至少 12 位")
+        with self.db.connect() as conn:
+            user = conn.execute("SELECT * FROM sales_users WHERE id = %s AND active = TRUE", (user_id,)).fetchone()
+            if not user or not verify_password(current_password, user["password_hash"]):
+                raise RuntimeError("当前密码不正确")
+            return conn.execute(
+                """
+                UPDATE sales_users
+                SET password_hash = %s,
+                    must_change_password = FALSE,
+                    password_changed_at = NOW()
+                WHERE id = %s
+                RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          active, must_change_password, created_at
+                """,
+                (hash_password(new_password), user_id),
             ).fetchone()
 
     def create_session(self, user_id: int) -> str:

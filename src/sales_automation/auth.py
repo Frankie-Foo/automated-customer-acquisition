@@ -87,4 +87,5 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "role": user["role"],
         "daily_source_limit": user["daily_source_limit"],
         "daily_send_limit": user["daily_send_limit"],
+        "must_change_password": bool(user.get("must_change_password", False)),
     }

@@ -185,6 +185,19 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/migrate":
                 self._json(lambda: {"applied": repo.db.migrate()})
                 return
+            if parsed.path == "/api/change-password":
+                def change_password() -> dict[str, Any]:
+                    user = self._current_user()
+                    if not user:
+                        raise RuntimeError("unauthorized")
+                    updated = repo.change_own_password(
+                        int(user["id"]),
+                        payload.get("current_password") or "",
+                        payload.get("new_password") or "",
+                    )
+                    return {"user": public_user(updated)}
+                self._json(change_password)
+                return
             if parsed.path == "/api/contacts":
                 def create_contact() -> dict[str, Any]:
                     user = self._current_user()
@@ -410,6 +423,7 @@ def make_handler(config, repo: Repository):
                         role=payload.get("role") or "sales",
                         daily_source_limit=int(payload.get("daily_source_limit") or 100),
                         daily_send_limit=int(payload.get("daily_send_limit") or 100),
+                        must_change_password=True,
                     )
                 self._json(add_user)
                 return

@@ -17,6 +17,16 @@
         <button class="primary" type="submit">登录</button>
         <div id="login-error" class="login-error"></div>
       </form>
+      <form id="password-change-form" class="login-card hidden">
+        <div class="mark">LA</div>
+        <h1>首次登录请修改密码</h1>
+        <p>为了账号安全，请把管理员分配的临时密码改成你自己的密码。</p>
+        <label>当前临时密码<input id="current-password" type="password" autocomplete="current-password" /></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" placeholder="至少 12 位" /></label>
+        <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" /></label>
+        <button class="primary" type="submit">保存新密码</button>
+        <div id="password-change-error" class="login-error"></div>
+      </form>
     </section>
 
     <aside class="sidebar">

@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     user_add.add_argument("--role", default="sales")
     user_add.add_argument("--source-limit", type=int, default=100)
     user_add.add_argument("--send-limit", type=int, default=100)
+    user_add.add_argument("--no-force-password-change", action="store_true")
 
     sub.add_parser("user-list", parents=[config_parent])
 
@@ -148,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             role=args.role,
             daily_source_limit=args.source_limit,
             daily_send_limit=args.send_limit,
+            must_change_password=not args.no_force_password_change,
         )
         log("user.added", id=user["id"], username=user["username"], role=user["role"])
     elif args.command == "user-list":
