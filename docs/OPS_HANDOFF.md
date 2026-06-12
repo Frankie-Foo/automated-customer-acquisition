@@ -93,23 +93,39 @@ GOOGLE_CSE_API_KEY=
 GOOGLE_CSE_ID=
 ```
 
-启动：
+如果使用 compose 内置 PostgreSQL，启动：
 
 ```bash
 docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml up -d --build
 ```
 
+如果已经有外部 PostgreSQL，不要启动内置 `postgres` 服务，改用：
+
+```bash
+docker compose --env-file deployment/production.env -f deployment/docker-compose.external-db.yml up -d --build
+```
+
+外部数据库模式下，`deployment/production.env` 里的数据库配置应指向外部 PostgreSQL：
+
+```env
+DB_HOST=外部数据库IP或域名
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=外部数据库密码
+DB_NAME=外部数据库名
+```
+
 查看状态：
 
 ```bash
-docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml ps
-docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml logs -f salesbot
+docker compose --env-file deployment/production.env -f deployment/docker-compose.external-db.yml ps
+docker compose --env-file deployment/production.env -f deployment/docker-compose.external-db.yml logs -f salesbot
 ```
 
 生产自检：
 
 ```bash
-docker compose --env-file deployment/production.env -f deployment/docker-compose.production.yml exec salesbot salesbot --config config.yaml doctor --strict
+docker compose --env-file deployment/production.env -f deployment/docker-compose.external-db.yml exec salesbot salesbot --config config.yaml doctor --strict
 ```
 
 通过后访问：

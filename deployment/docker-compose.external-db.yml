@@ -1,0 +1,33 @@
+services:
+  salesbot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      SALESBOT_REQUIRE_PRODUCTION_READY: "true"
+      SALESBOT_DB_WAIT_TIMEOUT: 120
+    expose:
+      - "8765"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - salesbot
+    environment:
+      SALES_DOMAIN: ${SALES_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
