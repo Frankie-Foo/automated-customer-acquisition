@@ -108,7 +108,7 @@ function ReadinessPanel() {
   return (
     <>
       <div className="side-heading"><h2>生产状态</h2><span className={data?.ready ? "ready" : "missing"}>{data?.ready ? "Ready" : "Action needed"}</span></div>
-      <div className="readiness">
+      <div className="readiness" id="readiness">
         {(data?.checks || []).map((check) => <div key={check.name} className={`check ${check.ok ? "ok" : "missing"}`} title={check.message || ""}><span>{readinessLabel(check.name)}</span><strong>{check.ok ? "OK" : (check.required ? "缺失" : "可选")}</strong></div>)}
       </div>
     </>
@@ -132,7 +132,7 @@ function OpsReport({ report, user }) {
   const events = report.events || {};
   const isTeam = (report.scope || "") === "team" || user.role === "admin";
   return (
-    <section className="ops-report">
+    <section className="ops-report" id="ops-report">
       <div className="followup-head"><div><span className="eyebrow">Team operations</span><h2>团队运营与日报</h2></div><p>查看今日获客、有效邮箱、发送、打开、回复、退信和各销售配额使用情况。</p></div>
       <div className="ops-cards">
         <OpsCard label="今日新增线索" value={totals.new_contacts_today} />
@@ -146,7 +146,7 @@ function OpsReport({ report, user }) {
       <div className="ops-grid">
         <section><h3>销售配额日报</h3><table className="mini-table"><thead><tr><th>销售</th><th>获客</th><th>发信</th><th>客户</th><th>状态</th></tr></thead><tbody>{(report.by_user || []).map((row) => <tr key={row.id}><td>{row.display_name || row.username}</td><td>{row.source_count_today || 0}/{row.daily_source_limit}</td><td>{row.send_count_today || 0}/{row.daily_send_limit}</td><td>{row.owned_contacts || 0}</td><td>{row.active ? "启用" : "停用"}</td></tr>)}</tbody></table></section>
         {isTeam && <section><h3>邮箱 Provider 统计</h3><table className="mini-table"><thead><tr><th>Provider</th><th>调用</th><th>候选</th><th>Valid</th><th>选中</th><th>错误</th></tr></thead><tbody>{(report.provider_stats || []).slice(0, 8).map((row) => <tr key={`${row.provider}-${row.stat_date}`}><td>{row.provider}</td><td>{row.calls || 0}</td><td>{row.candidates || 0}</td><td>{row.valid_candidates || 0}</td><td>{row.selected || 0}</td><td>{row.errors || 0}</td></tr>)}</tbody></table></section>}
-        <section><h3>失败原因</h3><ul className="failure-list">{(report.failures || []).slice(0, 6).map((item) => <li key={item.reason}><span>{item.reason}</span><b>{item.count}</b></li>) || <li><span>暂无失败</span><b>0</b></li>}</ul></section>
+        <section><h3>失败原因</h3><ul className="failure-list">{(report.failures || []).length ? (report.failures || []).slice(0, 6).map((item) => <li key={item.reason}><span>{item.reason}</span><b>{item.count}</b></li>) : <li><span>暂无失败</span><b>0</b></li>}</ul></section>
       </div>
     </section>
   );
@@ -160,7 +160,7 @@ function Followups({ contacts }) {
   const openedNoReply = contacts.filter((c) => Number(c.opened_count || 0) > 0 && !["replied", "bounced", "unsubscribed"].includes(c.status));
   const replied = contacts.filter((c) => c.status === "replied" || Number(c.replied_count || 0) > 0);
   const bounced = contacts.filter((c) => c.status === "bounced" || Number(c.bounced_count || 0) > 0);
-  return <section className="followups"><div className="followup-head"><div><span className="eyebrow">Sales follow-up</span><h2>今日待办</h2></div><p>优先处理已打开未回复、已回复和退信客户。</p></div><div className="followup-grid"><FollowupCard title="已打开未回复" hint="建议今天人工跟进或准备下一封" tone="hot" contacts={openedNoReply} /><FollowupCard title="已回复" hint="需要销售马上接手沟通" tone="reply" contacts={replied} /><FollowupCard title="退信需处理" hint="检查邮箱质量或加入黑名单" tone="risk" contacts={bounced} /></div></section>;
+  return <section className="followups" id="followups"><div className="followup-head"><div><span className="eyebrow">Sales follow-up</span><h2>今日待办</h2></div><p>优先处理已打开未回复、已回复和退信客户。</p></div><div className="followup-grid"><FollowupCard title="已打开未回复" hint="建议今天人工跟进或准备下一封" tone="hot" contacts={openedNoReply} /><FollowupCard title="已回复" hint="需要销售马上接手沟通" tone="reply" contacts={replied} /><FollowupCard title="退信需处理" hint="检查邮箱质量或加入黑名单" tone="risk" contacts={bounced} /></div></section>;
 }
 
 function FollowupCard({ title, hint, tone, contacts }) {
@@ -169,7 +169,7 @@ function FollowupCard({ title, hint, tone, contacts }) {
 
 function Lifecycle({ lifecycle, contacts }) {
   const stages = lifecycle.stages || {};
-  return <section className="lifecycle-board"><div className="followup-head"><div><span className="eyebrow">Customer lifecycle</span><h2>客户生命周期漏斗</h2></div><p>从回复、沟通、约会、试订单到签约维护，持续沉淀客户画像。</p></div><div className="lifecycle-grid">{lifecycleStages.map(([key, label]) => { const examples = contacts.filter((c) => c.lifecycle_stage === key).slice(0, 2); return <article key={key} className={`lifecycle-card ${key}`}><strong>{label}</strong><b>{stages[key] || 0}</b><div>{examples.length ? examples.map((c) => <span key={c.id}>{fullName(c)}</span>) : <span>暂无客户</span>}</div></article>; })}</div></section>;
+  return <section className="lifecycle-board" id="lifecycle-board"><div className="followup-head"><div><span className="eyebrow">Customer lifecycle</span><h2>客户生命周期漏斗</h2></div><p>从回复、沟通、约会、试订单到签约维护，持续沉淀客户画像。</p></div><div className="lifecycle-grid">{lifecycleStages.map(([key, label]) => { const examples = contacts.filter((c) => c.lifecycle_stage === key).slice(0, 2); return <article key={key} className={`lifecycle-card ${key}`}><strong>{label}</strong><b>{stages[key] || 0}</b><div>{examples.length ? examples.map((c) => <span key={c.id}>{fullName(c)}</span>) : <span>暂无客户</span>}</div></article>; })}</div></section>;
 }
 
 function fullName(contact) {

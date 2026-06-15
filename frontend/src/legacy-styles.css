@@ -177,7 +177,7 @@ p {
   font-size: 14px;
 }
 
-#ready-pill {
+.side-heading > span {
   padding: 4px 9px;
   border-radius: 999px;
   background: var(--surface-soft);
@@ -186,13 +186,13 @@ p {
   font-weight: 900;
 }
 
-#ready-pill.ready {
+.side-heading > span.ready {
   background: var(--ok-bg);
   color: var(--accent-strong);
   border-color: #8bd5c6;
 }
 
-#ready-pill.missing {
+.side-heading > span.missing {
   background: var(--bad-bg);
   color: var(--danger);
   border-color: #f1aaa3;
@@ -516,24 +516,6 @@ select:focus {
   border-color: rgba(220, 38, 38, 0.28);
   background: #fff1f2;
   color: var(--danger);
-}
-
-.react-contacts-enabled .legacy-pipeline {
-  display: none;
-}
-
-.react-workspace-enabled .legacy-workspace {
-  display: none;
-}
-
-.react-workbench-enabled .legacy-workbench {
-  display: none;
-}
-
-.react-dashboard-enabled #metrics,
-.react-dashboard-enabled .legacy-dashboard,
-.react-dashboard-enabled .legacy-readiness {
-  display: none;
 }
 
 .admin-data-table {
