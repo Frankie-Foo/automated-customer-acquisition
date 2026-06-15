@@ -811,6 +811,7 @@ async function runAction(action) {
   await refresh();
 }
 
+if (!window.SALESBOT_REACT_WORKBENCH) {
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", async () => {
     try {
@@ -1140,6 +1141,7 @@ linkedinSearchOutput.addEventListener("click", async (event) => {
     showNotice(error.message, "error");
   }
 });
+}
 
 contactsBody.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-life-action]");
