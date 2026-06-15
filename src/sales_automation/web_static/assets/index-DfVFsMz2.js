@@ -130,5 +130,5 @@ Error generating stack: `+a.message+`
 
   <section id="admin-console" class="admin-console hidden"></section>
 </main>
-`;function Dy(){return D.useEffect(()=>{let s=!0;return window.SALESBOT_REACT_AUTH=!0,window.SALESBOT_REACT_ADMIN=!0,window.SALESBOT_REACT_CONTACTS=!0,window.SALESBOT_REACT_WORKSPACE=!0,window.SALESBOT_REACT_WORKBENCH=!0,window.SALESBOT_REACT_DASHBOARD=!0,Tv(()=>import("./legacy-controller-rDLgdzFp.js"),[]).catch(y=>{s&&console.error("Failed to load dashboard controller",y)}),()=>{s=!1}},[]),i.jsxs(i.Fragment,{children:[i.jsx("div",{dangerouslySetInnerHTML:{__html:My}}),i.jsx(zv,{}),i.jsx(Nv,{}),i.jsx(Hv,{}),i.jsx(Kv,{}),i.jsx(uy,{}),i.jsx(_y,{})]})}jv.createRoot(document.getElementById("root")).render(i.jsx(yv.StrictMode,{children:i.jsx(Dy,{})}));export{el as a};
-//# sourceMappingURL=index-B6R9SEF6.js.map
+`;function Dy(){return D.useEffect(()=>{let s=!0;return window.SALESBOT_REACT_AUTH=!0,window.SALESBOT_REACT_ADMIN=!0,window.SALESBOT_REACT_CONTACTS=!0,window.SALESBOT_REACT_WORKSPACE=!0,window.SALESBOT_REACT_WORKBENCH=!0,window.SALESBOT_REACT_DASHBOARD=!0,Tv(()=>import("./legacy-controller-BvYv1Ghp.js"),[]).catch(y=>{s&&console.error("Failed to load dashboard controller",y)}),()=>{s=!1}},[]),i.jsxs(i.Fragment,{children:[i.jsx("div",{className:"app-shell",dangerouslySetInnerHTML:{__html:My}}),i.jsx(zv,{}),i.jsx(Nv,{}),i.jsx(Hv,{}),i.jsx(Kv,{}),i.jsx(uy,{}),i.jsx(_y,{})]})}jv.createRoot(document.getElementById("root")).render(i.jsx(yv.StrictMode,{children:i.jsx(Dy,{})}));export{el as a};
+//# sourceMappingURL=index-DfVFsMz2.js.map

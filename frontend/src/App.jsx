@@ -28,7 +28,7 @@ export default function App() {
 
   return (
     <>
-      <div dangerouslySetInnerHTML={{ __html: legacyMarkup }} />
+      <div className="app-shell" dangerouslySetInnerHTML={{ __html: legacyMarkup }} />
       <AuthGatePortal />
       <AdminConsolePortal />
       <ContactsPipelinePortal />
