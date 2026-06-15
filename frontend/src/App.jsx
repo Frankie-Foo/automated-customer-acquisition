@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import AuthGatePortal from "./AuthGate.jsx";
 import AdminConsolePortal from "./AdminConsole.jsx";
 import legacyMarkup from "./legacyMarkup.html?raw";
 import "./legacy-styles.css";
@@ -6,6 +7,7 @@ import "./legacy-styles.css";
 export default function App() {
   useEffect(() => {
     let mounted = true;
+    window.SALESBOT_REACT_AUTH = true;
     window.SALESBOT_REACT_ADMIN = true;
     import("./legacy-controller.js").catch((error) => {
       if (!mounted) return;
@@ -19,6 +21,7 @@ export default function App() {
   return (
     <>
       <div dangerouslySetInnerHTML={{ __html: legacyMarkup }} />
+      <AuthGatePortal />
       <AdminConsolePortal />
     </>
   );

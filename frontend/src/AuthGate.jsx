@@ -1,0 +1,166 @@
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { api } from "./api.js";
+
+export default function AuthGatePortal() {
+  const [target, setTarget] = useState(null);
+
+  useEffect(() => {
+    setTarget(document.querySelector("#login-screen"));
+  }, []);
+
+  if (!target) return null;
+  return createPortal(<AuthGate />, target);
+}
+
+function AuthGate() {
+  const [mode, setMode] = useState("checking");
+  const [user, setUser] = useState(null);
+  const [usage, setUsage] = useState(null);
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const screen = document.querySelector("#login-screen");
+    if (!screen) return;
+    screen.classList.toggle("hidden", mode === "checking" || mode === "authenticated");
+  }, [mode]);
+
+  useEffect(() => {
+    api("/api/me")
+      .then((session) => {
+        setUser(session.user);
+        setUsage(session.usage);
+        publishSession(session.user, session.usage);
+        setMode(session.user.must_change_password ? "change-password" : "authenticated");
+        if (!session.user.must_change_password) {
+          window.dispatchEvent(new CustomEvent("salesbot:refresh"));
+        }
+      })
+      .catch(() => {
+        publishSession(null, null);
+        setMode("login");
+      });
+  }, []);
+
+  useEffect(() => {
+    const handleLogout = () => {
+      setUser(null);
+      setUsage(null);
+      setPassword("");
+      publishSession(null, null);
+      setMode("login");
+    };
+    const handleUnauthorized = () => {
+      setMode("login");
+    };
+    window.addEventListener("salesbot:logout", handleLogout);
+    window.addEventListener("salesbot:unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("salesbot:logout", handleLogout);
+      window.removeEventListener("salesbot:unauthorized", handleUnauthorized);
+    };
+  }, []);
+
+  async function login(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const session = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      setUser(session.user);
+      setUsage(session.usage);
+      setCurrentPassword(password);
+      publishSession(session.user, session.usage);
+      if (session.user.must_change_password) {
+        setMode("change-password");
+        return;
+      }
+      setMode("authenticated");
+      window.dispatchEvent(new CustomEvent("salesbot:refresh"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function changePassword(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      if (newPassword.length < 12) throw new Error("新密码至少 12 位");
+      if (newPassword !== confirmPassword) throw new Error("两次输入的新密码不一致");
+      const result = await api("/api/change-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      setUser(result.user);
+      publishSession(result.user, usage);
+      setPassword("");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setMode("authenticated");
+      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "密码已更新" } }));
+      window.dispatchEvent(new CustomEvent("salesbot:refresh"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  if (mode === "checking" || mode === "authenticated") {
+    return null;
+  }
+
+  return (
+    <>
+      {mode === "login" && (
+        <form className="login-card" onSubmit={login}>
+          <div className="mark">LA</div>
+          <h1>登录获客系统</h1>
+          <p>请输入分配给你的账号。管理员默认账号仅用于初始化，上线前需要改密码。</p>
+          <label>
+            账号
+            <input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
+          </label>
+          <label>
+            密码
+            <input type="password" autoComplete="current-password" placeholder="输入密码" value={password} onChange={(event) => setPassword(event.target.value)} />
+          </label>
+          <button className="primary" type="submit">登录</button>
+          <div className="login-error">{error}</div>
+        </form>
+      )}
+      {mode === "change-password" && (
+        <form className="login-card" onSubmit={changePassword}>
+          <div className="mark">LA</div>
+          <h1>首次登录请修改密码</h1>
+          <p>为了账号安全，请把管理员分配的临时密码改成你自己的密码。</p>
+          <label>
+            当前临时密码
+            <input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+          </label>
+          <label>
+            新密码
+            <input type="password" autoComplete="new-password" placeholder="至少 12 位" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+          </label>
+          <label>
+            确认新密码
+            <input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+          </label>
+          <button className="primary" type="submit">保存新密码</button>
+          <div className="login-error">{error}</div>
+        </form>
+      )}
+    </>
+  );
+}
+
+function publishSession(user, usage) {
+  window.dispatchEvent(new CustomEvent("salesbot:session", { detail: { user, usage } }));
+}

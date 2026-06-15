@@ -54,6 +54,7 @@ async function api(path, options = {}) {
   const data = await response.json();
   if (response.status === 401 && path !== "/api/login") {
     showLogin();
+    window.dispatchEvent(new CustomEvent("salesbot:unauthorized"));
     throw new Error("请先登录");
   }
   if (!data.ok) throw new Error(data.error || "请求失败");
@@ -61,6 +62,7 @@ async function api(path, options = {}) {
 }
 
 async function loadSession() {
+  if (window.SALESBOT_REACT_AUTH) return;
   try {
     const session = await api("/api/me");
     state.user = session.user;
@@ -78,18 +80,30 @@ async function loadSession() {
 }
 
 function showLogin() {
+  if (window.SALESBOT_REACT_AUTH) {
+    loginScreen?.classList.remove("hidden");
+    return;
+  }
   loginScreen.classList.remove("hidden");
   loginForm.classList.remove("hidden");
   passwordChangeForm.classList.add("hidden");
 }
 
 function hideLogin() {
+  if (window.SALESBOT_REACT_AUTH) {
+    loginScreen?.classList.add("hidden");
+    return;
+  }
   loginScreen.classList.add("hidden");
   loginError.textContent = "";
   passwordChangeError.textContent = "";
 }
 
 function showPasswordChange() {
+  if (window.SALESBOT_REACT_AUTH) {
+    loginScreen?.classList.remove("hidden");
+    return;
+  }
   loginScreen.classList.remove("hidden");
   loginForm.classList.add("hidden");
   passwordChangeForm.classList.remove("hidden");
@@ -117,8 +131,26 @@ function updateUsage(usage) {
 }
 
 function dispatchSession() {
+  if (window.SALESBOT_REACT_AUTH) return;
   window.dispatchEvent(new CustomEvent("salesbot:session", { detail: { user: state.user, usage: state.usage } }));
 }
+
+window.addEventListener("salesbot:session", (event) => {
+  state.user = event.detail?.user || null;
+  state.usage = event.detail?.usage || null;
+  renderAccount();
+  if (state.user && !state.user.must_change_password) {
+    hideLogin();
+  } else if (!state.user) {
+    showLogin();
+  }
+});
+
+window.addEventListener("salesbot:refresh", refresh);
+
+window.addEventListener("salesbot:notice", (event) => {
+  if (event.detail?.message) showNotice(event.detail.message, event.detail.type || "");
+});
 
 async function refresh() {
   try {
@@ -772,65 +804,68 @@ document.querySelectorAll(".tab").forEach((button) => {
 
 document.querySelector("#refresh-button").addEventListener("click", refresh);
 
-loginForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  loginError.textContent = "";
-  try {
-    const password = document.querySelector("#login-password").value;
-    const session = await api("/api/login", {
-      method: "POST",
-      body: JSON.stringify({
-        username: document.querySelector("#login-username").value.trim(),
-        password,
-      }),
-    });
-    state.user = session.user;
-    state.usage = session.usage;
-    document.querySelector("#current-password").value = password;
-    renderAccount();
-    if (state.user.must_change_password) {
-      showPasswordChange();
-      return;
+if (!window.SALESBOT_REACT_AUTH) {
+  loginForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    loginError.textContent = "";
+    try {
+      const password = document.querySelector("#login-password").value;
+      const session = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: document.querySelector("#login-username").value.trim(),
+          password,
+        }),
+      });
+      state.user = session.user;
+      state.usage = session.usage;
+      document.querySelector("#current-password").value = password;
+      renderAccount();
+      if (state.user.must_change_password) {
+        showPasswordChange();
+        return;
+      }
+      hideLogin();
+      await refresh();
+    } catch (error) {
+      loginError.textContent = error.message;
     }
-    hideLogin();
-    await refresh();
-  } catch (error) {
-    loginError.textContent = error.message;
-  }
-});
+  });
 
-passwordChangeForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  passwordChangeError.textContent = "";
-  try {
-    const currentPassword = document.querySelector("#current-password").value;
-    const newPassword = document.querySelector("#new-password").value;
-    const confirmPassword = document.querySelector("#confirm-password").value;
-    if (newPassword.length < 12) throw new Error("新密码至少 12 位");
-    if (newPassword !== confirmPassword) throw new Error("两次输入的新密码不一致");
-    const result = await api("/api/change-password", {
-      method: "POST",
-      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-    });
-    state.user = result.user;
-    document.querySelector("#login-password").value = "";
-    document.querySelector("#current-password").value = "";
-    document.querySelector("#new-password").value = "";
-    document.querySelector("#confirm-password").value = "";
-    renderAccount();
-    hideLogin();
-    showNotice("密码已更新");
-    await refresh();
-  } catch (error) {
-    passwordChangeError.textContent = error.message;
-  }
-});
+  passwordChangeForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    passwordChangeError.textContent = "";
+    try {
+      const currentPassword = document.querySelector("#current-password").value;
+      const newPassword = document.querySelector("#new-password").value;
+      const confirmPassword = document.querySelector("#confirm-password").value;
+      if (newPassword.length < 12) throw new Error("新密码至少 12 位");
+      if (newPassword !== confirmPassword) throw new Error("两次输入的新密码不一致");
+      const result = await api("/api/change-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      state.user = result.user;
+      document.querySelector("#login-password").value = "";
+      document.querySelector("#current-password").value = "";
+      document.querySelector("#new-password").value = "";
+      document.querySelector("#confirm-password").value = "";
+      renderAccount();
+      hideLogin();
+      showNotice("密码已更新");
+      await refresh();
+    } catch (error) {
+      passwordChangeError.textContent = error.message;
+    }
+  });
+}
 
 logoutButton.addEventListener("click", async () => {
   await fetch("/api/logout");
   state.user = null;
   state.usage = null;
   renderAccount();
+  window.dispatchEvent(new CustomEvent("salesbot:logout"));
   showLogin();
 });
 

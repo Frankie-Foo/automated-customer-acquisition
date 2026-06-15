@@ -7,7 +7,8 @@ The production UI is now built with React and Vite.
 This is an incremental migration:
 
 - React renders the existing dashboard markup.
-- The previous browser controller is loaded as a legacy controller after React mounts.
+- Login/session and the admin console are now React components.
+- The previous browser controller is still loaded for contacts, sourcing, outreach, lifecycle, and other remaining workflows.
 - Existing backend APIs, sessions, permissions, and workflows remain unchanged.
 - Future work should move one workflow at a time from `legacy-controller.js` into typed React components.
 
@@ -52,9 +53,7 @@ docker compose up -d --build
 
 ## Next Refactor Order
 
-1. Extract API client and session/auth state into React modules.
-2. Move admin console into React components.
-3. Move contacts table and contact detail workspace.
-4. Move sourcing/enrichment/send workflows.
-5. Delete the legacy controller once all handlers are componentized.
-
+1. Move contacts table and contact detail workspace.
+2. Move sourcing/enrichment/send workflows.
+3. Move operations report and lifecycle views.
+4. Delete the legacy controller once all handlers are componentized.
