@@ -8,8 +8,8 @@ This is an incremental migration:
 
 - React renders the existing dashboard markup.
 - Login/session and the admin console are now React components.
-- Login/session, the admin console, contacts pipeline, contact detail workspace, and sourcing workbench are now React components.
-- The previous browser controller is still loaded for operations report, lifecycle summary, readiness, and remaining support workflows.
+- Login/session, admin console, contacts pipeline, contact detail workspace, sourcing workbench, operations report, follow-up cards, lifecycle summary, metrics, and readiness are now React components.
+- The previous browser controller is still loaded only for remaining support glue while hidden legacy markup is phased out.
 - Existing backend APIs, sessions, permissions, and workflows remain unchanged.
 - Future work should move one workflow at a time from `legacy-controller.js` into typed React components.
 
@@ -54,7 +54,6 @@ docker compose up -d --build
 
 ## Next Refactor Order
 
-1. Move operations report and lifecycle views.
-2. Move readiness/production status panel.
-3. Move remaining support workflows and remove hidden legacy markup.
-4. Delete the legacy controller once all handlers are componentized.
+1. Remove hidden legacy markup that has React replacements.
+2. Move remaining support glue out of `legacy-controller.js`.
+3. Delete the legacy controller once all handlers are componentized.

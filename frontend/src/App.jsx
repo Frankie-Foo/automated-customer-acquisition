@@ -4,6 +4,7 @@ import AdminConsolePortal from "./AdminConsole.jsx";
 import ContactsPipelinePortal from "./ContactsPipeline.jsx";
 import CustomerWorkspacePortal from "./CustomerWorkspace.jsx";
 import WorkbenchPortal from "./Workbench.jsx";
+import DashboardViewsPortal from "./DashboardViews.jsx";
 import legacyMarkup from "./legacyMarkup.html?raw";
 import "./legacy-styles.css";
 
@@ -15,6 +16,7 @@ export default function App() {
     window.SALESBOT_REACT_CONTACTS = true;
     window.SALESBOT_REACT_WORKSPACE = true;
     window.SALESBOT_REACT_WORKBENCH = true;
+    window.SALESBOT_REACT_DASHBOARD = true;
     import("./legacy-controller.js").catch((error) => {
       if (!mounted) return;
       console.error("Failed to load dashboard controller", error);
@@ -32,6 +34,7 @@ export default function App() {
       <ContactsPipelinePortal />
       <CustomerWorkspacePortal />
       <WorkbenchPortal />
+      <DashboardViewsPortal />
     </>
   );
 }

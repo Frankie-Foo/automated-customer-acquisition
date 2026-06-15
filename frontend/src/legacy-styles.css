@@ -530,6 +530,12 @@ select:focus {
   display: none;
 }
 
+.react-dashboard-enabled #metrics,
+.react-dashboard-enabled .legacy-dashboard,
+.react-dashboard-enabled .legacy-readiness {
+  display: none;
+}
+
 .admin-data-table {
   table-layout: auto;
 }

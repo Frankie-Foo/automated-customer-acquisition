@@ -208,6 +208,7 @@ async function refresh() {
 }
 
 async function refreshOpsReport() {
+  if (window.SALESBOT_REACT_DASHBOARD) return;
   try {
     renderOpsReport(await api("/api/ops-report"));
   } catch {
@@ -234,6 +235,7 @@ async function refreshAdminConsole() {
 }
 
 async function refreshReadiness() {
+  if (window.SALESBOT_REACT_DASHBOARD) return;
   try {
     const data = await api("/api/readiness");
     readyPill.textContent = data.ready ? "Ready" : "Action needed";
@@ -252,6 +254,7 @@ async function refreshReadiness() {
 }
 
 function renderMetrics(summary) {
+  if (window.SALESBOT_REACT_DASHBOARD) return;
   const events = summary.events_7d || {};
   const cards = [
     ["客户总数", summary.total_contacts || 0, "系统内全部客户"],
@@ -286,6 +289,7 @@ function readinessLabel(name) {
 }
 
 function renderFollowups(contacts) {
+  if (window.SALESBOT_REACT_DASHBOARD) return;
   const openedNoReply = contacts.filter((contact) =>
     Number(contact.opened_count || 0) > 0 && !["replied", "bounced", "unsubscribed"].includes(contact.status)
   );
@@ -536,6 +540,7 @@ const lifecycleStages = [
 ];
 
 function renderLifecycle(lifecycle, contacts) {
+  if (window.SALESBOT_REACT_DASHBOARD) return;
   const stages = lifecycle.stages || {};
   lifecycleGrid.innerHTML = lifecycleStages.map(([key, label]) => {
     const count = stages[key] || 0;

@@ -18,11 +18,14 @@
       </nav>
 
       <section class="side-section">
+        <div id="react-readiness-root"></div>
+        <div class="legacy-readiness">
         <div class="side-heading">
           <h2>生产状态</h2>
           <span id="ready-pill">Checking</span>
         </div>
         <div id="readiness" class="readiness"></div>
+        </div>
       </section>
     </aside>
 
@@ -47,8 +50,10 @@
       <section id="notice" class="notice hidden"></section>
 
       <section class="metrics" id="metrics"></section>
+      <div id="react-dashboard-root"></div>
 
       <section class="ops-report" id="ops-report">
+        <div class="legacy-dashboard">
         <div class="followup-head">
           <div>
             <span class="eyebrow">Team operations</span>
@@ -57,9 +62,11 @@
           <p>查看今日获客、有效邮箱、发送、打开、回复、退信和各销售配额使用情况。</p>
         </div>
         <div id="ops-report-content" class="ops-report-content"></div>
+        </div>
       </section>
 
       <section class="followups" id="followups">
+        <div class="legacy-dashboard">
         <div class="followup-head">
           <div>
             <span class="eyebrow">Sales follow-up</span>
@@ -68,9 +75,11 @@
           <p>优先处理已打开未回复、已回复和退信客户。</p>
         </div>
         <div class="followup-grid" id="followup-grid"></div>
+        </div>
       </section>
 
       <section class="lifecycle-board" id="lifecycle-board">
+        <div class="legacy-dashboard">
         <div class="followup-head">
           <div>
             <span class="eyebrow">Customer lifecycle</span>
@@ -79,6 +88,7 @@
           <p>从回复、沟通、约会、试订单到签约维护，持续沉淀客户画像。</p>
         </div>
         <div class="lifecycle-grid" id="lifecycle-grid"></div>
+        </div>
       </section>
 
       <section class="customer-workspace" id="customer-workspace">
