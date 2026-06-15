@@ -275,6 +275,7 @@ function renderFollowupCard(card) {
 function renderOpsReport(report) {
   const totals = report.totals || {};
   const events = report.events || {};
+  const isAdminReport = (report.scope || "") === "team" || state.user?.role === "admin";
   const providerRows = (report.provider_stats || []).slice(0, 8).map((row) => `
     <tr>
       <td>${escapeHtml(row.provider)}</td>
@@ -322,6 +323,10 @@ function renderOpsReport(report) {
       </section>
     </div>
   `;
+  if (!isAdminReport) {
+    const sections = opsReportContent.querySelectorAll(".ops-grid section");
+    sections[1]?.remove();
+  }
 }
 
 function renderOpsCard(label, value) {

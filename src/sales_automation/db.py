@@ -748,6 +748,7 @@ class Repository:
             clauses.append(clause)
 
     def operations_report(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        is_admin = bool(user and user.get("role") == "admin")
         owner_filter, owner_params = self._owner_filter("c", user, prefix="AND")
         with self.db.connect() as conn:
             totals = conn.execute(
@@ -778,8 +779,10 @@ class Repository:
                 """,
                 tuple(owner_params),
             ).fetchone()
+            user_scope = "" if is_admin else "WHERE u.id = %s"
+            user_scope_params = () if is_admin else (user["id"],)
             by_user = conn.execute(
-                """
+                f"""
                 SELECT u.id, u.username, u.display_name, u.role, u.active,
                        u.daily_source_limit, u.daily_send_limit,
                        COALESCE(usage.source_count, 0) AS source_count_today,
@@ -789,18 +792,22 @@ class Repository:
                 LEFT JOIN user_daily_usage usage
                   ON usage.user_id = u.id AND usage.usage_date = CURRENT_DATE
                 LEFT JOIN contacts c ON c.owner_user_id = u.id
+                {user_scope}
                 GROUP BY u.id, usage.source_count, usage.send_count
                 ORDER BY u.id
-                """
+                """,
+                user_scope_params,
             ).fetchall()
-            provider_stats = conn.execute(
-                """
-                SELECT provider, stat_date, calls, candidates, valid_candidates, selected, errors, credits_used, last_error
-                FROM email_provider_stats
-                WHERE stat_date >= CURRENT_DATE - INTERVAL '7 days'
-                ORDER BY stat_date DESC, provider
-                """
-            ).fetchall()
+            provider_stats = []
+            if is_admin:
+                provider_stats = conn.execute(
+                    """
+                    SELECT provider, stat_date, calls, candidates, valid_candidates, selected, errors, credits_used, last_error
+                    FROM email_provider_stats
+                    WHERE stat_date >= CURRENT_DATE - INTERVAL '7 days'
+                    ORDER BY stat_date DESC, provider
+                    """
+                ).fetchall()
             failures = conn.execute(
                 f"""
                 SELECT reason, COUNT(*) AS count
@@ -825,6 +832,7 @@ class Repository:
             "by_user": by_user,
             "provider_stats": provider_stats,
             "failures": failures,
+            "scope": "team" if is_admin else "self",
         }
 
     def update_enrichment(self, contact_id: int, fields: dict[str, Any], *, error: str | None = None) -> None:
