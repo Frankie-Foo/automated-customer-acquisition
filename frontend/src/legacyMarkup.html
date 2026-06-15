@@ -1,0 +1,421 @@
+<section id="login-screen" class="login-screen hidden">
+      <form id="login-form" class="login-card">
+        <div class="mark">LA</div>
+        <h1>登录获客系统</h1>
+        <p>请输入分配给你的账号。管理员默认账号仅用于初始化，上线前需要改密码。</p>
+        <label>账号<input id="login-username" autocomplete="username" value="admin" /></label>
+        <label>密码<input id="login-password" type="password" autocomplete="current-password" placeholder="输入密码" /></label>
+        <button class="primary" type="submit">登录</button>
+        <div id="login-error" class="login-error"></div>
+      </form>
+      <form id="password-change-form" class="login-card hidden">
+        <div class="mark">LA</div>
+        <h1>首次登录请修改密码</h1>
+        <p>为了账号安全，请把管理员分配的临时密码改成你自己的密码。</p>
+        <label>当前临时密码<input id="current-password" type="password" autocomplete="current-password" /></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" placeholder="至少 12 位" /></label>
+        <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" /></label>
+        <button class="primary" type="submit">保存新密码</button>
+        <div id="password-change-error" class="login-error"></div>
+      </form>
+    </section>
+
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">LA</div>
+        <div>
+          <h1>Outbound Ops</h1>
+          <p>LinkedIn sales automation</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="#pipeline" class="active">客户列表</a>
+        <a href="#workbench">获客操作</a>
+        <a href="#ops-report">团队运营</a>
+        <a href="#admin-console">管理员</a>
+        <a href="#readiness">上线检查</a>
+      </nav>
+
+      <section class="side-section">
+        <div class="side-heading">
+          <h2>生产状态</h2>
+          <span id="ready-pill">Checking</span>
+        </div>
+        <div id="readiness" class="readiness"></div>
+      </section>
+    </aside>
+
+    <main>
+      <header class="appbar">
+        <div>
+          <span class="eyebrow">Overseas PDCA · Sales Automation</span>
+          <h2>获客运营控制台</h2>
+          <p>采集线索、富化邮箱、加入发送队列，并持续追踪打开、回复、退订等反馈。</p>
+        </div>
+        <div class="top-actions">
+          <div class="account-box">
+            <strong id="account-name">未登录</strong>
+            <span id="quota-status">今日配额 --</span>
+          </div>
+          <button id="logout-button">退出</button>
+          <button id="export-button">导出客户</button>
+          <button id="refresh-button">刷新</button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice hidden"></section>
+
+      <section class="metrics" id="metrics"></section>
+
+      <section class="ops-report" id="ops-report">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Team operations</span>
+            <h2>团队运营与日报</h2>
+          </div>
+          <p>查看今日获客、有效邮箱、发送、打开、回复、退信和各销售配额使用情况。</p>
+        </div>
+        <div id="ops-report-content" class="ops-report-content"></div>
+      </section>
+
+      <section class="followups" id="followups">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Sales follow-up</span>
+            <h2>今日待办</h2>
+          </div>
+          <p>优先处理已打开未回复、已回复和退信客户。</p>
+        </div>
+        <div class="followup-grid" id="followup-grid"></div>
+      </section>
+
+      <section class="lifecycle-board" id="lifecycle-board">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Customer lifecycle</span>
+            <h2>客户生命周期漏斗</h2>
+          </div>
+          <p>从回复、沟通、约会、试订单到签约维护，持续沉淀客户画像。</p>
+        </div>
+        <div class="lifecycle-grid" id="lifecycle-grid"></div>
+      </section>
+
+      <section class="customer-workspace" id="customer-workspace">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Customer workspace</span>
+            <h2>客户详情与阶段工作台</h2>
+          </div>
+          <p>记录回复、沟通、会议、商业计划、试订单、协议和门店信息，并让 AI 生成阶段建议。</p>
+        </div>
+        <div id="workspace-empty" class="workspace-empty">从客户列表点击“详情”开始管理客户生命周期。</div>
+        <div id="workspace-content" class="workspace-content hidden">
+          <div class="workspace-profile" id="workspace-profile"></div>
+          <div class="workspace-form">
+            <label>阶段
+              <select id="activity-stage">
+                <option value="lead">线索</option>
+                <option value="replied">回复</option>
+                <option value="conversation">初步沟通</option>
+                <option value="meeting">约会/会议</option>
+                <option value="business_plan">商业计划</option>
+                <option value="trial_order">试订单</option>
+                <option value="agency_agreement">代理协议</option>
+                <option value="store_creation">门店创建</option>
+              </select>
+            </label>
+            <label>记录类型
+              <select id="activity-type">
+                <option value="reply">回复内容</option>
+                <option value="research">客户资料/背景调研</option>
+                <option value="meeting_note">会议纪要</option>
+                <option value="business_plan">商业计划</option>
+                <option value="trial_order">试订单</option>
+                <option value="agreement_review">代理协议风险</option>
+                <option value="store_plan">门店创建资料</option>
+                <option value="note">普通备注</option>
+              </select>
+            </label>
+            <label class="wide">阶段记录
+              <textarea id="activity-content" placeholder="粘贴客户回复、会议纪要、订单信息、协议条款、门店资料等"></textarea>
+            </label>
+            <div class="panel-actions">
+              <button id="save-activity-button">保存记录</button>
+              <button id="stage-agent-button" class="primary">AI 分析阶段</button>
+            </div>
+          </div>
+          <div class="stage-analysis" id="stage-analysis"></div>
+          <div class="email-composer">
+            <div class="composer-head">
+              <div>
+                <strong>邮件跟进</strong>
+                <span>可以自定义邮件内容，或让 AI 根据客户线索和阶段记录生成个性化邮件。</span>
+              </div>
+              <label>模式
+                <select id="email-mode">
+                  <option value="ai">AI 个性化生成</option>
+                  <option value="custom">自定义邮件</option>
+                </select>
+              </label>
+            </div>
+            <label>主题<input id="email-subject" placeholder="邮件主题" /></label>
+            <label>正文<textarea id="email-body" placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}"></textarea></label>
+            <div class="panel-actions">
+              <button id="draft-email-button">生成/套用草稿</button>
+              <button id="send-custom-email-button" class="primary">发送给当前客户</button>
+            </div>
+          </div>
+          <div class="activity-list" id="activity-list"></div>
+        </div>
+      </section>
+
+      <section class="guide">
+        <div class="guide-card active">
+          <span>01</span>
+          <div>
+            <strong>获取线索</strong>
+            <p>用自动获客、CSV 或手动新增把客户放进系统。</p>
+          </div>
+        </div>
+        <div class="guide-card">
+          <span>02</span>
+          <div>
+            <strong>富化邮箱</strong>
+            <p>为没有邮箱的客户补充工作邮箱和公司信息。</p>
+          </div>
+        </div>
+        <div class="guide-card">
+          <span>03</span>
+          <div>
+            <strong>入队发送</strong>
+            <p>把有效邮箱加入队列，先演练，确认后再真实发送。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="workbench" class="workbench">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="source">自动获客</button>
+          <button class="tab" data-tab="linkedin-search">LinkedIn 公网搜索</button>
+          <button class="tab" data-tab="csv">CSV 导入</button>
+          <button class="tab" data-tab="manual">手动新增</button>
+          <button class="tab" data-tab="runbook">批量处理</button>
+          <button class="tab" data-tab="admin">状态管理</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-source">
+          <div class="helper">
+            <strong>从 Prospeo 自动找目标客户</strong>
+            <p>推荐先用 Limit=1 测试。公司网站可选；填了公司网站会只找该公司的相关职位。</p>
+          </div>
+          <div class="form-grid">
+            <label>目标公司网站<input id="source-company" placeholder="stripe.com，可选" /></label>
+            <label>目标职位<input id="source-role" placeholder="Founder / VP of Engineering" /></label>
+            <label>行业<input id="source-industry" placeholder="SaaS，可选" /></label>
+            <label>地区<input id="source-location" placeholder="United States，可选" /></label>
+            <label>数量<input id="source-limit" type="number" min="1" max="100" value="1" /></label>
+          </div>
+          <div class="panel-actions">
+            <button id="source-button" class="primary">开始自动获客</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-linkedin-search">
+          <div class="helper">
+            <strong>从 Google 公开索引找 LinkedIn 个人主页</strong>
+            <p>不登录 LinkedIn，不抓后台页面；只解析公开搜索结果。第一版只入候选池和客户列表，不自动发信。</p>
+          </div>
+          <div class="form-grid">
+            <label>目标职位<input id="linkedin-role" placeholder="Brand Manager / Distributor / Founder" /></label>
+            <label>行业关键词<input id="linkedin-industry" placeholder="luxury / watch / consumer electronics" /></label>
+            <label>地区<input id="linkedin-location" placeholder="United States / UAE / Singapore" /></label>
+            <label>公司关键词<input id="linkedin-company" placeholder="Hermes / Rolex，可选" /></label>
+            <label>数量<input id="linkedin-limit" type="number" min="1" max="100" value="10" /></label>
+          </div>
+          <div class="option-row">
+            <label><input id="linkedin-auto-domain" type="checkbox" checked /> 自动补公司官网域名</label>
+            <label><input id="linkedin-auto-candidates" type="checkbox" checked /> 自动生成邮箱候选</label>
+            <label><input id="linkedin-high-verify" type="checkbox" checked /> 只验证高置信候选</label>
+          </div>
+          <div class="panel-actions">
+            <button id="linkedin-search-button" class="primary">开始公网搜索</button>
+            <button id="linkedin-refresh-button">刷新搜索结果</button>
+          </div>
+          <div id="linkedin-search-output" class="search-output"></div>
+        </div>
+
+        <div class="tab-panel" id="tab-csv">
+          <div class="helper">
+            <strong>导入员工已有的线索表</strong>
+            <p>CSV 不要求 LinkedIn URL；有邮箱会直接进入“已富化”，没有邮箱后续可点“富化”。</p>
+          </div>
+          <div class="form-grid compact">
+            <label>选择 CSV 文件<input id="csv-file" type="file" accept=".csv,text/csv" /></label>
+          </div>
+          <div class="panel-actions">
+            <button id="csv-import-button" class="primary">导入 CSV</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-manual">
+          <div class="helper">
+            <strong>临时新增一个客户</strong>
+            <p>适合测试流程，或把销售刚找到的单个客户快速录入系统。</p>
+          </div>
+          <div class="form-grid">
+            <label>LinkedIn URL<input id="lead-linkedin" placeholder="https://linkedin.com/in/..." /></label>
+            <label>名<input id="lead-first" placeholder="Ada" /></label>
+            <label>姓<input id="lead-last" placeholder="Lovelace" /></label>
+            <label>邮箱<input id="lead-email" type="email" placeholder="ada@example.com" /></label>
+            <label>职位<input id="lead-title" placeholder="Founder" /></label>
+            <label>公司<input id="lead-company" placeholder="Example Inc" /></label>
+            <label>公司域名<input id="lead-domain" placeholder="example.com" /></label>
+          </div>
+          <div class="panel-actions">
+            <button id="add-lead-button" class="primary">新增联系人</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-runbook">
+          <div class="helper">
+            <strong>按顺序跑批量流程</strong>
+            <p>一般顺序是：富化 -> 加入队列 -> 发送演练/真实发送。也可以点“跑一轮调度”自动执行一遍。</p>
+          </div>
+          <div class="action-grid">
+            <button data-action="migrate">初始化/迁移数据库</button>
+            <button data-action="enrich">富化邮箱（最多 100 条）</button>
+            <button data-action="social-enrich">富化社媒（最多 100 条）</button>
+            <button data-action="queue">加入队列（最多 100 条）</button>
+            <button data-action="send">发送/演练（最多 100 封）</button>
+            <button data-action="scheduler" class="primary">跑一轮调度</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-admin">
+          <div class="helper">
+            <strong>人工修正状态或加入黑名单</strong>
+            <p>客户已回复、退订、退信，或者某个邮箱/域名永远不应外联时使用。</p>
+          </div>
+          <div class="form-grid">
+            <label>联系人 ID<input id="mark-id" type="number" min="1" placeholder="1" /></label>
+            <label>Status
+              <select id="mark-status">
+                <option>new</option>
+                <option>enriched</option>
+                <option>queued</option>
+                <option>sent_1</option>
+                <option>sent_2</option>
+                <option>sent_3</option>
+                <option>replied</option>
+                <option>bounced</option>
+                <option>unsubscribed</option>
+              </select>
+            </label>
+            <label>黑名单邮箱<input id="blacklist-email" type="email" placeholder="name@example.com" /></label>
+            <label>黑名单域名<input id="blacklist-domain" placeholder="example.com" /></label>
+          </div>
+          <div class="panel-actions">
+            <button id="mark-button">更新状态</button>
+            <button id="blacklist-button">加入黑名单</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="pipeline" class="list-section">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Pipeline</span>
+            <h2>客户列表与邮件反馈</h2>
+            <p>销售团队每天在这里查看客户状态、最近触达和邮件行为反馈。</p>
+          </div>
+          <div class="toolbar">
+            <label>Status
+              <select id="status-filter">
+                <option value="">全部</option>
+                <option>new</option>
+                <option>enriched</option>
+                <option>queued</option>
+                <option>sent_1</option>
+                <option>sent_2</option>
+                <option>sent_3</option>
+                <option>replied</option>
+                <option>bounced</option>
+                <option>unsubscribed</option>
+              </select>
+            </label>
+            <label>视图
+              <select id="contact-filter">
+                <option value="">全部客户</option>
+                <option value="mine">我的客户</option>
+                <option value="needs_enrichment">待富化</option>
+                <option value="ready_to_send">有邮箱待发送</option>
+                <option value="opened_no_reply">已打开未回复</option>
+                <option value="replied">已回复</option>
+                <option value="bounced">退信需处理</option>
+                <option value="second_touch_due">第2次触达待发送</option>
+                <option value="third_touch_due">第3次触达待发送</option>
+                <option value="waiting_pool">等待池</option>
+                <option value="abandoned">已放弃</option>
+              </select>
+            </label>
+            <label>Search<input id="search-input" placeholder="姓名、公司、邮箱、职位" /></label>
+          </div>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>联系人</th>
+                <th>公司</th>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>Step</th>
+                <th>社媒</th>
+                <th>邮件反馈</th>
+                <th>生命周期</th>
+                <th>客户画像</th>
+                <th>最近联系</th>
+                <th>操作</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody id="contacts-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="admin-console" class="admin-console hidden">
+        <div class="followup-head">
+          <div>
+            <span class="eyebrow">Admin console</span>
+            <h2>管理员控制台</h2>
+          </div>
+          <p>创建销售账号、调整配额、管理发件账号和 warmup 状态。</p>
+        </div>
+        <div id="admin-summary" class="admin-summary"></div>
+        <div class="admin-grid">
+          <div class="admin-card">
+            <h3>新增销售账号</h3>
+            <div class="form-grid compact">
+              <label>账号<input id="admin-new-username" placeholder="sales01" /></label>
+              <label>姓名<input id="admin-new-display" placeholder="销售01" /></label>
+              <label>密码<input id="admin-new-password" type="password" placeholder="强密码" /></label>
+              <label>获客配额<input id="admin-new-source-limit" type="number" value="100" /></label>
+              <label>发信配额<input id="admin-new-send-limit" type="number" value="100" /></label>
+            </div>
+            <div class="panel-actions"><button id="admin-create-user" class="primary">创建账号</button></div>
+          </div>
+          <div class="admin-card">
+            <h3>用户与配额</h3>
+            <div id="admin-users-table" class="admin-table"></div>
+          </div>
+          <div class="admin-card">
+            <h3>发件账号池</h3>
+            <div id="admin-senders-table" class="admin-table"></div>
+          </div>
+        </div>
+      </section>
+    </main>

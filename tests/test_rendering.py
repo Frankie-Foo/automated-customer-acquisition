@@ -17,7 +17,15 @@ def test_render_template_returns_text_and_html(tmp_path: Path):
 
 
 def test_web_static_files_are_package_resources():
-    assert static_path("index.html").exists()
-    assert static_path("app.js").exists()
-    assert static_path("styles.css").exists()
+    index = static_path("index.html")
+    assert index.exists()
+
+    html = index.read_text(encoding="utf-8")
+    assert 'id="root"' in html
+    assert "/static/assets/" in html
+
+    assets_dir = static_path("assets")
+    assert assets_dir.exists()
+    assert any(path.suffix == ".js" for path in assets_dir.iterdir())
+    assert any(path.suffix == ".css" for path in assets_dir.iterdir())
 

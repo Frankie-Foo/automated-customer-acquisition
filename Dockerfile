@@ -1,3 +1,13 @@
+FROM node:22-slim AS frontend-build
+
+WORKDIR /app/frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -7,6 +17,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY --from=frontend-build /app/frontend/dist ./src/sales_automation/web_static
 COPY templates ./templates
 COPY migrations ./migrations
 COPY scripts ./scripts

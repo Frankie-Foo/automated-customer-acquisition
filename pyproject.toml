@@ -19,7 +19,7 @@ salesbot = "sales_automation.cli:main"
 salesbot-web = "sales_automation.web:main"
 
 [tool.setuptools.package-data]
-sales_automation = ["web_static/*"]
+sales_automation = ["web_static/*", "web_static/assets/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -8,3 +8,5 @@ outputs
 deployment/backups
 *.sql.gz
 *.log
+frontend/node_modules
+frontend/dist
