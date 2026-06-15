@@ -304,6 +304,17 @@ button.primary:hover {
   color: #fff;
 }
 
+button.primary.soft {
+  background: var(--accent-soft);
+  border-color: rgba(20, 133, 118, 0.24);
+  color: var(--accent-strong);
+}
+
+button.primary.soft:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -457,6 +468,112 @@ select:focus {
 .admin-card:nth-child(2),
 .admin-card:nth-child(3) {
   grid-column: span 2;
+}
+
+.admin-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.admin-summary article {
+  min-height: 92px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, var(--surface-soft) 100%);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-summary span,
+.admin-summary small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.admin-summary strong {
+  display: block;
+  margin: 7px 0 4px;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.admin-data-table {
+  table-layout: auto;
+}
+
+.admin-data-table th {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.admin-data-table td {
+  background: #fff;
+}
+
+.admin-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 150px;
+}
+
+.admin-identity strong {
+  font-size: 13px;
+}
+
+.admin-identity span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-pill,
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  margin: 2px 4px 2px 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.role-pill.role-admin {
+  background: #eef4ff;
+  color: #1f4f91;
+}
+
+.status-pill.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.status-pill.is-paused {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.status-pill.is-warning {
+  background: #fff7ed;
+  color: #b45309;
+}
+
+.quota-edit {
+  display: grid;
+  grid-template-columns: repeat(2, 88px);
+  gap: 8px;
+}
+
+.quota-edit label {
+  gap: 4px;
+  font-size: 11px;
 }
 
 .mini-table {
@@ -1554,5 +1671,22 @@ tbody tr:hover {
   .action-grid,
   .toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .admin-summary {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-card:nth-child(2),
+  .admin-card:nth-child(3) {
+    grid-column: auto;
+  }
+
+  .admin-table {
+    overflow-x: auto;
   }
 }

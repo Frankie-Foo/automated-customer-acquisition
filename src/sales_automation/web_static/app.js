@@ -13,6 +13,7 @@ const notice = document.querySelector("#notice");
 const metrics = document.querySelector("#metrics");
 const opsReportContent = document.querySelector("#ops-report-content");
 const adminConsole = document.querySelector("#admin-console");
+const adminSummary = document.querySelector("#admin-summary");
 const adminUsersTable = document.querySelector("#admin-users-table");
 const adminSendersTable = document.querySelector("#admin-senders-table");
 const followupGrid = document.querySelector("#followup-grid");
@@ -156,6 +157,7 @@ async function refreshAdminConsole() {
       api("/api/admin/users"),
       api("/api/admin/senders"),
     ]);
+    renderAdminSummary(users.users || [], senders.senders || []);
     renderAdminUsers(users.users || []);
     renderAdminSenders(senders.senders || []);
   } catch (error) {
@@ -333,28 +335,74 @@ function renderOpsCard(label, value) {
   return `<article><span>${escapeHtml(label)}</span><strong>${Number(value || 0)}</strong></article>`;
 }
 
+function renderAdminSummary(users, senders) {
+  if (!adminSummary) return;
+  const activeUsers = users.filter((user) => user.active).length;
+  const mustChange = users.filter((user) => user.must_change_password).length;
+  const sourceUsed = users.reduce((sum, user) => sum + Number(user.source_count_today || 0), 0);
+  const sendUsed = users.reduce((sum, user) => sum + Number(user.send_count_today || 0), 0);
+  const activeSenders = senders.filter((sender) => sender.active).length;
+  adminSummary.innerHTML = `
+    <article>
+      <span>销售账号</span>
+      <strong>${activeUsers}/${users.length}</strong>
+      <small>启用 / 全部</small>
+    </article>
+    <article>
+      <span>今日获客</span>
+      <strong>${sourceUsed}</strong>
+      <small>全员已使用</small>
+    </article>
+    <article>
+      <span>今日发信</span>
+      <strong>${sendUsed}</strong>
+      <small>全员已发送</small>
+    </article>
+    <article>
+      <span>发件账号</span>
+      <strong>${activeSenders}/${senders.length}</strong>
+      <small>启用 / 全部</small>
+    </article>
+    <article>
+      <span>待改密码</span>
+      <strong>${mustChange}</strong>
+      <small>首次登录未完成</small>
+    </article>
+  `;
+}
+
 function renderAdminUsers(users) {
   if (!users.length) {
     adminUsersTable.innerHTML = `<div class="empty-state">暂无用户</div>`;
     return;
   }
   adminUsersTable.innerHTML = `
-    <table class="mini-table">
-      <thead><tr><th>ID</th><th>账号</th><th>角色</th><th>获客</th><th>发信</th><th>状态</th><th>操作</th></tr></thead>
+    <table class="mini-table admin-data-table">
+      <thead><tr><th>成员</th><th>角色</th><th>今日获客</th><th>今日发信</th><th>状态</th><th>配额设置</th><th>操作</th></tr></thead>
       <tbody>
         ${users.map((user) => `
           <tr>
-            <td>${user.id}</td>
-            <td><strong>${escapeHtml(user.display_name)}</strong><div class="muted">${escapeHtml(user.username)}</div></td>
-            <td>${escapeHtml(user.role)}</td>
-            <td><input class="mini-input" data-user-source="${user.id}" type="number" value="${user.daily_source_limit}" /></td>
-            <td><input class="mini-input" data-user-send="${user.id}" type="number" value="${user.daily_send_limit}" /></td>
             <td>
-              ${user.active ? "启用" : "停用"}
-              ${user.must_change_password ? `<div class="muted">需改密</div>` : ""}
+              <div class="admin-identity">
+                <strong>${escapeHtml(user.display_name || user.username)}</strong>
+                <span>${escapeHtml(user.username)} · ID ${user.id}</span>
+              </div>
+            </td>
+            <td><span class="role-pill ${user.role === "admin" ? "role-admin" : ""}">${escapeHtml(user.role)}</span></td>
+            <td><strong>${user.source_count_today || 0}</strong><span class="muted"> / ${user.daily_source_limit}</span></td>
+            <td><strong>${user.send_count_today || 0}</strong><span class="muted"> / ${user.daily_send_limit}</span></td>
+            <td>
+              <span class="status-pill ${user.active ? "is-active" : "is-paused"}">${user.active ? "启用" : "停用"}</span>
+              ${user.must_change_password ? `<span class="status-pill is-warning">待改密码</span>` : ""}
+            </td>
+            <td>
+              <div class="quota-edit">
+                <label>获客<input class="mini-input" data-user-source="${user.id}" type="number" value="${user.daily_source_limit}" /></label>
+                <label>发信<input class="mini-input" data-user-send="${user.id}" type="number" value="${user.daily_send_limit}" /></label>
+              </div>
             </td>
             <td class="row-actions">
-              <button data-admin-user-save="${user.id}">保存</button>
+              <button class="primary soft" data-admin-user-save="${user.id}">保存</button>
               <button data-admin-user-toggle="${user.id}" data-active="${user.active ? "false" : "true"}">${user.active ? "停用" : "启用"}</button>
               <button data-admin-user-reset="${user.id}">重置密码</button>
             </td>
@@ -371,15 +419,19 @@ function renderAdminSenders(senders) {
     return;
   }
   adminSendersTable.innerHTML = `
-    <table class="mini-table">
-      <thead><tr><th>ID</th><th>发件邮箱</th><th>Provider</th><th>今日</th><th>上限</th><th>Warmup</th><th>状态</th><th>操作</th></tr></thead>
+    <table class="mini-table admin-data-table">
+      <thead><tr><th>发件身份</th><th>Provider</th><th>今日发送</th><th>每日上限</th><th>Warmup</th><th>状态</th><th>操作</th></tr></thead>
       <tbody>
         ${senders.map((sender) => `
           <tr>
-            <td>${sender.id}</td>
-            <td><strong>${escapeHtml(sender.name)}</strong><div class="muted">${escapeHtml(sender.email)}</div></td>
+            <td>
+              <div class="admin-identity">
+                <strong>${escapeHtml(sender.name)}</strong>
+                <span>${escapeHtml(sender.email)} · ID ${sender.id}</span>
+              </div>
+            </td>
             <td>${escapeHtml(sender.provider)}</td>
-            <td>${sender.send_count_today || 0}</td>
+            <td><strong>${sender.send_count_today || 0}</strong><span class="muted"> / ${sender.daily_limit}</span></td>
             <td><input class="mini-input" data-sender-limit="${sender.id}" type="number" value="${sender.daily_limit}" /></td>
             <td>
               <select class="mini-input" data-sender-warmup="${sender.id}">
@@ -387,9 +439,9 @@ function renderAdminSenders(senders) {
                 <option value="production" ${sender.warmup_stage === "production" ? "selected" : ""}>production</option>
               </select>
             </td>
-            <td>${sender.active ? "启用" : "停用"}</td>
+            <td><span class="status-pill ${sender.active ? "is-active" : "is-paused"}">${sender.active ? "启用" : "停用"}</span></td>
             <td class="row-actions">
-              <button data-admin-sender-save="${sender.id}">保存</button>
+              <button class="primary soft" data-admin-sender-save="${sender.id}">保存</button>
               <button data-admin-sender-toggle="${sender.id}" data-active="${sender.active ? "false" : "true"}">${sender.active ? "停用" : "启用"}</button>
             </td>
           </tr>
