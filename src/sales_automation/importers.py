@@ -11,6 +11,7 @@ FIELD_ALIASES = {
     "first_name": ["first_name", "first name", "firstname", "given_name"],
     "last_name": ["last_name", "last name", "lastname", "family_name"],
     "email": ["email", "work_email", "work email", "business_email"],
+    "phone": ["phone", "mobile", "telephone", "tel", "phone_number", "phone number"],
     "job_title": ["job_title", "job title", "title", "role", "position"],
     "company_name": ["company_name", "company", "company name", "organization", "account"],
     "company_domain": ["company_domain", "domain", "company domain", "website", "company_website"],
@@ -18,6 +19,18 @@ FIELD_ALIASES = {
     "location": ["location", "city", "country", "region"],
     "notes": ["notes", "note"],
     "source": ["source"],
+}
+
+COMPANY_SEED_ALIASES = {
+    "company_name": ["company_name", "company", "company name", "store_name", "store name", "公司", "公司名称", "公司/店铺名称", "店铺名称"],
+    "category": ["category", "类别", "类目", "行业类别"],
+    "reason": ["reason", "background", "research", "notes", "简短背调", "简短背调(为何匹配Vertu资质和清理 & 调性契合度)", "简短背调_为何匹配vertu资质和清理_调性契合度"],
+    "website": ["website", "domain", "company_domain", "company website", "官网", "官网/联系链接", "官网链接", "联系链接"],
+    "job_titles": ["job_titles", "job titles", "titles", "roles", "role", "position", "职位", "目标职位"],
+    "industry": ["industry", "sector", "行业"],
+    "location": ["location", "country", "region", "地区", "国家"],
+    "phone": ["phone", "telephone", "mobile", "电话", "手机号", "联系电话"],
+    "email": ["email", "邮箱", "联系邮箱"],
 }
 
 
@@ -43,16 +56,56 @@ def parse_contacts_csv(text: str, *, default_source: str = "csv_import") -> list
         if contact.get("email"):
             contact["email_status"] = "valid"
             contact.setdefault("status", "enriched")
+        if contact.get("phone"):
+            contact["phone_candidates"] = [{"phone": contact["phone"], "source": default_source, "status": "provided"}]
         contact.setdefault("source", default_source)
         if _has_minimum_identity(contact):
             contacts.append(contact)
     return contacts
 
 
+def parse_company_seed_csv(text: str, *, default_location: str = "", default_industry: str = "") -> list[dict[str, Any]]:
+    stream = io.StringIO(text)
+    sample = text[:2048]
+    dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+    reader = csv.DictReader(stream, dialect=dialect)
+    if not reader.fieldnames:
+        return []
+    mapping = _build_mapping_for_aliases(reader.fieldnames, COMPANY_SEED_ALIASES)
+    seeds: list[dict[str, Any]] = []
+    for row in reader:
+        seed: dict[str, Any] = {}
+        for target, source in mapping.items():
+            value = (row.get(source) or "").strip()
+            if value:
+                seed[target] = value
+        if seed.get("website"):
+            seed["company_domain"] = _normalize_domain(seed["website"])
+        elif seed.get("company_domain"):
+            seed["company_domain"] = _normalize_domain(seed["company_domain"])
+        if seed.get("job_titles"):
+            seed["job_titles"] = _split_job_titles(seed["job_titles"])
+        else:
+            seed["job_titles"] = []
+        seed.setdefault("industry", default_industry or seed.get("category") or "")
+        seed.setdefault("location", default_location)
+        if seed.get("phone"):
+            seed["phone_candidates"] = [{"phone": seed["phone"], "source": "company_seed", "status": "provided"}]
+        if seed.get("email"):
+            seed["email_candidates"] = [{"email": seed["email"], "source": "company_seed", "status": "provided", "category": "company_generic", "confidence": 50}]
+        if seed.get("company_name") or seed.get("company_domain"):
+            seeds.append(seed)
+    return seeds
+
+
 def _build_mapping(fieldnames: list[str]) -> dict[str, str]:
+    return _build_mapping_for_aliases(fieldnames, FIELD_ALIASES)
+
+
+def _build_mapping_for_aliases(fieldnames: list[str], aliases_by_target: dict[str, list[str]]) -> dict[str, str]:
     normalized = {_normalize(name): name for name in fieldnames}
     mapping: dict[str, str] = {}
-    for target, aliases in FIELD_ALIASES.items():
+    for target, aliases in aliases_by_target.items():
         for alias in aliases:
             if _normalize(alias) in normalized:
                 mapping[target] = normalized[_normalize(alias)]
@@ -61,13 +114,21 @@ def _build_mapping(fieldnames: list[str]) -> dict[str, str]:
 
 
 def _normalize(value: str) -> str:
-    return value.strip().lower().replace("-", "_").replace(" ", "_")
+    return re_sub_non_word(value.strip().lower())
 
 
 def _normalize_domain(value: str) -> str:
     value = value.strip()
     value = value.removeprefix("https://").removeprefix("http://").split("/")[0]
     return value
+
+
+def _split_job_titles(value: str) -> list[str]:
+    return [item.strip(" '\"\t\r\n") for item in value.replace("，", ",").replace("；", ",").replace(";", ",").split(",") if item.strip(" '\"\t\r\n")]
+
+
+def re_sub_non_word(value: str) -> str:
+    return value.replace("-", "_").replace(" ", "_").replace("/", "_").replace("&", "_").replace("(", "").replace(")", "")
 
 
 def _synthetic_url(contact: dict[str, Any]) -> str:

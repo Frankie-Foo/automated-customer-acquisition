@@ -245,11 +245,31 @@ function WorkspaceProfile({ contact, onAdoptEmail }) {
       <div><b>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "线索"}</b><span>{dispositionLabel(contact.disposition)}</span></div>
       <div><b>{insights.icp_fit_score ?? "--"}</b><span>拟合度 / {intentLabel(insights.intent_level)}</span></div>
       <p>{contact.profile_summary || "还没有客户画像，点击列表里的“画像”生成。"}</p>
+      <PhoneCandidates contact={contact} />
       <EmailCandidates contact={contact} onAdoptEmail={onAdoptEmail} />
     </div>
   );
 }
 
+function PhoneCandidates({ contact }) {
+  const candidates = Array.isArray(contact.phone_candidates) ? contact.phone_candidates.slice(0, 5) : [];
+  if (!contact.phone && !candidates.length) return null;
+  return (
+    <section className="email-candidates">
+      <header><strong>电话候选</strong><span>电话通常来自导入表或社媒数据源，建议人工确认后使用</span></header>
+      {contact.phone && <div className="candidate-row"><strong>{contact.phone}</strong><span>主电话</span><span>provided</span><span>known</span><b>--</b></div>}
+      {candidates.map((item, index) => (
+        <div key={`${item.phone}-${index}`} className="candidate-row">
+          <strong>{item.phone || ""}</strong>
+          <span>{item.source || ""}</span>
+          <span>{item.type || "phone"}</span>
+          <span>{item.status || "candidate"}</span>
+          <b>{item.confidence ? `${item.confidence}%` : "--"}</b>
+        </div>
+      ))}
+    </section>
+  );
+}
 function EmailCandidates({ contact, onAdoptEmail }) {
   const candidates = Array.isArray(contact.email_candidates) ? contact.email_candidates.slice(0, 6) : [];
   if (!candidates.length) {

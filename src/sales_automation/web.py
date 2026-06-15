@@ -15,7 +15,7 @@ from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
 from .health import check_database, check_readiness
-from .importers import parse_contacts_csv
+from .importers import parse_company_seed_csv, parse_contacts_csv
 from .linkedin_public_search import LinkedInPublicSearchService
 from .quotas import QuotaService
 from .sender_pool import SenderPoolManager
@@ -220,6 +220,38 @@ def make_handler(config, repo: Repository):
                     inserted, skipped = repo.upsert_contacts(contacts, owner_user_id=int(user["id"]))
                     return {"parsed": len(contacts), "inserted": inserted, "skipped": skipped}
                 self._json(import_csv)
+                return
+            if parsed.path == "/api/import/company-seeds":
+                def import_company_seeds() -> dict[str, Any]:
+                    user = self._current_user()
+                    seeds = parse_company_seed_csv(
+                        payload.get("csv", ""),
+                        default_location=payload.get("default_location") or "",
+                        default_industry=payload.get("default_industry") or "",
+                    )
+                    requested = max(1, int(payload.get("per_company_limit") or 5)) * max(1, len(seeds))
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    remaining = min(snapshot["source"]["remaining_user"], snapshot["source"]["remaining_global"])
+                    if requested > remaining:
+                        raise RuntimeError(f"今日获客额度不足：需要 {requested}，剩余 {remaining}")
+                    result = LinkedInPublicSearchService(config, repo).run_company_seeds(
+                        seeds,
+                        per_company_limit=max(1, int(payload.get("per_company_limit") or 5)),
+                        user=user,
+                        auto_queue=bool(payload.get("auto_queue", False)),
+                    )
+                    quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("results") or 0))
+                    queued = sent = 0
+                    if payload.get("auto_queue") or payload.get("auto_send"):
+                        queued = QueueService(repo).queue(int(result.get("promoted") or 0), user=user)
+                    if payload.get("auto_send"):
+                        send_snapshot = QuotaService(config, repo).snapshot(user)
+                        send_limit = min(int(queued or result.get("promoted") or 0), send_snapshot["send"]["remaining_user"], send_snapshot["send"]["remaining_global"])
+                        if send_limit > 0:
+                            sent = OutreachService(config, repo).send_due(send_limit, user=user)
+                            quota_result = QuotaService(config, repo).consume(user, "send", sent)
+                    return {"parsed": len(seeds), "result": {**result, "queued": queued, "sent": sent}, "usage": quota_result["user_usage"], "quotas": quota_result}
+                self._json(import_company_seeds)
                 return
             if parsed.path == "/api/source":
                 criteria = {

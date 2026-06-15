@@ -173,6 +173,7 @@ function ContactsPipeline() {
               <th>联系人</th>
               <th>公司</th>
               <th>邮箱</th>
+              <th>电话</th>
               <th>状态</th>
               <th>Step</th>
               <th>社媒</th>
@@ -186,12 +187,12 @@ function ContactsPipeline() {
           </thead>
           <tbody>
             {loading && !contacts.length ? (
-              <tr><td colSpan="13"><div className="empty-state">正在加载客户...</div></td></tr>
+              <tr><td colSpan="14"><div className="empty-state">正在加载客户...</div></td></tr>
             ) : contacts.length ? (
               contacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} />)
             ) : (
               <tr>
-                <td colSpan="13">
+                <td colSpan="14">
                   <div className="empty-state">
                     <strong>还没有客户</strong>
                     <div>先用上方“自动获客”、CSV 导入，或手动新增一个联系人。</div>
@@ -219,6 +220,7 @@ function ContactRow({ contact, onAction }) {
       </td>
       <td><strong>{contact.company_name || ""}</strong><div className="muted">{contact.company_domain || ""}</div></td>
       <td>{displayEmail(contact)}<div className="muted">{emailMeta(contact)}</div></td>
+      <td>{displayPhone(contact)}<div className="muted">{phoneMeta(contact)}</div></td>
       <td><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span></td>
       <td>{contact.sequence_step || 0}</td>
       <td><SocialProfiles contact={contact} /></td>
@@ -308,6 +310,18 @@ function emailMeta(contact) {
   return parts.join(" · ");
 }
 
+function displayPhone(contact) {
+  if (contact.phone) return contact.phone;
+  const candidates = Array.isArray(contact.phone_candidates) ? contact.phone_candidates : [];
+  return candidates[0]?.phone || "待补充";
+}
+
+function phoneMeta(contact) {
+  const candidates = Array.isArray(contact.phone_candidates) ? contact.phone_candidates : [];
+  if (contact.phone) return "provided";
+  if (candidates.length) return `${candidates.length} 个候选`;
+  return "";
+}
 function statusLabel(status) {
   return {
     new: "新线索",

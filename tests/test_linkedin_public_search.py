@@ -1,6 +1,7 @@
 from sales_automation.linkedin_public_search import (
     CompanyDomainResolver,
     build_linkedin_queries,
+    company_seed_to_search_criteria,
     generate_public_search_email_candidates,
     parse_linkedin_search_item,
     score_lead,
@@ -19,6 +20,21 @@ def test_build_linkedin_queries_uses_public_profile_site_filter():
     assert all(query.startswith("site:linkedin.com/in") for query in queries)
     assert '"Brand Manager"' in queries[0]
     assert '"luxury"' in queries[0]
+
+
+def test_company_seed_to_search_criteria_expands_job_titles():
+    criteria = company_seed_to_search_criteria({
+        "company_name": "Luxepolis",
+        "company_domain": "luxepolis.com",
+        "category": "luxury resale",
+        "job_titles": ["founder", "owner", "partner"],
+        "location": "India",
+    })
+    queries = build_linkedin_queries(criteria)
+
+    assert criteria["role"] == "founder"
+    assert criteria["role_keywords"] == ["founder", "owner", "partner"]
+    assert any('"owner"' in query and '"Luxepolis"' in query for query in queries)
 
 
 def test_parse_linkedin_profile_filters_non_profile_urls():

@@ -482,11 +482,12 @@ class Repository:
         INSERT INTO contacts (
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
           company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner,
-          email_candidates, lead_score, search_task_id
+          email_candidates, lead_score, search_task_id, phone, phone_candidates
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
           %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
-          %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s
+          %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s,
+          %(phone)s, %(phone_candidates)s::jsonb
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
@@ -501,6 +502,11 @@ class Repository:
             email = CASE
                 WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email NOT LIKE '%%*%%' THEN EXCLUDED.email
                 ELSE contacts.email
+            END,
+            phone = COALESCE(EXCLUDED.phone, contacts.phone),
+            phone_candidates = CASE
+                WHEN EXCLUDED.phone_candidates <> '[]'::jsonb THEN EXCLUDED.phone_candidates
+                ELSE contacts.phone_candidates
             END,
             email_status = CASE
                 WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email NOT LIKE '%%*%%' THEN EXCLUDED.email_status
@@ -532,6 +538,7 @@ class Repository:
                 defaults["owner_user_id"] = owner_user_id or contact.get("owner_user_id")
                 defaults["owner"] = contact.get("owner")
                 defaults["email_candidates"] = json.dumps(contact.get("email_candidates") or [])
+                defaults["phone_candidates"] = json.dumps(contact.get("phone_candidates") or [])
                 defaults["lead_score"] = contact.get("lead_score")
                 defaults["search_task_id"] = contact.get("search_task_id")
                 row = conn.execute(sql, defaults).fetchone()
@@ -673,10 +680,10 @@ class Repository:
             self._append_contact_filter(clauses, filter_key)
         if search:
             clauses.append(
-                "(c.first_name ILIKE %s OR c.last_name ILIKE %s OR c.email ILIKE %s OR c.company_name ILIKE %s OR c.job_title ILIKE %s)"
+                "(c.first_name ILIKE %s OR c.last_name ILIKE %s OR c.email ILIKE %s OR c.phone ILIKE %s OR c.company_name ILIKE %s OR c.job_title ILIKE %s)"
             )
             like = f"%{search}%"
-            params.extend([like, like, like, like, like])
+            params.extend([like, like, like, like, like, like])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(limit)
         with self.db.connect() as conn:
@@ -686,7 +693,7 @@ class Repository:
                        c.company_name, c.company_domain, c.industry, c.location, c.status::text,
                        c.sequence_step, c.last_contacted_at, c.replied_at, c.enriched_at,
                        c.enrich_error, c.notes, c.created_at, c.source_person_id, c.source,
-                       c.email_source, c.email_confidence, c.email_candidates,
+                       c.email_source, c.email_confidence, c.email_candidates, c.phone, c.phone_candidates,
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
@@ -1084,6 +1091,38 @@ class Repository:
                     contact_id,
                 ),
             )
+
+    def update_contacts_phone_from_search_task(
+        self,
+        search_task_id: int,
+        *,
+        phone: str | None = None,
+        phone_candidates: list[dict[str, Any]] | None = None,
+        owner_user_id: int | None = None,
+    ) -> int:
+        if not phone and not phone_candidates:
+            return 0
+        clauses = ["search_task_id = %s"]
+        where_params: list[Any] = [search_task_id]
+        if owner_user_id:
+            clauses.append("owner_user_id = %s")
+            where_params.append(owner_user_id)
+        candidates_json = json.dumps(phone_candidates or [])
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                UPDATE contacts
+                SET phone = COALESCE(phone, %s),
+                    phone_candidates = CASE
+                      WHEN %s::jsonb = '[]'::jsonb THEN phone_candidates
+                      ELSE %s::jsonb
+                    END
+                WHERE {" AND ".join(clauses)}
+                RETURNING id
+                """,
+                (phone, candidates_json, candidates_json, *where_params),
+            ).fetchall()
+            return len(rows)
 
     def record_email_provider_stat(
         self,
@@ -1554,6 +1593,8 @@ def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
         "status": contact.get("status") or ("enriched" if contact.get("email_status") == "valid" else "new"),
         "source_person_id": contact.get("source_person_id"),
         "source": contact.get("source"),
+        "phone": contact.get("phone"),
+        "phone_candidates": contact.get("phone_candidates") or [],
     }
 
 

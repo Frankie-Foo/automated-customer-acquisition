@@ -142,6 +142,37 @@ class LinkedInPublicSearchService:
         log("linkedin_public_search.completed", task_id=task["id"], results=len(all_results), promoted=promoted, skipped=skipped)
         return {"task_id": task["id"], "results": len(all_results), "promoted": promoted, "skipped": skipped}
 
+    def run_company_seeds(
+        self,
+        seeds: list[dict[str, Any]],
+        *,
+        per_company_limit: int,
+        user: dict[str, Any],
+        auto_queue: bool = False,
+    ) -> dict[str, Any]:
+        if not seeds:
+            return {"companies": 0, "tasks": [], "results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0, "auto_queue": auto_queue}
+        tasks: list[dict[str, Any]] = []
+        totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
+        for seed in seeds:
+            criteria = company_seed_to_search_criteria(seed)
+            result = self.run(criteria, per_company_limit, user=user)
+            result["company_name"] = seed.get("company_name")
+            result["company_domain"] = seed.get("company_domain")
+            tasks.append(result)
+            totals["results"] += int(result.get("results") or 0)
+            totals["promoted"] += int(result.get("promoted") or 0)
+            totals["skipped"] += int(result.get("skipped") or 0)
+            phone_candidates = seed.get("phone_candidates") or []
+            if seed.get("phone") or phone_candidates:
+                totals["phone_attached"] += self.repo.update_contacts_phone_from_search_task(
+                    int(result["task_id"]),
+                    phone=seed.get("phone"),
+                    phone_candidates=phone_candidates,
+                    owner_user_id=int(user["id"]),
+                )
+        return {"companies": len(seeds), "tasks": tasks, "results": totals["results"], "promoted": totals["promoted"], "skipped": totals["skipped"], "phone_attached": totals["phone_attached"], "auto_queue": auto_queue}
+
     def promote_result(self, result_id: int, *, user: dict[str, Any]) -> dict[str, Any]:
         result = self.repo.get_lead_search_result_for_user(result_id, user)
         if not result:
@@ -206,6 +237,7 @@ class LinkedInPublicSearchService:
 
 def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
     role = _clean(criteria.get("role") or criteria.get("title"))
+    role_keywords = [_clean(item) for item in (criteria.get("role_keywords") or []) if _clean(item)]
     industry = _clean(criteria.get("industry"))
     location = _clean(criteria.get("location"))
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_website"))
@@ -219,9 +251,35 @@ def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
         queries.append(f'site:linkedin.com/in "{role}" "{location}"')
     if role and company:
         queries.append(f'site:linkedin.com/in "{role}" "{company}"')
+    for title in role_keywords[:10]:
+        title_parts = [part for part in [title, industry, location, company] if part]
+        if title_parts:
+            queries.append("site:linkedin.com/in " + " ".join(f'"{part}"' for part in title_parts))
     if not queries and role:
         queries.append(f'site:linkedin.com/in "{role}"')
     return list(dict.fromkeys(queries or ["site:linkedin.com/in"]))
+
+
+def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
+    titles = seed.get("job_titles") or []
+    if isinstance(titles, str):
+        titles = [item.strip() for item in re.split(r"[,;，；]", titles) if item.strip()]
+    role_keywords = titles[:10] if titles else ["founder", "owner", "partner", "director", "head"]
+    role = role_keywords[0]
+    return {
+        "role": role,
+        "title": role,
+        "role_keywords": role_keywords,
+        "industry": seed.get("industry") or seed.get("category") or "",
+        "location": seed.get("location") or "",
+        "company_keyword": seed.get("company_name") or seed.get("company_domain") or "",
+        "company_website": seed.get("company_domain") or seed.get("website") or "",
+        "seed_reason": seed.get("reason") or "",
+        "seed_category": seed.get("category") or "",
+        "auto_domain_lookup": True,
+        "auto_generate_email_candidates": True,
+        "high_confidence_verify": True,
+    }
 
 
 def parse_linkedin_search_item(item: dict[str, Any], criteria: dict[str, Any]) -> dict[str, Any] | None:
@@ -418,6 +476,7 @@ __all__ = [
     "GoogleCSEClient",
     "LinkedInPublicSearchService",
     "build_linkedin_queries",
+    "company_seed_to_search_criteria",
     "generate_public_search_email_candidates",
     "infer_email_pattern",
     "parse_linkedin_search_item",

@@ -4,6 +4,7 @@ import { api } from "./api.js";
 
 const tabs = [
   ["source", "自动获客"],
+  ["company-seeds", "公司种子导入"],
   ["linkedin", "LinkedIn 公网搜索"],
   ["csv", "CSV 导入"],
   ["manual", "手动新增"],
@@ -58,6 +59,7 @@ function Workbench() {
       </div>
       {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`}>{error || message}</div>}
       {activeTab === "source" && <SourcePanel guarded={guarded} notify={notify} />}
+      {activeTab === "company-seeds" && <CompanySeedPanel guarded={guarded} notify={notify} />}
       {activeTab === "linkedin" && <LinkedInSearchPanel guarded={guarded} notify={notify} />}
       {activeTab === "csv" && <CsvPanel guarded={guarded} notify={notify} />}
       {activeTab === "manual" && <ManualPanel guarded={guarded} notify={notify} />}
@@ -94,6 +96,54 @@ function SourcePanel({ guarded, notify }) {
   );
 }
 
+function CompanySeedPanel({ guarded, notify }) {
+  const [file, setFile] = useState(null);
+  const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_queue: false, auto_send: false });
+  return (
+    <div className="tab-panel active">
+      <div className="helper">
+        <strong>导入公司/店铺种子表，自动找 LinkedIn 联系人</strong>
+        <p>适合公司/店铺名称、类别、背调理由、官网/联系链接、职位这种表。系统会按公司和职位搜索公开 LinkedIn 主页，生成邮箱候选；只有 valid 工作邮箱才会入队或发送。</p>
+      </div>
+      <div className="helper subtle">
+        <strong>推荐模板列</strong>
+        <p>company_name, category, reason, website, job_titles, industry, location, phone, email。中文列名也支持：公司/店铺名称、类别、简短背调、官网/联系链接、职位、电话、邮箱。</p>
+      </div>
+      <div className="form-grid">
+        <label>选择 CSV 文件<input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
+        <Field label="默认地区" value={form.default_location} onChange={(v) => setForm({ ...form, default_location: v })} placeholder="India / United States，可选" />
+        <Field label="默认行业" value={form.default_industry} onChange={(v) => setForm({ ...form, default_industry: v })} placeholder="luxury / resale，可选" />
+        <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
+      </div>
+      <div className="option-row">
+        <Check label="找到 valid 邮箱后自动加入队列" checked={form.auto_queue} onChange={(v) => setForm({ ...form, auto_queue: v, auto_send: v ? form.auto_send : false })} />
+        <Check label="入队后自动发送邮件" checked={form.auto_send} onChange={(v) => setForm({ ...form, auto_send: v, auto_queue: v ? true : form.auto_queue })} />
+      </div>
+      <div className="panel-actions">
+        <button className="primary" type="button" onClick={() => guarded(async () => {
+          if (!file) throw new Error("请选择公司种子 CSV 文件");
+          const csv = await file.text();
+          notify("正在导入公司种子，并通过 LinkedIn 公网搜索找联系人...");
+          const response = await api("/api/import/company-seeds", {
+            method: "POST",
+            body: JSON.stringify({
+              csv,
+              default_location: form.default_location,
+              default_industry: form.default_industry,
+              per_company_limit: Number(form.per_company_limit || 5),
+              auto_queue: form.auto_queue,
+              auto_send: form.auto_send,
+            }),
+          });
+          if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
+          const result = response.result || {};
+          notify(`公司种子导入完成：公司 ${response.parsed} 个，LinkedIn 结果 ${result.results || 0} 条，入库 ${result.promoted || 0} 条，电话挂载 ${result.phone_attached || 0} 条，入队 ${result.queued || 0} 条，发送 ${result.sent || 0} 封`);
+          refreshAll();
+        })}>导入并获客</button>
+      </div>
+    </div>
+  );
+}
 function LinkedInSearchPanel({ guarded, notify }) {
   const [form, setForm] = useState({ role: "", industry: "", location: "", company_keyword: "", limit: 10, auto_domain_lookup: true, auto_generate_email_candidates: true, high_confidence_verify: true });
   const [tasks, setTasks] = useState([]);
