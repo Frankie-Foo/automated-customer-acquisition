@@ -522,6 +522,10 @@ select:focus {
   display: none;
 }
 
+.react-workspace-enabled .legacy-workspace {
+  display: none;
+}
+
 .admin-data-table {
   table-layout: auto;
 }

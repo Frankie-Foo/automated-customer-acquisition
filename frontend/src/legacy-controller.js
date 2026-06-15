@@ -166,6 +166,7 @@ window.addEventListener("salesbot:contacts-updated", (event) => {
   api("/api/lifecycle").then((lifecycle) => renderLifecycle(lifecycle, rows)).catch(() => {});
 });
 window.addEventListener("salesbot:open-contact", async (event) => {
+  if (window.SALESBOT_REACT_WORKSPACE) return;
   try {
     await loadCustomerWorkspace(Number(event.detail?.contactId));
     showNotice("客户详情已打开");
@@ -1187,6 +1188,7 @@ contactsBody.addEventListener("click", async (event) => {
   }
 });
 
+if (!window.SALESBOT_REACT_WORKSPACE) {
 document.querySelector("#save-activity-button").addEventListener("click", async () => {
   try {
     if (!window.selectedContactId) throw new Error("请先选择客户");
@@ -1305,6 +1307,7 @@ document.querySelector("#send-custom-email-button").addEventListener("click", as
     showNotice(error.message, "error");
   }
 });
+}
 
 async function refreshLinkedInSearchTasks() {
   if (!linkedinSearchOutput || !state.user) return;
