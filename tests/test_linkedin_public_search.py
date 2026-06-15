@@ -4,6 +4,7 @@ from sales_automation.linkedin_public_search import (
     company_seed_to_search_criteria,
     generate_public_search_email_candidates,
     parse_linkedin_search_item,
+    pick_public_phone_candidates,
     score_lead,
 )
 
@@ -97,3 +98,17 @@ def test_candidate_generation_prefers_historical_patterns(monkeypatch):
     assert candidates[0].email == "a.lovelace@example.com"
     assert candidates[0].confidence == 85
     assert all(candidate.category == "personal_work" for candidate in candidates)
+
+
+def test_public_phone_candidates_prefer_tel_links_and_filter_noise():
+    candidates = pick_public_phone_candidates(
+        '<a href="tel:+91 98765 43210">Call</a>'
+        '<p>Office: +91 98765 43210</p>'
+        '<p>Founded 20240101. Zip 10001.</p>',
+        source_url="https://luxepolis.com/contact",
+    )
+
+    assert candidates[0]["phone"] == "+919876543210"
+    assert candidates[0]["source"] == "public_website_phone"
+    assert candidates[0]["confidence"] == 80
+    assert all("20240101" not in item["phone"] for item in candidates)

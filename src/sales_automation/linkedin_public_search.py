@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import socket
 import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from typing import Any
 
@@ -155,6 +156,11 @@ class LinkedInPublicSearchService:
         tasks: list[dict[str, Any]] = []
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
         for seed in seeds:
+            phone_candidates = list(seed.get("phone_candidates") or [])
+            if not seed.get("phone") and not phone_candidates:
+                phone_candidates = find_public_company_phone_candidates(
+                    seed.get("company_domain") or seed.get("website") or ""
+                )
             criteria = company_seed_to_search_criteria(seed)
             result = self.run(criteria, per_company_limit, user=user)
             result["company_name"] = seed.get("company_name")
@@ -163,7 +169,6 @@ class LinkedInPublicSearchService:
             totals["results"] += int(result.get("results") or 0)
             totals["promoted"] += int(result.get("promoted") or 0)
             totals["skipped"] += int(result.get("skipped") or 0)
-            phone_candidates = seed.get("phone_candidates") or []
             if seed.get("phone") or phone_candidates:
                 totals["phone_attached"] += self.repo.update_contacts_phone_from_search_task(
                     int(result["task_id"]),
@@ -350,6 +355,49 @@ def generate_public_search_email_candidates(contact: dict[str, Any], repo: Repos
     return candidates[:8]
 
 
+def find_public_company_phone_candidates(domain_or_url: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    domain = _domain_from_website(domain_or_url or "")
+    if not domain or _is_blocked_domain(domain):
+        return []
+    seen: dict[str, dict[str, Any]] = {}
+    for path in ("", "/contact", "/contact-us", "/about", "/about-us"):
+        for scheme in ("https", "http"):
+            url = f"{scheme}://{domain}{path}"
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": "salesbot-phone-discovery/0.1"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    content_type = response.headers.get("Content-Type", "")
+                    if "text/html" not in content_type and "text/plain" not in content_type:
+                        continue
+                    text = response.read(300_000).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+            for candidate in pick_public_phone_candidates(text, source_url=url):
+                current = seen.get(candidate["phone"])
+                if current is None or int(candidate["confidence"]) > int(current["confidence"]):
+                    seen[candidate["phone"]] = candidate
+                if len(seen) >= limit:
+                    return list(seen.values())[:limit]
+    return list(seen.values())[:limit]
+
+
+def pick_public_phone_candidates(text: str, *, source_url: str = "") -> list[dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    for raw in re.findall(r'href=["\']tel:([^"\']+)["\']', text or "", flags=re.I):
+        phone = _normalize_phone(raw)
+        if phone:
+            candidates[phone] = _phone_candidate(phone, source_url, confidence=80)
+    for match in re.finditer(r"(?:(?:\+|00)\d{1,3}[\s().-]*)?(?:\(?\d{2,5}\)?[\s().-]*){2,5}\d{2,5}", text or ""):
+        phone = _normalize_phone(match.group(0))
+        if not phone:
+            continue
+        confidence = 70 if phone.startswith("+") else 55
+        current = candidates.get(phone)
+        if current is None or confidence > int(current["confidence"]):
+            candidates[phone] = _phone_candidate(phone, source_url, confidence=confidence)
+    return sorted(candidates.values(), key=lambda item: int(item["confidence"]), reverse=True)
+
+
 def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[str, Any]:
     return {
         "linkedin_url": parsed["linkedin_url"],
@@ -462,6 +510,38 @@ def _domain_resolves(domain: str) -> bool:
             return False
 
 
+def _normalize_phone(raw: str | None) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    value = urllib.parse.unquote(value)
+    value = re.sub(r"(?:ext|extension|x)\s*\.?\s*\d+\s*$", "", value, flags=re.I).strip()
+    has_plus = value.startswith("+")
+    digits = re.sub(r"\D", "", value)
+    if digits.startswith("00"):
+        digits = digits[2:]
+        has_plus = True
+    if not (8 <= len(digits) <= 15):
+        return None
+    if len(set(digits)) <= 2:
+        return None
+    if re.fullmatch(r"(?:19|20)\d{6,12}", digits):
+        return None
+    if has_plus:
+        return f"+{digits}"
+    return value.strip(" .,-;:")
+
+
+def _phone_candidate(phone: str, source_url: str, *, confidence: int) -> dict[str, Any]:
+    return {
+        "phone": phone,
+        "source": "public_website_phone",
+        "source_url": source_url,
+        "status": "unverified",
+        "confidence": max(0, min(100, int(confidence or 0))),
+    }
+
+
 def _is_blocked_domain(domain: str) -> bool:
     domain = domain.lower().removeprefix("www.")
     return domain in {item.removeprefix("www.") for item in BLOCKED_DOMAINS}
@@ -477,8 +557,10 @@ __all__ = [
     "LinkedInPublicSearchService",
     "build_linkedin_queries",
     "company_seed_to_search_criteria",
+    "find_public_company_phone_candidates",
     "generate_public_search_email_candidates",
     "infer_email_pattern",
     "parse_linkedin_search_item",
+    "pick_public_phone_candidates",
     "score_lead",
 ]

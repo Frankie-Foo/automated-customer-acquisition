@@ -35,5 +35,11 @@ Luxepolis,二手奢侈品平台,印度二手奢侈品电商且调性匹配,luxep
 ## 注意
 
 - 公司官网、info/sales/contact/support 等通用邮箱只作为候选，不自动发信。
-- 电话如果表里已有，会写入联系人；没有电话时只能依赖后续社媒/数据源富化，命中率不保证。
+- 电话如果表里已有，会写入联系人；没有电话时会尝试从官网首页、contact/about 页面和 `tel:` 链接提取公开电话候选，命中率不保证。
 - LinkedIn 搜索只使用公开索引结果，不登录 LinkedIn，不抓取登录态页面。
+
+## Phone behavior
+
+- If the imported CSV has a `phone` column, that phone is attached to the matched contacts from the same company seed.
+- If the CSV does not have a phone, the importer tries the public company website home/contact/about pages and extracts visible phone numbers or `tel:` links as `unverified` phone candidates.
+- Public phone candidates are not treated as verified. Sales should confirm them before using the number for calls or WhatsApp.
