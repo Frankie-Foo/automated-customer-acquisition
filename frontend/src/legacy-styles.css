@@ -518,6 +518,10 @@ select:focus {
   color: var(--danger);
 }
 
+.react-contacts-enabled .legacy-pipeline {
+  display: none;
+}
+
 .admin-data-table {
   table-layout: auto;
 }

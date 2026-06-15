@@ -147,6 +147,32 @@ window.addEventListener("salesbot:session", (event) => {
 });
 
 window.addEventListener("salesbot:refresh", refresh);
+window.addEventListener("salesbot:refresh-related", async () => {
+  try {
+    const [summary, lifecycle] = await Promise.all([api("/api/summary"), api("/api/lifecycle")]);
+    renderMetrics(summary);
+    renderLifecycle(lifecycle, window.latestContacts || []);
+    await refreshOpsReport();
+    await refreshAdminConsole();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
+window.addEventListener("salesbot:usage", (event) => updateUsage(event.detail?.usage));
+window.addEventListener("salesbot:contacts-updated", (event) => {
+  const rows = event.detail?.contacts || [];
+  window.latestContacts = rows;
+  renderFollowups(rows);
+  api("/api/lifecycle").then((lifecycle) => renderLifecycle(lifecycle, rows)).catch(() => {});
+});
+window.addEventListener("salesbot:open-contact", async (event) => {
+  try {
+    await loadCustomerWorkspace(Number(event.detail?.contactId));
+    showNotice("客户详情已打开");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+});
 
 window.addEventListener("salesbot:notice", (event) => {
   if (event.detail?.message) showNotice(event.detail.message, event.detail.type || "");
@@ -532,6 +558,7 @@ function followupMeta(contact) {
 }
 
 function renderContacts(contacts) {
+  if (window.SALESBOT_REACT_CONTACTS) return;
   if (!contacts.length) {
     contactsBody.innerHTML = `
       <tr>
