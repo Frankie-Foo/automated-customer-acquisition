@@ -100,18 +100,24 @@ function renderAccount() {
   if (!state.user) {
     accountName.textContent = "未登录";
     quotaStatus.textContent = "今日配额 --";
+    dispatchSession();
     return;
   }
   const usage = state.usage || {};
   accountName.textContent = state.user.display_name || state.user.username;
   quotaStatus.textContent = `获客 ${usage.source_count || 0}/${state.user.daily_source_limit} · 发信 ${usage.send_count || 0}/${state.user.daily_send_limit}`;
   adminConsole.classList.toggle("hidden", state.user.role !== "admin");
+  dispatchSession();
 }
 
 function updateUsage(usage) {
   if (!usage) return;
   state.usage = usage;
   renderAccount();
+}
+
+function dispatchSession() {
+  window.dispatchEvent(new CustomEvent("salesbot:session", { detail: { user: state.user, usage: state.usage } }));
 }
 
 async function refresh() {
@@ -150,7 +156,10 @@ async function refreshOpsReport() {
   }
 }
 
+window.addEventListener("salesbot:ops-refresh", refreshOpsReport);
+
 async function refreshAdminConsole() {
+  if (window.SALESBOT_REACT_ADMIN) return;
   if (state.user?.role !== "admin") return;
   try {
     const [users, senders] = await Promise.all([
@@ -847,78 +856,80 @@ document.querySelector("#search-input").addEventListener("input", (event) => {
   window.searchTimer = window.setTimeout(refresh, 250);
 });
 
-document.querySelector("#admin-create-user").addEventListener("click", async () => {
-  try {
-    const payload = {
-      username: document.querySelector("#admin-new-username").value.trim(),
-      display_name: document.querySelector("#admin-new-display").value.trim(),
-      password: document.querySelector("#admin-new-password").value,
-      role: "sales",
-      daily_source_limit: Number(document.querySelector("#admin-new-source-limit").value || 100),
-      daily_send_limit: Number(document.querySelector("#admin-new-send-limit").value || 100),
-    };
-    if (!payload.username || !payload.password) throw new Error("账号和密码必填");
-    await api("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
-    showNotice("销售账号已创建");
-    document.querySelector("#admin-new-password").value = "";
-    await refreshAdminConsole();
-    await refreshOpsReport();
-  } catch (error) {
-    showNotice(error.message, "error");
-  }
-});
+if (!window.SALESBOT_REACT_ADMIN) {
+  document.querySelector("#admin-create-user")?.addEventListener("click", async () => {
+    try {
+      const payload = {
+        username: document.querySelector("#admin-new-username").value.trim(),
+        display_name: document.querySelector("#admin-new-display").value.trim(),
+        password: document.querySelector("#admin-new-password").value,
+        role: "sales",
+        daily_source_limit: Number(document.querySelector("#admin-new-source-limit").value || 100),
+        daily_send_limit: Number(document.querySelector("#admin-new-send-limit").value || 100),
+      };
+      if (!payload.username || !payload.password) throw new Error("账号和密码必填");
+      await api("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
+      showNotice("销售账号已创建");
+      document.querySelector("#admin-new-password").value = "";
+      await refreshAdminConsole();
+      await refreshOpsReport();
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
+  });
 
-adminUsersTable.addEventListener("click", async (event) => {
-  const save = event.target.closest("[data-admin-user-save]");
-  const toggle = event.target.closest("[data-admin-user-toggle]");
-  const reset = event.target.closest("[data-admin-user-reset]");
-  if (!save && !toggle && !reset) return;
-  try {
-    const userId = Number((save || toggle || reset).dataset.adminUserSave || (save || toggle || reset).dataset.adminUserToggle || (save || toggle || reset).dataset.adminUserReset);
-    const payload = { user_id: userId };
-    if (save) {
-      payload.daily_source_limit = Number(document.querySelector(`[data-user-source="${userId}"]`).value || 100);
-      payload.daily_send_limit = Number(document.querySelector(`[data-user-send="${userId}"]`).value || 100);
+  adminUsersTable?.addEventListener("click", async (event) => {
+    const save = event.target.closest("[data-admin-user-save]");
+    const toggle = event.target.closest("[data-admin-user-toggle]");
+    const reset = event.target.closest("[data-admin-user-reset]");
+    if (!save && !toggle && !reset) return;
+    try {
+      const userId = Number((save || toggle || reset).dataset.adminUserSave || (save || toggle || reset).dataset.adminUserToggle || (save || toggle || reset).dataset.adminUserReset);
+      const payload = { user_id: userId };
+      if (save) {
+        payload.daily_source_limit = Number(document.querySelector(`[data-user-source="${userId}"]`).value || 100);
+        payload.daily_send_limit = Number(document.querySelector(`[data-user-send="${userId}"]`).value || 100);
+      }
+      if (toggle) {
+        payload.active = toggle.dataset.active === "true";
+      }
+      if (reset) {
+        const password = window.prompt("输入新密码，至少 8 位");
+        if (!password) return;
+        if (password.length < 8) throw new Error("密码至少 8 位");
+        payload.password = password;
+      }
+      await api("/api/admin/user", { method: "POST", body: JSON.stringify(payload) });
+      showNotice("用户已更新");
+      await refreshAdminConsole();
+      await refreshOpsReport();
+    } catch (error) {
+      showNotice(error.message, "error");
     }
-    if (toggle) {
-      payload.active = toggle.dataset.active === "true";
-    }
-    if (reset) {
-      const password = window.prompt("输入新密码，至少 8 位");
-      if (!password) return;
-      if (password.length < 8) throw new Error("密码至少 8 位");
-      payload.password = password;
-    }
-    await api("/api/admin/user", { method: "POST", body: JSON.stringify(payload) });
-    showNotice("用户已更新");
-    await refreshAdminConsole();
-    await refreshOpsReport();
-  } catch (error) {
-    showNotice(error.message, "error");
-  }
-});
+  });
 
-adminSendersTable.addEventListener("click", async (event) => {
-  const save = event.target.closest("[data-admin-sender-save]");
-  const toggle = event.target.closest("[data-admin-sender-toggle]");
-  if (!save && !toggle) return;
-  try {
-    const senderId = Number((save || toggle).dataset.adminSenderSave || (save || toggle).dataset.adminSenderToggle);
-    const payload = { sender_id: senderId };
-    if (save) {
-      payload.daily_limit = Number(document.querySelector(`[data-sender-limit="${senderId}"]`).value || 100);
-      payload.warmup_stage = document.querySelector(`[data-sender-warmup="${senderId}"]`).value;
+  adminSendersTable?.addEventListener("click", async (event) => {
+    const save = event.target.closest("[data-admin-sender-save]");
+    const toggle = event.target.closest("[data-admin-sender-toggle]");
+    if (!save && !toggle) return;
+    try {
+      const senderId = Number((save || toggle).dataset.adminSenderSave || (save || toggle).dataset.adminSenderToggle);
+      const payload = { sender_id: senderId };
+      if (save) {
+        payload.daily_limit = Number(document.querySelector(`[data-sender-limit="${senderId}"]`).value || 100);
+        payload.warmup_stage = document.querySelector(`[data-sender-warmup="${senderId}"]`).value;
+      }
+      if (toggle) {
+        payload.active = toggle.dataset.active === "true";
+      }
+      await api("/api/admin/sender", { method: "POST", body: JSON.stringify(payload) });
+      showNotice("发件账号已更新");
+      await refreshAdminConsole();
+    } catch (error) {
+      showNotice(error.message, "error");
     }
-    if (toggle) {
-      payload.active = toggle.dataset.active === "true";
-    }
-    await api("/api/admin/sender", { method: "POST", body: JSON.stringify(payload) });
-    showNotice("发件账号已更新");
-    await refreshAdminConsole();
-  } catch (error) {
-    showNotice(error.message, "error");
-  }
-});
+  });
+}
 
 document.querySelector("#mark-button").addEventListener("click", async () => {
   try {

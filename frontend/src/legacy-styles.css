@@ -501,6 +501,23 @@ select:focus {
   line-height: 1;
 }
 
+.admin-alert {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(20, 133, 118, 0.28);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-alert.is-error {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: #fff1f2;
+  color: var(--danger);
+}
+
 .admin-data-table {
   table-layout: auto;
 }

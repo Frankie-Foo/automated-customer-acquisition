@@ -1,10 +1,12 @@
 import { useEffect } from "react";
+import AdminConsolePortal from "./AdminConsole.jsx";
 import legacyMarkup from "./legacyMarkup.html?raw";
 import "./legacy-styles.css";
 
 export default function App() {
   useEffect(() => {
     let mounted = true;
+    window.SALESBOT_REACT_ADMIN = true;
     import("./legacy-controller.js").catch((error) => {
       if (!mounted) return;
       console.error("Failed to load dashboard controller", error);
@@ -14,5 +16,10 @@ export default function App() {
     };
   }, []);
 
-  return <div dangerouslySetInnerHTML={{ __html: legacyMarkup }} />;
+  return (
+    <>
+      <div dangerouslySetInnerHTML={{ __html: legacyMarkup }} />
+      <AdminConsolePortal />
+    </>
+  );
 }
