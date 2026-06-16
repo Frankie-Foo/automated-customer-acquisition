@@ -47,13 +47,27 @@ def test_parse_linkedin_profile_filters_non_profile_urls():
         "link": "https://www.linkedin.com/in/darwin-lee/",
     }
 
-    parsed = parse_linkedin_search_item(item, {"role": "Brand Manager", "location": "United States"})
+    parsed = parse_linkedin_search_item(
+        item,
+        {
+            "role": "Brand Manager",
+            "location": "United States",
+            "industry": "luxury resale",
+            "company_keyword": "ROLEX",
+            "seed_reason": "premium positioning and certified pre-owned relevance",
+            "seed_category": "second-hand luxury platform",
+        },
+    )
 
     assert parsed["linkedin_url"] == "https://www.linkedin.com/in/darwin-lee"
     assert parsed["first_name"] == "Darwin"
     assert parsed["last_name"] == "Lee"
     assert parsed["job_title"] == "Brand Manager"
     assert parsed["company_name"] == "ROLEX"
+    assert parsed["industry"] == "luxury resale"
+    assert parsed["source_context"]["seed_company"] == "ROLEX"
+    assert parsed["source_context"]["seed_reason"] == "premium positioning and certified pre-owned relevance"
+    assert parsed["source_context"]["seed_category"] == "second-hand luxury platform"
     assert parse_linkedin_search_item({**item, "link": "https://www.linkedin.com/company/rolex/"}, {}) is None
     assert parse_linkedin_search_item({**item, "link": "https://www.linkedin.com/jobs/view/1/"}, {}) is None
 

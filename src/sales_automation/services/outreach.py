@@ -45,6 +45,9 @@ class PersonalizedEmailService:
             **contact,
             "sender_name": sender.get("name", ""),
             "unsubscribe_url": unsubscribe_url(contact, base_url),
+            "account_context": _account_context(contact),
+            "seed_reason": _source_context(contact).get("seed_reason", ""),
+            "seed_category": _source_context(contact).get("seed_category", ""),
         }
         text = render_string(body, values)
         if "{{unsubscribe_url}}" not in body:
@@ -78,16 +81,20 @@ class PersonalizedEmailService:
         if not api_key:
             return fallback
         insights = contact.get("profile_insights") if isinstance(contact.get("profile_insights"), dict) else {}
+        source_context = _source_context(contact)
+        account_context = _account_context(contact)
         activities = self.repo.list_lifecycle_activities(int(contact["id"]), limit=5)
         history = "\n".join(f"- {item.get('content')}" for item in activities if item.get("content"))
         prompt = (
-            "你是海外B2B销售邮件助手。只根据客户资料生成一封简洁英文邮件，不编造事实。"
-            "请只输出 JSON，不要 Markdown。字段：subject, body。body 使用纯文本，80-140词，语气自然。"
-            "必须包含明确但轻量的下一步请求，不要夸大，不要承诺不存在的案例。"
-            f"客户：{contact.get('first_name')} {contact.get('last_name')}；职位：{contact.get('job_title')}；"
-            f"公司：{contact.get('company_name')}；行业：{contact.get('industry')}；地区：{contact.get('location')}；"
-            f"生命周期：{contact.get('lifecycle_stage')}；画像：{insights}；历史记录：{history}；"
-            f"发件人：{self.config.sender.get('name')}。"
+            "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
+            "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
+            "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
+            "Include a light next-step request. "
+            f"Recipient: {contact.get('first_name')} {contact.get('last_name')}; role: {contact.get('job_title')}; "
+            f"company: {contact.get('company_name')}; industry: {contact.get('industry')}; location: {contact.get('location')}; "
+            f"lifecycle stage: {contact.get('lifecycle_stage')}; profile insights: {insights}; recent notes: {history}; "
+            f"imported account context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
+            f"sender: {self.config.sender.get('name')}."
         )
         try:
             client = LLMClient(
@@ -130,7 +137,7 @@ class PersonalizedEmailService:
         subject = f"Quick question about {company}"
         body = (
             f"Hi {first},\n\n"
-            f"I noticed your work as {contact.get('job_title') or 'a leader'} at {company} and thought this might be relevant.\n\n"
+            f"{_fallback_opening(contact)}\n\n"
             "Would it make sense to have a short conversation about overseas channel cooperation and the next practical step?\n\n"
             f"Best,\n{sender}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
@@ -186,6 +193,9 @@ class OutreachService:
             **contact,
             "sender_name": sender.get("name", ""),
             "unsubscribe_url": unsubscribe_url(contact, base_url),
+            "account_context": _account_context(contact),
+            "seed_reason": _source_context(contact).get("seed_reason", ""),
+            "seed_category": _source_context(contact).get("seed_category", ""),
             "ai_opener": ai.opener(contact) if step_cfg.get("ai_opener") else "",
         }
         template = self.config.root_dir / step_cfg["body_template"]
@@ -226,5 +236,35 @@ class OutreachService:
         if isinstance(last, str):
             last = datetime.fromisoformat(last)
         return datetime.now(UTC) >= last + timedelta(days=int(step.get("delay_days", 0)))
+
+
+def _source_context(contact: dict[str, Any]) -> dict[str, str]:
+    context = contact.get("source_context")
+    if not isinstance(context, dict):
+        return {}
+    return {str(key): str(value).strip() for key, value in context.items() if str(value or "").strip()}
+
+
+def _account_context(contact: dict[str, Any]) -> str:
+    context = _source_context(contact)
+    parts = []
+    if context.get("seed_category"):
+        parts.append(f"category: {context['seed_category']}")
+    if context.get("seed_location"):
+        parts.append(f"market: {context['seed_location']}")
+    if context.get("seed_reason"):
+        parts.append(f"research note: {context['seed_reason']}")
+    return "; ".join(parts)
+
+
+def _fallback_opening(contact: dict[str, Any]) -> str:
+    company = contact.get("company_name") or "your company"
+    context = _source_context(contact)
+    if context.get("seed_reason"):
+        return f"I noticed {company} in our account research: {context['seed_reason']}"
+    if context.get("seed_category"):
+        return f"I noticed {company} is relevant to {context['seed_category']} and thought this might be worth a quick conversation."
+    return f"I noticed your work as {contact.get('job_title') or 'a leader'} at {company} and thought this might be relevant."
+
 
 __all__ = ["OutreachService", "PersonalizedEmailService"]

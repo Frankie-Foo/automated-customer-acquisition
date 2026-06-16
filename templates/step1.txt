@@ -2,7 +2,7 @@ Hi {{first_name}},
 
 {{ai_opener}}
 
-I noticed {{company_name}} and wanted to ask whether improving your outbound workflow is on the roadmap.
+Based on that context, I wanted to ask whether a discreet Vertu partnership or overseas channel cooperation is worth exploring.
 
 If this is relevant, I can send a short idea tailored to {{company_name}}.
 

@@ -482,12 +482,12 @@ class Repository:
         INSERT INTO contacts (
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
           company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner,
-          email_candidates, lead_score, search_task_id, phone, phone_candidates
+          email_candidates, lead_score, search_task_id, phone, phone_candidates, source_context
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
           %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
           %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s,
-          %(phone)s, %(phone_candidates)s::jsonb
+          %(phone)s, %(phone_candidates)s::jsonb, %(source_context)s::jsonb
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
@@ -507,6 +507,10 @@ class Repository:
             phone_candidates = CASE
                 WHEN EXCLUDED.phone_candidates <> '[]'::jsonb THEN EXCLUDED.phone_candidates
                 ELSE contacts.phone_candidates
+            END,
+            source_context = CASE
+                WHEN EXCLUDED.source_context <> '{}'::jsonb THEN contacts.source_context || EXCLUDED.source_context
+                ELSE contacts.source_context
             END,
             email_status = CASE
                 WHEN EXCLUDED.email IS NOT NULL AND EXCLUDED.email NOT LIKE '%%*%%' THEN EXCLUDED.email_status
@@ -530,6 +534,7 @@ class Repository:
         WHERE contacts.source_person_id IS NULL
            OR contacts.email IS NULL
            OR contacts.email LIKE '%%*%%'
+           OR (contacts.source_context = '{}'::jsonb AND EXCLUDED.source_context <> '{}'::jsonb)
         RETURNING (xmax = 0) AS inserted
         """
         with self.db.connect() as conn:
@@ -539,6 +544,7 @@ class Repository:
                 defaults["owner"] = contact.get("owner")
                 defaults["email_candidates"] = json.dumps(contact.get("email_candidates") or [])
                 defaults["phone_candidates"] = json.dumps(contact.get("phone_candidates") or [])
+                defaults["source_context"] = json.dumps(contact.get("source_context") or {}, ensure_ascii=False)
                 defaults["lead_score"] = contact.get("lead_score")
                 defaults["search_task_id"] = contact.get("search_task_id")
                 row = conn.execute(sql, defaults).fetchone()
@@ -694,6 +700,7 @@ class Repository:
                        c.sequence_step, c.last_contacted_at, c.replied_at, c.enriched_at,
                        c.enrich_error, c.notes, c.created_at, c.source_person_id, c.source,
                        c.email_source, c.email_confidence, c.email_candidates, c.phone, c.phone_candidates,
+                       c.source_context,
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
@@ -1595,6 +1602,7 @@ def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
         "source": contact.get("source"),
         "phone": contact.get("phone"),
         "phone_candidates": contact.get("phone_candidates") or [],
+        "source_context": contact.get("source_context") or {},
     }
 
 

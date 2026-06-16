@@ -370,7 +370,9 @@ def parse_linkedin_search_item(item: dict[str, Any], criteria: dict[str, Any]) -
         "last_name": last_name,
         "job_title": job_title,
         "company_name": company_name,
+        "industry": _clean(criteria.get("industry")),
         "location": _clean(criteria.get("location")),
+        "source_context": _source_context_from_criteria(criteria),
         "source": "linkedin_public_search",
     }
 
@@ -460,6 +462,7 @@ def pick_public_phone_candidates(text: str, *, source_url: str = "") -> list[dic
 
 
 def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[str, Any]:
+    source_context = parsed.get("source_context") if isinstance(parsed.get("source_context"), dict) else {}
     return {
         "linkedin_url": parsed["linkedin_url"],
         "first_name": parsed.get("first_name"),
@@ -467,13 +470,27 @@ def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[st
         "job_title": parsed.get("job_title"),
         "company_name": parsed.get("company_name"),
         "company_domain": parsed.get("company_domain"),
+        "industry": parsed.get("industry") or source_context.get("seed_category"),
         "location": parsed.get("location"),
         "email_candidates": parsed.get("email_candidates") or [],
         "lead_score": parsed.get("lead_score"),
         "search_task_id": task_id,
+        "source_context": source_context,
         "source": "linkedin_public_search",
         "status": "new",
     }
+
+
+def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, str]:
+    mapping = {
+        "seed_company": criteria.get("company_keyword") or criteria.get("company_name"),
+        "seed_website": criteria.get("company_website"),
+        "seed_reason": criteria.get("seed_reason"),
+        "seed_category": criteria.get("seed_category") or criteria.get("industry"),
+        "seed_location": criteria.get("location"),
+        "target_role": criteria.get("role") or criteria.get("title"),
+    }
+    return {key: _clean(value) for key, value in mapping.items() if _clean(value)}
 
 
 def _normalize_linkedin_url(value: str | None) -> str | None:

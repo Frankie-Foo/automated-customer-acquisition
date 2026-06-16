@@ -188,19 +188,25 @@ class LLMClient:
         self.http = http or HttpClient()
 
     def opener(self, contact: dict[str, Any]) -> str:
-        fallback = f"I saw your work at {contact.get('company_name') or 'your company'} and thought this might be relevant."
+        company = contact.get("company_name") or "your company"
+        context = _contact_source_context(contact)
+        reason = context.get("seed_reason") or ""
+        category = context.get("seed_category") or contact.get("industry") or ""
+        fallback = _fallback_opener(contact, reason=reason, category=category)
         if not self.api_key:
             return fallback
         if contact.get("_fallback"):
-            return f"I saw your work at {contact.get('company_name') or 'your company'} and thought this might be relevant."
+            return fallback
         prompt = (
             "Write exactly one concise, specific, non-hype cold email opening sentence. "
             "You are the sender writing to the recipient; never claim to work at or lead the recipient company. "
             "Use only the provided fields. Do not use placeholders, brackets, invented competitors, invented tools, or invented facts. "
             "Do not mention launches, funding, hiring, growth, tools, competitors, case studies, or recent events. "
-            "A safe pattern is: 'I noticed your work as {role} at {company} and thought this might be relevant.' "
-            f"Recipient role: {contact.get('job_title')}. Recipient company: {contact.get('company_name')}. "
-            f"Industry: {contact.get('industry')}. Do not invent facts."
+            "If an account research note is provided, use it only as a plain observation and do not add claims beyond it. "
+            "A safe pattern is: 'I noticed {company} is in {category} and your role touches that area, so I thought this might be relevant.' "
+            f"Recipient role: {contact.get('job_title')}. Recipient company: {company}. "
+            f"Industry/category: {category}. Account research note: {reason}. "
+            f"LinkedIn URL: {contact.get('linkedin_url')}. Do not invent facts."
         )
         if self.provider == "openai":
             data = self.http.request(
@@ -422,6 +428,26 @@ def _extract_chat_text(data: dict[str, Any]) -> str:
         return ""
     message = choices[0].get("message") or {}
     return str(message.get("content") or "").strip()
+
+
+def _contact_source_context(contact: dict[str, Any]) -> dict[str, str]:
+    context = contact.get("source_context")
+    if not isinstance(context, dict):
+        return {}
+    return {str(key): str(value).strip() for key, value in context.items() if str(value or "").strip()}
+
+
+def _fallback_opener(contact: dict[str, Any], *, reason: str = "", category: str = "") -> str:
+    company = contact.get("company_name") or "your company"
+    role = contact.get("job_title") or "your role"
+    if reason:
+        clean_reason = " ".join(str(reason).split())
+        if len(clean_reason) > 170:
+            clean_reason = clean_reason[:167].rstrip() + "..."
+        return f"I noticed {company} in our account research: {clean_reason}"
+    if category:
+        return f"I noticed {company} is relevant to {category} and thought this might be worth a quick conversation."
+    return f"I noticed your work as {role} at {company} and thought this might be relevant."
 
 
 def _guard_opener(text: str, fallback: str) -> str:
