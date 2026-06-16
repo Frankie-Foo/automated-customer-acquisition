@@ -1,5 +1,7 @@
 from sales_automation.linkedin_public_search import (
     CompanyDomainResolver,
+    FallbackSearchClient,
+    TavilySearchClient,
     build_linkedin_queries,
     company_seed_to_search_criteria,
     generate_public_search_email_candidates,
@@ -81,6 +83,35 @@ def test_domain_resolver_excludes_non_official_domains():
             ]
 
     assert CompanyDomainResolver(Client()).resolve("Acme") == "acme.com"
+
+
+def test_tavily_search_maps_results_to_google_shape():
+    class Http:
+        def request(self, method, url, *, headers=None, json_body=None):
+            assert method == "POST"
+            assert url == "https://api.tavily.com/search"
+            assert headers["Authorization"] == "Bearer tvly-test"
+            assert json_body["search_depth"] == "basic"
+            return {"results": [{"title": "Ada - Founder | LinkedIn", "url": "https://www.linkedin.com/in/ada", "content": "Founder at Example."}]}
+
+    items = TavilySearchClient("tvly-test", Http()).search("site:linkedin.com/in Ada", limit=1)
+
+    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada"}]
+
+
+def test_fallback_search_uses_second_provider_after_first_fails():
+    class Broken:
+        def search(self, query, *, limit=10):
+            raise RuntimeError("google failed")
+
+    class Working:
+        def search(self, query, *, limit=10):
+            return [{"title": "ok", "link": "https://www.linkedin.com/in/ok", "snippet": "ok"}]
+
+    client = FallbackSearchClient([("google_cse", Broken()), ("tavily", Working())])
+
+    assert client.search("site:linkedin.com/in ok", limit=1)[0]["title"] == "ok"
+    assert client.last_provider == "tavily"
 
 
 def test_candidate_generation_prefers_historical_patterns(monkeypatch):

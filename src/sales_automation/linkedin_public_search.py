@@ -5,7 +5,7 @@ import socket
 import urllib.parse
 import urllib.request
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Protocol
 
 from .clients import HunterClient, ProspeoClient, _domain_from_website, is_full_email
 from .config import AppConfig
@@ -48,8 +48,63 @@ class GoogleCSEClient:
         return data.get("items") or []
 
 
+class SearchClient(Protocol):
+    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        ...
+
+
+class TavilySearchClient:
+    def __init__(self, api_key: str, http: HttpClient | None = None):
+        self.api_key = api_key
+        self.http = http or HttpClient(timeout=30)
+
+    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        data = self.http.request(
+            "POST",
+            "https://api.tavily.com/search",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json_body={
+                "query": query,
+                "search_depth": "basic",
+                "max_results": max(1, min(10, int(limit or 10))),
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+        )
+        results = data.get("results") or []
+        return [
+            {
+                "title": item.get("title") or item.get("url") or "",
+                "snippet": item.get("content") or item.get("snippet") or "",
+                "link": item.get("url") or item.get("link") or "",
+            }
+            for item in results
+        ]
+
+
+class FallbackSearchClient:
+    def __init__(self, clients: list[tuple[str, SearchClient]]):
+        self.clients = clients
+        self.last_provider = clients[0][0] if clients else ""
+
+    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        last_error: Exception | None = None
+        for name, client in self.clients:
+            try:
+                results = client.search(query, limit=limit)
+                self.last_provider = name
+                return results
+            except Exception as exc:
+                last_error = exc
+                log("linkedin_public_search.provider_failed", provider=name, error=str(exc)[:500])
+                continue
+        if last_error:
+            raise last_error
+        return []
+
+
 class CompanyDomainResolver:
-    def __init__(self, client: GoogleCSEClient | None = None):
+    def __init__(self, client: SearchClient | None = None):
         self.client = client
 
     def resolve(self, company_name: str | None, existing_domain: str | None = None) -> str | None:
@@ -73,17 +128,23 @@ class LinkedInPublicSearchService:
         self.cfg = config.raw.get("sourcing", {}).get("linkedin_public_search", {})
         key = config.apis.get("google_cse_key", "")
         cse_id = config.apis.get("google_cse_id", "")
-        self.client = GoogleCSEClient(key, cse_id) if key and cse_id else None
+        tavily_key = config.apis.get("tavily_key", "")
+        clients: list[tuple[str, SearchClient]] = []
+        if key and cse_id:
+            clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
+        if tavily_key:
+            clients.append(("tavily", TavilySearchClient(tavily_key)))
+        self.client = FallbackSearchClient(clients) if clients else None
         self.domain_resolver = CompanyDomainResolver(self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
         if not self.client:
-            raise RuntimeError("Missing apis.google_cse_key or apis.google_cse_id")
+            raise RuntimeError("Missing search API config: set Google CSE or TAVILY_API_KEY")
         max_queries = int(self.cfg.get("max_queries_per_run") or 10)
         min_score = int(self.cfg.get("min_lead_score") or 50)
         task = self.repo.create_lead_search_task(
             criteria=criteria,
-            provider="google_cse",
+            provider="linkedin_public_search",
             requested_limit=limit,
             created_by_user_id=int(user["id"]),
             owner_user_id=int(user["id"]),

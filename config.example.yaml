@@ -23,6 +23,7 @@ apis:
   github_token: ${GITHUB_TOKEN}
   google_cse_key: ${GOOGLE_CSE_API_KEY}
   google_cse_id: ${GOOGLE_CSE_ID}
+  tavily_key: ${TAVILY_API_KEY}
 
 llm:
   provider: deepseek
