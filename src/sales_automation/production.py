@@ -18,8 +18,8 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("database", bool(config.database.get("host") and config.database.get("dbname")), "Database config is present"),
         _check(
             "lead_source",
-            bool(apis.get("prospeo_key") or apis.get("ninjapear_key") or (apis.get("google_cse_key") and apis.get("google_cse_id"))),
-            "Prospeo, NinjaPear, or Google CSE is required for automated lead sourcing",
+            bool(apis.get("prospeo_key") or apis.get("ninjapear_key") or apis.get("tavily_key") or (apis.get("google_cse_key") and apis.get("google_cse_id"))),
+            "Prospeo, NinjaPear, Tavily, or Google CSE is required for automated lead sourcing",
         ),
         _check("enrichment", bool(apis.get("hunter_key") or apis.get("prospeo_key") or apis.get("ninjapear_key")), "Hunter, Prospeo, or NinjaPear key is required for email enrichment"),
         _check("social_enrichment", bool(apis.get("peopledb_key") or apis.get("pdl_key")), "PeopleDB or People Data Labs key is optional for social profile enrichment"),

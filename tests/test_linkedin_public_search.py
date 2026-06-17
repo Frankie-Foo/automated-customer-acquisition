@@ -1,6 +1,7 @@
 from sales_automation.linkedin_public_search import (
     CompanyDomainResolver,
     FallbackSearchClient,
+    LinkedInPublicSearchService,
     TavilySearchClient,
     build_linkedin_queries,
     company_seed_to_search_criteria,
@@ -126,6 +127,16 @@ def test_fallback_search_uses_second_provider_after_first_fails():
 
     assert client.search("site:linkedin.com/in ok", limit=1)[0]["title"] == "ok"
     assert client.last_provider == "tavily"
+
+
+def test_linkedin_public_search_prefers_tavily_when_configured():
+    class Config:
+        apis = {"google_cse_key": "expired-google", "google_cse_id": "cx", "tavily_key": "tvly-test"}
+        raw = {"sourcing": {"linkedin_public_search": {}}}
+
+    service = LinkedInPublicSearchService(Config(), repo=None)
+
+    assert [name for name, _client in service.client.clients] == ["tavily", "google_cse"]
 
 
 def test_candidate_generation_prefers_historical_patterns(monkeypatch):

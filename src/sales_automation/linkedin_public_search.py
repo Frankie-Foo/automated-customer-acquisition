@@ -130,10 +130,10 @@ class LinkedInPublicSearchService:
         cse_id = config.apis.get("google_cse_id", "")
         tavily_key = config.apis.get("tavily_key", "")
         clients: list[tuple[str, SearchClient]] = []
-        if key and cse_id:
-            clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
         if tavily_key:
             clients.append(("tavily", TavilySearchClient(tavily_key)))
+        if key and cse_id:
+            clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
         self.client = FallbackSearchClient(clients) if clients else None
         self.domain_resolver = CompanyDomainResolver(self.client)
 
