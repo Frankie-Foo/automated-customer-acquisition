@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from sales_automation.rendering import render_string, render_template
 from sales_automation.web import static_path
 
@@ -28,4 +30,11 @@ def test_web_static_files_are_package_resources():
     assert assets_dir.exists()
     assert any(path.suffix == ".js" for path in assets_dir.iterdir())
     assert any(path.suffix == ".css" for path in assets_dir.iterdir())
+
+
+def test_static_path_rejects_traversal():
+    with pytest.raises(ValueError):
+        static_path("../config.yaml")
+    with pytest.raises(ValueError):
+        static_path("assets/%2e%2e/config.yaml")
 

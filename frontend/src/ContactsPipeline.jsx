@@ -280,6 +280,7 @@ function SocialProfiles({ contact }) {
 
 function EmailFeedback({ contact }) {
   const items = [];
+  if (Number(contact.delivered_count || 0) > 0) items.push(["delivered", `已送达 ${contact.delivered_count}`]);
   if (Number(contact.sent_count || 0) > 0) items.push(["sent", `已发送 ${contact.sent_count}`]);
   if (Number(contact.opened_count || 0) > 0) items.push(["opened", `已打开 ${contact.opened_count}`]);
   if (Number(contact.clicked_count || 0) > 0) items.push(["clicked", `已点击 ${contact.clicked_count}`]);

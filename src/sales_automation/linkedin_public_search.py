@@ -622,7 +622,8 @@ def _phone_candidate(phone: str, source_url: str, *, confidence: int) -> dict[st
 
 def _is_blocked_domain(domain: str) -> bool:
     domain = domain.lower().removeprefix("www.")
-    return domain in {item.removeprefix("www.") for item in BLOCKED_DOMAINS}
+    blocked = {item.removeprefix("www.") for item in BLOCKED_DOMAINS}
+    return any(domain == item or domain.endswith(f".{item}") for item in blocked)
 
 
 def _clean(value: Any) -> str:

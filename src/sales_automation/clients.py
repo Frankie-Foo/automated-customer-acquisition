@@ -385,9 +385,6 @@ def _domain_from_website(value: str | None) -> str | None:
     host = (parsed.netloc or parsed.path or value).split("/")[0].strip().lower()
     if host.startswith("www."):
         host = host[4:]
-    parts = [part for part in host.split(".") if part]
-    if len(parts) > 2:
-        host = ".".join(parts[-2:])
     return host
 
 

@@ -10,6 +10,7 @@ from sales_automation.linkedin_public_search import (
     pick_public_phone_candidates,
     score_lead,
 )
+from sales_automation.clients import _domain_from_website
 
 
 def test_build_linkedin_queries_uses_public_profile_site_filter():
@@ -98,6 +99,11 @@ def test_domain_resolver_excludes_non_official_domains():
             ]
 
     assert CompanyDomainResolver(Client()).resolve("Acme") == "acme.com"
+
+
+def test_domain_normalization_preserves_meaningful_subdomains():
+    assert _domain_from_website("https://www.example.com/path") == "example.com"
+    assert _domain_from_website("https://invest.gov.kz") == "invest.gov.kz"
 
 
 def test_tavily_search_maps_results_to_google_shape():

@@ -109,7 +109,7 @@ function CustomerWorkspace() {
     });
     window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "阶段记录已保存" } }));
     await loadDetail(contact.id);
-    window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+    refreshRelatedViews();
   }
 
   async function analyzeStage(payload = {}) {
@@ -134,7 +134,7 @@ function CustomerWorkspace() {
     await api("/api/email-candidates/adopt", { method: "POST", body: JSON.stringify({ contact_id: contact.id, email }) });
     window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: `已采用候选邮箱：${email}` } }));
     await loadDetail(contact.id);
-    window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+    refreshRelatedViews();
   }
 
   async function draftEmail() {
@@ -159,7 +159,7 @@ function CustomerWorkspace() {
     window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: `邮件已发送：第 ${result.step} 封` } }));
     if (result.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: result.usage } }));
     await loadDetail(contact.id);
-    window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+    refreshRelatedViews();
   }
 
   async function guarded(action) {
@@ -235,6 +235,11 @@ function CustomerWorkspace() {
       )}
     </>
   );
+}
+
+function refreshRelatedViews() {
+  window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+  window.dispatchEvent(new CustomEvent("salesbot:refresh-related"));
 }
 
 function WorkspaceProfile({ contact, onAdoptEmail }) {

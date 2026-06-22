@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import urllib.parse
 from importlib import resources
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,10 +31,15 @@ def normalize_company_website(value: str | None) -> str:
     return _domain_from_website(value) or ""
 
 STATIC_DIR = Path(__file__).parent / "web_static"
+MAX_JSON_BODY_BYTES = 5 * 1024 * 1024
 
 
 def static_path(name: str) -> Path:
-    return Path(str(resources.files("sales_automation").joinpath("web_static", name)))
+    decoded = urllib.parse.unquote(name).replace("\\", "/")
+    parts = [part for part in decoded.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError("invalid static path")
+    return Path(str(resources.files("sales_automation").joinpath("web_static", *parts)))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,7 +77,10 @@ def make_handler(config, repo: Repository):
                 self._send_json({"ok": True, "data": {"status": "live"}})
                 return
             if parsed.path.startswith("/static/"):
-                self._send_file(static_path(parsed.path.removeprefix("/static/")))
+                try:
+                    self._send_file(static_path(parsed.path.removeprefix("/static/")))
+                except ValueError:
+                    self.send_error(404)
                 return
             if parsed.path == "/api/health":
                 health = check_readiness(config, repo)
@@ -168,7 +177,11 @@ def make_handler(config, repo: Repository):
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            payload = self._read_json()
+            try:
+                payload = self._read_json()
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=413 if "too_large" in str(exc) else 400)
+                return
             if parsed.path == "/api/login":
                 if not self._require_database():
                     return
@@ -188,6 +201,9 @@ def make_handler(config, repo: Repository):
             elif parsed.path.startswith("/api/") and (not self._require_database() or not self._require_user()):
                 return
             if parsed.path == "/api/migrate":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 self._json(lambda: {"applied": repo.db.migrate()})
                 return
             if parsed.path == "/api/change-password":
@@ -311,7 +327,7 @@ def make_handler(config, repo: Repository):
                 self._json(lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()))
                 return
             if parsed.path == "/api/enrich":
-                self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
+                self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
                 return
             if parsed.path == "/api/enrich-one":
                 if not self._require_contact_access(int(payload["contact_id"])):
@@ -319,7 +335,7 @@ def make_handler(config, repo: Repository):
                 self._json(lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
             if parsed.path == "/api/social-enrich":
-                self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)))))
+                self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
                 return
             if parsed.path == "/api/social-enrich-one":
                 if not self._require_contact_access(int(payload["contact_id"])):
@@ -358,6 +374,9 @@ def make_handler(config, repo: Repository):
                 self._json(send_one_with_quota)
                 return
             if parsed.path == "/api/scheduler":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 def run_scheduler() -> dict[str, str]:
                     SchedulerService(config, repo).run_once(
                         int(payload.get("enrich_limit", 25)),
@@ -439,13 +458,18 @@ def make_handler(config, repo: Repository):
                     user = self._current_user()
                     if not repo.get_contact_for_user(int(payload["contact_id"]), user):
                         raise RuntimeError("Contact not found")
-                    return PersonalizedEmailService(config, repo).send(
+                    snapshot = QuotaService(config, repo).snapshot(user)
+                    if min(snapshot["send"]["remaining_user"], snapshot["send"]["remaining_global"]) <= 0:
+                        raise RuntimeError("今日发信配额已用完")
+                    result = PersonalizedEmailService(config, repo).send(
                         int(payload["contact_id"]),
                         subject=payload.get("subject") or "",
                         body=payload.get("body") or "",
                         mode=payload.get("mode") or "custom",
                         user=user,
                     )
+                    quota_result = QuotaService(config, repo).consume(user, "send", 1 if result.get("sent") else 0)
+                    return {**result, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(send_custom)
                 return
             if parsed.path == "/api/admin/users":
@@ -529,12 +553,23 @@ def make_handler(config, repo: Repository):
             self.send_error(404)
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0") or 0)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError as exc:
+                self._raw_body = b""
+                raise ValueError("invalid_content_length") from exc
+            max_bytes = int(config.raw.get("app", {}).get("max_json_body_bytes") or MAX_JSON_BODY_BYTES)
+            if length > max_bytes:
+                self._raw_body = b""
+                raise ValueError("json_body_too_large")
             if length == 0:
                 self._raw_body = b""
                 return {}
             self._raw_body = self.rfile.read(length)
-            return json.loads(self._raw_body.decode("utf-8"))
+            try:
+                return json.loads(self._raw_body.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid_json") from exc
 
         def _json(self, fn) -> None:
             try:

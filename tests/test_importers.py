@@ -35,3 +35,17 @@ def test_parse_company_seed_csv_maps_chinese_template():
     assert seeds[0]["job_titles"] == ["founder", "owner", "partner"]
     assert seeds[0]["phone_candidates"][0]["phone"] == "+91 12345"
 
+
+def test_parse_company_seed_csv_maps_research_workbook_headers():
+    seeds = parse_company_seed_csv(
+        "公司名称,业务类别,主要城市,公司地址,公司网址,公司背调,Vertu渠道价值,职位\n"
+        "Mercury Group,奢侈品珠宝腕表分销,莫斯科,俄罗斯莫斯科市,https://www.mercury.ru,俄罗斯最大奢侈品分销集团,战略合作优先级最高,\"Founder, CEO\"\n"
+    )
+
+    assert seeds[0]["company_name"] == "Mercury Group"
+    assert seeds[0]["category"] == "奢侈品珠宝腕表分销"
+    assert seeds[0]["industry"] == "奢侈品珠宝腕表分销"
+    assert seeds[0]["location"] == "莫斯科"
+    assert seeds[0]["company_domain"] == "mercury.ru"
+    assert seeds[0]["job_titles"] == ["Founder", "CEO"]
+

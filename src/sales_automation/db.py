@@ -592,17 +592,21 @@ class Repository:
                 (contact_id, user["id"]),
             ).fetchone()
 
-    def list_for_enrichment(self, limit: int) -> list[dict[str, Any]]:
+    def list_for_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT * FROM contacts
-                WHERE status = 'new'
-                   OR (status = 'enriched' AND (enriched_at IS NULL OR enriched_at < NOW() - INTERVAL '30 days'))
+                WHERE (
+                    status = 'new'
+                    OR (status = 'enriched' AND (enriched_at IS NULL OR enriched_at < NOW() - INTERVAL '30 days'))
+                  )
+                  {owner_filter}
                 ORDER BY created_at
                 LIMIT %s
                 """,
-                (limit,),
+                tuple(owner_params + [limit]),
             ).fetchall()
 
     def dashboard_summary(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -706,6 +710,7 @@ class Repository:
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
                        c.lead_score, c.search_task_id,
                        COALESCE(ev.sent_count, 0) AS sent_count,
+                       COALESCE(ev.delivered_count, 0) AS delivered_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
                        COALESCE(ev.clicked_count, 0) AS clicked_count,
                        COALESCE(ev.replied_count, 0) AS replied_count,
@@ -717,6 +722,7 @@ class Repository:
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) FILTER (WHERE event_type = 'sent') AS sent_count,
+                        COUNT(*) FILTER (WHERE event_type = 'delivered') AS delivered_count,
                         COUNT(*) FILTER (WHERE event_type = 'opened') AS opened_count,
                         COUNT(*) FILTER (WHERE event_type = 'clicked') AS clicked_count,
                         COUNT(*) FILTER (WHERE event_type = 'replied') AS replied_count,
@@ -782,6 +788,7 @@ class Repository:
                 f"""
                 SELECT
                   COUNT(*) FILTER (WHERE e.event_type = 'sent') AS sent_today,
+                  COUNT(*) FILTER (WHERE e.event_type = 'delivered') AS delivered_today,
                   COUNT(*) FILTER (WHERE e.event_type = 'opened') AS opened_today,
                   COUNT(*) FILTER (WHERE e.event_type = 'clicked') AS clicked_today,
                   COUNT(*) FILTER (WHERE e.event_type = 'replied') AS replied_events_today,
@@ -1163,10 +1170,11 @@ class Repository:
                 (provider, calls, candidates, valid_candidates, selected, errors, credits_used, last_error),
             )
 
-    def list_for_social_enrichment(self, limit: int) -> list[dict[str, Any]]:
+    def list_for_social_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM contacts
                 WHERE (
@@ -1178,10 +1186,11 @@ class Repository:
                     OR (email_status = 'valid' AND email IS NOT NULL)
                     OR (first_name IS NOT NULL AND company_name IS NOT NULL)
                   )
+                  {owner_filter}
                 ORDER BY social_enriched_at NULLS FIRST, created_at DESC
                 LIMIT %s
                 """,
-                (limit,),
+                tuple(owner_params + [limit]),
             ).fetchall()
 
     def update_social_profiles(self, contact_id: int, profiles: dict[str, Any], *, error: str | None = None) -> None:
@@ -1487,6 +1496,20 @@ class Repository:
             )
             return bool(row)
 
+    def find_contact_id_by_message_id(self, message_id: str) -> int | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT contact_id
+                FROM email_events
+                WHERE message_id = %s
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT 1
+                """,
+                (message_id,),
+            ).fetchone()
+            return int(row["contact_id"]) if row else None
+
     def mark_status(self, contact_id: int, status: str, *, notes: str | None = None) -> None:
         validate_status(status)
         with self.db.connect() as conn:
@@ -1502,7 +1525,16 @@ class Repository:
             )
 
     def record_event(self, contact_id: int, event_type: str, payload: dict[str, Any]) -> None:
-        terminal = {"replied": "replied", "bounce": "bounced", "bounced": "bounced", "unsubscribe": "unsubscribed", "unsubscribed": "unsubscribed"}
+        terminal = {
+            "replied": "replied",
+            "bounce": "bounced",
+            "bounced": "bounced",
+            "failed": "bounced",
+            "suppressed": "bounced",
+            "complained": "unsubscribed",
+            "unsubscribe": "unsubscribed",
+            "unsubscribed": "unsubscribed",
+        }
         with self.db.connect() as conn:
             contact = conn.execute("SELECT sequence_step FROM contacts WHERE id = %s", (contact_id,)).fetchone()
             if not contact:

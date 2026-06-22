@@ -14,10 +14,10 @@ class EnrichmentService:
         self.config = config
         self.repo = repo
 
-    def enrich(self, limit: int) -> tuple[int, int]:
+    def enrich(self, limit: int, *, user: dict[str, Any] | None = None) -> tuple[int, int]:
         hunter, ninjapear, prospeo, proxycurl = self._clients()
         ok = failed = 0
-        for contact in self.repo.list_for_enrichment(limit):
+        for contact in self.repo.list_for_enrichment(limit, user=user):
             try:
                 self._enrich_and_save(contact, hunter, proxycurl, ninjapear, prospeo)
                 ok += 1

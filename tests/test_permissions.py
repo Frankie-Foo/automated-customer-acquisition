@@ -80,3 +80,20 @@ def test_sales_operations_report_is_scoped_to_current_user():
     assert "WHERE u.id = %s" in user_queries[0][0]
     assert user_queries[0][1] == (2,)
 
+
+def test_batch_enrichment_queries_are_scoped_to_current_user():
+    db = FakeDb()
+    Repository(db).list_for_enrichment(25, user={"id": 2, "role": "sales"})
+    query, params = db.conn.calls[-1]
+
+    assert "contacts.owner_user_id = %s" in query
+    assert params == (2, 25)
+
+
+def test_batch_social_enrichment_queries_are_scoped_to_current_user():
+    db = FakeDb()
+    Repository(db).list_for_social_enrichment(25, user={"id": 2, "role": "sales"})
+    query, params = db.conn.calls[-1]
+
+    assert "contacts.owner_user_id = %s" in query
+    assert params == (2, 25)

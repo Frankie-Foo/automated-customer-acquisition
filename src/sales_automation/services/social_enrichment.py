@@ -13,10 +13,10 @@ class SocialEnrichmentService:
         self.config = config
         self.repo = repo
 
-    def enrich(self, limit: int) -> tuple[int, int]:
+    def enrich(self, limit: int, *, user: dict[str, Any] | None = None) -> tuple[int, int]:
         client, provider = self._client()
         ok = failed = 0
-        for contact in self.repo.list_for_social_enrichment(limit):
+        for contact in self.repo.list_for_social_enrichment(limit, user=user):
             if self._enrich_and_save(contact, client, provider):
                 ok += 1
             else:

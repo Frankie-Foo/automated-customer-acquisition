@@ -31,6 +31,17 @@ function Workbench() {
   const [activeTab, setActiveTab] = useState("source");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [user, setUser] = useState(null);
+  const isAdmin = user?.role === "admin";
+
+  useEffect(() => {
+    api("/api/me")
+      .then((session) => setUser(session.user || null))
+      .catch(() => setUser(null));
+    const handleSession = (event) => setUser(event.detail?.user || null);
+    window.addEventListener("salesbot:session", handleSession);
+    return () => window.removeEventListener("salesbot:session", handleSession);
+  }, []);
 
   function notify(message, type = "") {
     setMessage(type ? "" : message);
@@ -63,7 +74,7 @@ function Workbench() {
       {activeTab === "linkedin" && <LinkedInSearchPanel guarded={guarded} notify={notify} />}
       {activeTab === "csv" && <CsvPanel guarded={guarded} notify={notify} />}
       {activeTab === "manual" && <ManualPanel guarded={guarded} notify={notify} />}
-      {activeTab === "runbook" && <RunbookPanel guarded={guarded} notify={notify} />}
+      {activeTab === "runbook" && <RunbookPanel guarded={guarded} notify={notify} isAdmin={isAdmin} />}
       {activeTab === "status" && <StatusPanel guarded={guarded} notify={notify} />}
     </>
   );
@@ -247,8 +258,15 @@ function ManualPanel({ guarded, notify }) {
   return <div className="tab-panel active"><div className="helper"><strong>临时新增一个客户</strong><p>适合测试流程，或把销售刚找到的单个客户快速录入系统。</p></div><div className="form-grid"><Field label="LinkedIn URL" value={form.linkedin_url} onChange={(v) => setForm({ ...form, linkedin_url: v })} placeholder="https://linkedin.com/in/..." /><Field label="名" value={form.first_name} onChange={(v) => setForm({ ...form, first_name: v })} placeholder="Ada" /><Field label="姓" value={form.last_name} onChange={(v) => setForm({ ...form, last_name: v })} placeholder="Lovelace" /><Field label="邮箱" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="ada@example.com" /><Field label="职位" value={form.job_title} onChange={(v) => setForm({ ...form, job_title: v })} placeholder="Founder" /><Field label="公司" value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} placeholder="Example Inc" /><Field label="公司域名" value={form.company_domain} onChange={(v) => setForm({ ...form, company_domain: v })} placeholder="example.com" /></div><div className="panel-actions"><button className="primary" type="button" onClick={() => guarded(async () => { if (!form.linkedin_url) throw new Error("LinkedIn URL 必填"); const payload = { ...form, email: form.email || null, email_status: form.email ? "valid" : "unknown", status: form.email ? "enriched" : "new", source: "manual_dashboard" }; const result = await api("/api/contacts", { method: "POST", body: JSON.stringify(payload) }); notify(`新增完成：${JSON.stringify(result)}`); refreshAll(); })}>新增联系人</button></div></div>;
 }
 
-function RunbookPanel({ guarded, notify }) {
-  const actions = [["migrate", "初始化/迁移数据库"], ["enrich", "富化邮箱（最多 100 条）"], ["social-enrich", "富化社媒（最多 100 条）"], ["queue", "加入队列（最多 100 条）"], ["send", "发送/演练（最多 100 封）"], ["scheduler", "跑一轮调度"]];
+function RunbookPanel({ guarded, notify, isAdmin }) {
+  const actions = [
+    ["migrate", "初始化/迁移数据库", true],
+    ["enrich", "富化邮箱（最多 100 条）"],
+    ["social-enrich", "富化社媒（最多 100 条）"],
+    ["queue", "加入队列（最多 100 条）"],
+    ["send", "发送/演练（最多 100 封）"],
+    ["scheduler", "跑一轮调度", true],
+  ].filter(([, , adminOnly]) => !adminOnly || isAdmin);
   return <div className="tab-panel active"><div className="helper"><strong>按顺序跑批量流程</strong><p>一般顺序是：富化 -&gt; 加入队列 -&gt; 发送演练/真实发送。也可以点“跑一轮调度”自动执行一遍。</p></div><div className="action-grid">{actions.map(([action, label]) => <button key={action} type="button" className={action === "scheduler" ? "primary" : ""} onClick={() => guarded(async () => { const data = await api(`/api/${action}`, { method: "POST", body: JSON.stringify({ limit: 100 }) }); if (data.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: data.usage } })); notify(`${label} 完成：${JSON.stringify(data)}`); refreshAll(); })}>{label}</button>)}</div></div>;
 }
 

@@ -46,27 +46,26 @@ function DashboardViews() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    const [summaryData, opsData, lifecycleData] = await Promise.all([
+    const [summaryData, opsData, lifecycleData, contactsData] = await Promise.all([
       api("/api/summary"),
       api("/api/ops-report"),
       api("/api/lifecycle"),
+      api("/api/contacts?limit=100"),
     ]);
     setSummary(summaryData);
     setOps(opsData);
     setLifecycle(lifecycleData);
+    setContacts(contactsData.contacts || []);
   }, [user]);
 
   useEffect(() => {
     const session = (event) => setUser(event.detail?.user || null);
-    const contactsUpdated = (event) => setContacts(event.detail?.contacts || []);
     const refresh = () => load().catch(() => {});
     window.addEventListener("salesbot:session", session);
-    window.addEventListener("salesbot:contacts-updated", contactsUpdated);
     window.addEventListener("salesbot:refresh-related", refresh);
     window.addEventListener("salesbot:ops-refresh", refresh);
     return () => {
       window.removeEventListener("salesbot:session", session);
-      window.removeEventListener("salesbot:contacts-updated", contactsUpdated);
       window.removeEventListener("salesbot:refresh-related", refresh);
       window.removeEventListener("salesbot:ops-refresh", refresh);
     };
@@ -138,6 +137,7 @@ function OpsReport({ report, user }) {
         <OpsCard label="今日新增线索" value={totals.new_contacts_today} />
         <OpsCard label="今日有效邮箱" value={totals.valid_emails_today} />
         <OpsCard label="今日发送" value={events.sent_today} />
+        <OpsCard label="今日送达" value={events.delivered_today} />
         <OpsCard label="今日打开" value={events.opened_today} />
         <OpsCard label="今日回复" value={(totals.replied || 0) + (events.replied_events_today || 0)} />
         <OpsCard label="今日退信" value={(totals.bounced || 0) + (events.bounced_events_today || 0)} />
@@ -180,6 +180,7 @@ function followupMeta(contact) {
   if (contact.status === "replied" || Number(contact.replied_count || 0) > 0) return "已回复";
   if (contact.status === "bounced" || Number(contact.bounced_count || 0) > 0) return "退信";
   if (Number(contact.opened_count || 0) > 0) return `打开 ${contact.opened_count} 次`;
+  if (Number(contact.delivered_count || 0) > 0) return `送达 ${contact.delivered_count} 次`;
   return eventLabel(contact.last_event_type || contact.status);
 }
 

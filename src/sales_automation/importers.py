@@ -23,12 +23,12 @@ FIELD_ALIASES = {
 
 COMPANY_SEED_ALIASES = {
     "company_name": ["company_name", "company", "company name", "store_name", "store name", "公司", "公司名称", "公司/店铺名称", "店铺名称"],
-    "category": ["category", "类别", "类目", "行业类别"],
-    "reason": ["reason", "background", "research", "notes", "简短背调", "简短背调(为何匹配Vertu资质和清理 & 调性契合度)", "简短背调_为何匹配vertu资质和清理_调性契合度"],
-    "website": ["website", "domain", "company_domain", "company website", "官网", "官网/联系链接", "官网链接", "联系链接"],
+    "category": ["category", "类别", "类目", "行业类别", "业务类别"],
+    "reason": ["reason", "background", "research", "notes", "简短背调", "公司背调", "实力和匹配度", "Vertu渠道价值", "简短背调(为何匹配Vertu资质和清理 & 调性契合度)", "简短背调_为何匹配vertu资质和清理_调性契合度"],
+    "website": ["website", "domain", "company_domain", "company website", "官网", "官网/联系链接", "官网链接", "联系链接", "公司网址"],
     "job_titles": ["job_titles", "job titles", "titles", "roles", "role", "position", "职位", "目标职位"],
     "industry": ["industry", "sector", "行业"],
-    "location": ["location", "country", "region", "地区", "国家"],
+    "location": ["location", "country", "region", "地区", "国家", "主要城市", "城市", "公司地址"],
     "phone": ["phone", "telephone", "mobile", "电话", "手机号", "联系电话"],
     "email": ["email", "邮箱", "联系邮箱"],
 }
@@ -120,6 +120,8 @@ def _normalize(value: str) -> str:
 def _normalize_domain(value: str) -> str:
     value = value.strip()
     value = value.removeprefix("https://").removeprefix("http://").split("/")[0]
+    if value.startswith("www."):
+        value = value[4:]
     return value
 
 

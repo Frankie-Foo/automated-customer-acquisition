@@ -245,7 +245,7 @@ class EmailDiscoveryEngine:
                 candidates = provider.discover(contact, domain)
             except Exception as exc:
                 self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500])
-                raise
+                continue
             all_candidates.extend(candidates)
             provider_selected = _select_valid_personal(candidates)
             selected = selected or provider_selected

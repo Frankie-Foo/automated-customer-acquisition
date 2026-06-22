@@ -14,6 +14,13 @@ class PersonalProvider:
         return [EmailCandidate.build("ada@example.com", "prospeo", "valid", 95, "personal_work")]
 
 
+class BrokenProvider:
+    name = "broken"
+
+    def discover(self, contact, domain):
+        raise RuntimeError("quota exhausted")
+
+
 def test_public_company_email_is_candidate_not_selected():
     result = EmailDiscoveryEngine([PublicOnlyProvider()]).discover({}, "example.com")
 
@@ -35,6 +42,18 @@ def test_waterfall_continues_collecting_candidates_after_valid():
 
     assert result["email"] == "ada@example.com"
     assert {item["source"] for item in result["email_candidates"]} == {"prospeo", "public_website"}
+
+
+def test_waterfall_continues_after_provider_error():
+    stats = []
+
+    result = EmailDiscoveryEngine(
+        [BrokenProvider(), PersonalProvider()],
+        stats_recorder=lambda provider, **fields: stats.append((provider, fields)),
+    ).discover({}, "example.com")
+
+    assert result["email"] == "ada@example.com"
+    assert any(provider == "broken" and fields["errors"] == 1 for provider, fields in stats)
 
 
 def test_provider_stats_recorder_is_called():
