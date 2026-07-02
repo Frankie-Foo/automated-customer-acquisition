@@ -70,7 +70,7 @@ function Workbench() {
       </div>
       {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`}>{error || message}</div>}
       {activeTab === "source" && <SourcePanel guarded={guarded} notify={notify} />}
-      {activeTab === "company-seeds" && <CompanySeedPanel guarded={guarded} notify={notify} />}
+      {activeTab === "company-seeds" && <CompanySeedPanelV2 guarded={guarded} notify={notify} />}
       {activeTab === "linkedin" && <LinkedInSearchPanel guarded={guarded} notify={notify} />}
       {activeTab === "csv" && <CsvPanel guarded={guarded} notify={notify} />}
       {activeTab === "manual" && <ManualPanel guarded={guarded} notify={notify} />}
@@ -154,6 +154,157 @@ function CompanySeedPanel({ guarded, notify }) {
       </div>
     </div>
   );
+}
+
+function CompanySeedPanelV2({ guarded, notify }) {
+  const [file, setFile] = useState(null);
+  const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_queue: false, auto_send: false });
+  const [batch, setBatch] = useState(null);
+  const [working, setWorking] = useState(false);
+
+  async function submitImport() {
+    if (!file) throw new Error("请选择 Excel 或 CSV 文件");
+    setWorking(true);
+    try {
+      notify("正在解析文件并获客，页面会在完成后显示去重可发送清单...");
+      const fileBase64 = await readFileBase64(file);
+      const response = await api("/api/import/company-seeds", {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          file_base64: fileBase64,
+          default_location: form.default_location,
+          default_industry: form.default_industry,
+          per_company_limit: Number(form.per_company_limit || 5),
+          auto_queue: form.auto_queue,
+          auto_send: form.auto_send,
+        }),
+      });
+      if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
+      setBatch(response);
+      const result = response.result || {};
+      const report = response.batch_report?.summary || {};
+      notify(`处理完成：公司 ${response.parsed || 0} 个，入库 ${result.promoted || 0} 人，去重可发送 ${report.sendable || 0} 个，需复核 ${report.review || 0} 个`);
+      refreshAll();
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <div className="tab-panel active">
+      <div className="helper">
+        <strong>批量获客导入</strong>
+        <p>销售直接上传 Excel/CSV。系统会解析公司、官网、职位、电话、邮箱，自动找公开 LinkedIn 联系人，并把结果分成“去重可发送”和“需复核候选”。</p>
+      </div>
+      <div className="helper subtle">
+        <strong>推荐表头</strong>
+        <p>company_name, category, reason, website, job_titles, industry, location, phone, email。中文也支持：公司/店铺名称、类别、简短背调、官网/联系链接、职位、地区、电话、邮箱。</p>
+      </div>
+      <div className="form-grid">
+        <label>上传 Excel/CSV
+          <input type="file" accept=".xlsx,.xlsm,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+          {file && <small>{file.name}</small>}
+        </label>
+        <Field label="默认地区" value={form.default_location} onChange={(v) => setForm({ ...form, default_location: v })} placeholder="India / UAE / Russia，可选" />
+        <Field label="默认行业" value={form.default_industry} onChange={(v) => setForm({ ...form, default_industry: v })} placeholder="luxury / watch / hotel，可选" />
+        <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
+      </div>
+      <div className="option-row">
+        <Check label="找到 valid 邮箱后自动加入队列" checked={form.auto_queue} onChange={(v) => setForm({ ...form, auto_queue: v, auto_send: v ? form.auto_send : false })} />
+        <Check label="入队后自动发邮件" checked={form.auto_send} onChange={(v) => setForm({ ...form, auto_send: v, auto_queue: v ? true : form.auto_queue })} />
+      </div>
+      <div className="panel-actions">
+        <button className="primary" type="button" disabled={working} onClick={() => guarded(submitImport)}>
+          {working ? "处理中..." : "上传并开始获客"}
+        </button>
+        <button type="button" onClick={() => downloadCompanySeedTemplate()}>下载导入模板</button>
+      </div>
+      <BatchImportResult batch={batch} />
+    </div>
+  );
+}
+
+function BatchImportResult({ batch }) {
+  if (!batch) return null;
+  const result = batch.result || {};
+  const report = batch.batch_report || {};
+  const summary = report.summary || {};
+  return (
+    <section className="batch-result">
+      <header>
+        <div>
+          <span className="eyebrow">Import result</span>
+          <h3>本次导入结果</h3>
+        </div>
+        <div className="import-total-strip">
+          <MetricChip label="公司" value={batch.parsed || 0} />
+          <MetricChip label="LinkedIn结果" value={result.results || 0} />
+          <MetricChip label="入库联系人" value={result.promoted || 0} />
+          <MetricChip label="去重可发送" value={summary.sendable || 0} />
+          <MetricChip label="需复核" value={summary.review || 0} />
+        </div>
+      </header>
+      <ResultTable
+        title="去重可发送清单"
+        hint="这些邮箱已按 email 去重，后续发邮件只看这张。"
+        rows={report.sendable || []}
+        columns={[
+          ["email", "邮箱"],
+          ["name", "联系人"],
+          ["job_title", "职位"],
+          ["company_name", "公司"],
+          ["company_domain", "域名"],
+          ["email_source", "来源"],
+          ["email_confidence", "置信度"],
+          ["status", "状态"],
+        ]}
+        empty="本次没有拿到 valid 邮箱"
+      />
+      <ResultTable
+        title="需复核候选"
+        hint="这类邮箱可能是 accept_all、未验证或公司通用邮箱，不建议直接批量发。"
+        rows={report.review || []}
+        columns={[
+          ["email", "候选邮箱"],
+          ["name", "联系人"],
+          ["job_title", "职位"],
+          ["company_name", "公司"],
+          ["category", "类型"],
+          ["candidate_status", "状态"],
+          ["confidence", "分数"],
+          ["risk", "风险"],
+        ]}
+        empty="没有需要复核的候选邮箱"
+      />
+    </section>
+  );
+}
+
+function ResultTable({ title, hint, rows, columns, empty }) {
+  return (
+    <div className="result-table-card">
+      <div className="result-table-head"><strong>{title}</strong><span>{hint}</span></div>
+      <div className="table-shell compact">
+        <table>
+          <thead><tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}</tr></thead>
+          <tbody>
+            {rows.length ? rows.map((row, index) => (
+              <tr key={`${row.email || row.contact_id || index}-${index}`}>
+                {columns.map(([key]) => <td key={key}>{formatResultCell(row[key])}</td>)}
+              </tr>
+            )) : <tr><td colSpan={columns.length}><div className="empty-state compact">{empty}</div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function formatResultCell(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+  if (value === null || value === undefined || value === "") return "--";
+  return String(value);
 }
 function LinkedInSearchPanel({ guarded, notify }) {
   const [form, setForm] = useState({ role: "", industry: "", location: "", company_keyword: "", limit: 10, auto_domain_lookup: true, auto_generate_email_candidates: true, high_confidence_verify: true });
@@ -276,6 +427,40 @@ function StatusPanel({ guarded, notify }) {
   const [email, setEmail] = useState("");
   const [domain, setDomain] = useState("");
   return <div className="tab-panel active"><div className="helper"><strong>人工修正状态或加入黑名单</strong><p>客户已回复、退订、退信，或者某个邮箱/域名永远不应外联时使用。</p></div><div className="form-grid"><Field label="联系人 ID" type="number" value={contactId} onChange={setContactId} placeholder="1" /><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}>{["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"].map((item) => <option key={item}>{item}</option>)}</select></label><Field label="黑名单邮箱" type="email" value={email} onChange={setEmail} placeholder="name@example.com" /><Field label="黑名单域名" value={domain} onChange={setDomain} placeholder="example.com" /></div><div className="panel-actions"><button type="button" onClick={() => guarded(async () => { await api("/api/mark", { method: "POST", body: JSON.stringify({ contact_id: Number(contactId), status }) }); notify("状态已更新"); refreshAll(); })}>更新状态</button><button type="button" onClick={() => guarded(async () => { await api("/api/blacklist", { method: "POST", body: JSON.stringify({ email: email || null, domain: domain || null, reason: "dashboard" }) }); notify("黑名单已更新"); refreshAll(); })}>加入黑名单</button></div></div>;
+}
+
+function MetricChip({ label, value }) {
+  return <span className="metric-chip"><b>{Number(value || 0)}</b><em>{label}</em></span>;
+}
+
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      resolve(value.includes(",") ? value.split(",", 2)[1] : value);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function downloadCompanySeedTemplate() {
+  const headers = ["company_name", "category", "reason", "website", "job_titles", "industry", "location", "phone", "email"];
+  const example = ["Luxepolis", "二手奢侈品平台", "印度首屈一指的二手奢侈品电商，有门店和高端客户基础。", "luxepolis.com", "founder, owner, partner, VP, director, head", "luxury resale", "India", "", ""];
+  const csv = [headers, example].map((row) => row.map(csvEscape).join(",")).join("\n");
+  const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "company_seed_import_template.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
 function Field({ label, value, onChange, type = "text", placeholder = "" }) {

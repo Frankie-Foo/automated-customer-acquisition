@@ -7,6 +7,7 @@ from typing import Any
 from ..clients import SlackClient
 from ..db import Repository
 from ..logging_utils import log
+from ..outreach_guard import annotate_delivery_payload
 
 
 class WebhookService:
@@ -23,6 +24,7 @@ class WebhookService:
                 contact_id = self.repo.find_contact_id_by_message_id(message_id)
         if not contact_id:
             raise ValueError("Webhook payload does not include contact_id metadata or a known message id")
+        payload = annotate_delivery_payload(event_type, payload)
         self.repo.record_event(contact_id, event_type, payload)
         if event_type == "replied" and self.notifier:
             self.notifier.notify(f"Lead replied: contact #{contact_id}")

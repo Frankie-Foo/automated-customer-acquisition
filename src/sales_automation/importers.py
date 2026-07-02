@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import hashlib
 import io
 from typing import Any
@@ -98,6 +99,75 @@ def parse_company_seed_csv(text: str, *, default_location: str = "", default_ind
     return seeds
 
 
+def parse_company_seed_upload(
+    *,
+    filename: str,
+    content_base64: str,
+    default_location: str = "",
+    default_industry: str = "",
+) -> list[dict[str, Any]]:
+    content = base64.b64decode(content_base64)
+    lowered = filename.lower()
+    if lowered.endswith(".csv"):
+        text = content.decode("utf-8-sig")
+        return parse_company_seed_csv(text, default_location=default_location, default_industry=default_industry)
+    if lowered.endswith(".xlsx") or lowered.endswith(".xlsm"):
+        rows = _read_xlsx_rows(content)
+        return _parse_company_seed_rows(rows, default_location=default_location, default_industry=default_industry)
+    raise ValueError("unsupported_import_file_type")
+
+
+def _read_xlsx_rows(content: bytes) -> list[dict[str, str]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("openpyxl_missing") from exc
+    workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    worksheet = workbook.active
+    raw_rows = [[_cell_to_text(cell) for cell in row] for row in worksheet.iter_rows(values_only=True)]
+    header_index = _find_header_row(raw_rows, COMPANY_SEED_ALIASES)
+    if header_index < 0:
+        return []
+    headers = raw_rows[header_index]
+    rows: list[dict[str, str]] = []
+    for values in raw_rows[header_index + 1 :]:
+        row = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers)) if headers[index]}
+        if any(str(value or "").strip() for value in row.values()):
+            rows.append(row)
+    return rows
+
+
+def _parse_company_seed_rows(rows: list[dict[str, str]], *, default_location: str = "", default_industry: str = "") -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    fieldnames = list(rows[0].keys())
+    mapping = _build_mapping_for_aliases(fieldnames, COMPANY_SEED_ALIASES)
+    seeds: list[dict[str, Any]] = []
+    for row in rows:
+        seed: dict[str, Any] = {}
+        for target, source in mapping.items():
+            value = (row.get(source) or "").strip()
+            if value:
+                seed[target] = value
+        if seed.get("website"):
+            seed["company_domain"] = _normalize_domain(seed["website"])
+        elif seed.get("company_domain"):
+            seed["company_domain"] = _normalize_domain(seed["company_domain"])
+        if seed.get("job_titles"):
+            seed["job_titles"] = _split_job_titles(seed["job_titles"])
+        else:
+            seed["job_titles"] = []
+        seed.setdefault("industry", default_industry or seed.get("category") or "")
+        seed.setdefault("location", default_location)
+        if seed.get("phone"):
+            seed["phone_candidates"] = [{"phone": seed["phone"], "source": "company_seed", "status": "provided"}]
+        if seed.get("email"):
+            seed["email_candidates"] = [{"email": seed["email"], "source": "company_seed", "status": "provided", "category": "company_generic", "confidence": 50}]
+        if seed.get("company_name") or seed.get("company_domain"):
+            seeds.append(seed)
+    return seeds
+
+
 def _build_mapping(fieldnames: list[str]) -> dict[str, str]:
     return _build_mapping_for_aliases(fieldnames, FIELD_ALIASES)
 
@@ -115,6 +185,27 @@ def _build_mapping_for_aliases(fieldnames: list[str], aliases_by_target: dict[st
 
 def _normalize(value: str) -> str:
     return re_sub_non_word(value.strip().lower())
+
+
+def _find_header_row(rows: list[list[str]], aliases_by_target: dict[str, list[str]]) -> int:
+    best_index = -1
+    best_score = 0
+    for index, row in enumerate(rows[:20]):
+        fieldnames = [value for value in row if value]
+        if not fieldnames:
+            continue
+        mapping = _build_mapping_for_aliases(fieldnames, aliases_by_target)
+        score = len(mapping)
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index if best_score >= 1 else -1
+
+
+def _cell_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _normalize_domain(value: str) -> str:

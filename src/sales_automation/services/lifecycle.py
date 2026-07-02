@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..db import Repository
+from ..sabcd import stage_from_payload
 
 
 class LifecycleService:
@@ -25,9 +26,11 @@ class LifecycleService:
         notes: str | None = None,
         lost_reason: str | None = None,
         owner: str | None = None,
+        sabcd_stage: str | None = None,
     ) -> dict[str, Any]:
         if lifecycle_stage and lifecycle_stage not in self.STAGES:
             raise ValueError(f"Unsupported lifecycle_stage: {lifecycle_stage}")
+        sabcd_stage = stage_from_payload(sabcd_stage)
         if disposition and disposition not in {"active", "waiting", "abandoned", "won", "lost"}:
             raise ValueError(f"Unsupported disposition: {disposition}")
         if lifecycle_stage == "abandoned" and not disposition:
@@ -42,7 +45,8 @@ class LifecycleService:
             notes=notes,
             lost_reason=lost_reason,
             owner=owner,
+            sabcd_stage=sabcd_stage,
         )
-        return {"contact_id": contact_id, "lifecycle_stage": lifecycle_stage, "disposition": disposition}
+        return {"contact_id": contact_id, "lifecycle_stage": lifecycle_stage, "disposition": disposition, "sabcd_stage": sabcd_stage}
 
 __all__ = ["LifecycleService"]

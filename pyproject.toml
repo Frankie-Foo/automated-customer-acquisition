@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
   "psycopg[binary]>=3.2",
   "PyYAML>=6.0",
+  "openpyxl>=3.1",
   "svix>=1.40",
+  "mcp>=1.9",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +19,7 @@ dev = [
 [project.scripts]
 salesbot = "sales_automation.cli:main"
 salesbot-web = "sales_automation.web:main"
+salesbot-mcp = "sales_automation.mcp_server:main"
 
 [tool.setuptools.package-data]
 sales_automation = ["web_static/*", "web_static/assets/*"]

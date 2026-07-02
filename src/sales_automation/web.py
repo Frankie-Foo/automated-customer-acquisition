@@ -16,7 +16,7 @@ from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
 from .health import check_database, check_readiness
-from .importers import parse_company_seed_csv, parse_contacts_csv
+from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
 from .linkedin_public_search import LinkedInPublicSearchService
 from .quotas import QuotaService
 from .sender_pool import SenderPoolManager
@@ -108,7 +108,13 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/summary":
                 self._json(lambda: repo.dashboard_summary(user=self._current_user()))
                 return
+            if parsed.path == "/api/owner-import-report":
+                self._json(lambda: repo.owner_import_report(user=self._current_user()))
+                return
             if parsed.path == "/api/readiness":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 self._json(lambda: check_readiness(config, repo))
                 return
             if parsed.path == "/unsubscribe":
@@ -136,6 +142,12 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/lifecycle":
                 self._json(lambda: repo.lifecycle_summary(user=self._current_user()))
+                return
+            if parsed.path == "/api/sent-emails":
+                qs = parse_qs(parsed.query)
+                search = qs.get("search", [""])[0] or None
+                limit = int(qs.get("limit", ["100"])[0])
+                self._json(lambda: {"emails": repo.list_sent_emails(user=self._current_user(), limit=limit, search=search)})
                 return
             if parsed.path == "/api/ops-report":
                 self._json(lambda: repo.operations_report(user=self._current_user()))
@@ -240,11 +252,19 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/import/company-seeds":
                 def import_company_seeds() -> dict[str, Any]:
                     user = self._current_user()
-                    seeds = parse_company_seed_csv(
-                        payload.get("csv", ""),
-                        default_location=payload.get("default_location") or "",
-                        default_industry=payload.get("default_industry") or "",
-                    )
+                    if payload.get("file_base64"):
+                        seeds = parse_company_seed_upload(
+                            filename=payload.get("filename") or "upload.xlsx",
+                            content_base64=payload.get("file_base64") or "",
+                            default_location=payload.get("default_location") or "",
+                            default_industry=payload.get("default_industry") or "",
+                        )
+                    else:
+                        seeds = parse_company_seed_csv(
+                            payload.get("csv", ""),
+                            default_location=payload.get("default_location") or "",
+                            default_industry=payload.get("default_industry") or "",
+                        )
                     requested = max(1, int(payload.get("per_company_limit") or 5)) * max(1, len(seeds))
                     snapshot = QuotaService(config, repo).snapshot(user)
                     remaining = min(snapshot["source"]["remaining_user"], snapshot["source"]["remaining_global"])
@@ -256,6 +276,10 @@ def make_handler(config, repo: Repository):
                         user=user,
                         auto_queue=bool(payload.get("auto_queue", False)),
                     )
+                    batch_report = repo.company_seed_batch_report(
+                        [int(item["task_id"]) for item in result.get("tasks", []) if item.get("task_id")],
+                        user=user,
+                    )
                     quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("results") or 0))
                     queued = sent = 0
                     if payload.get("auto_queue") or payload.get("auto_send"):
@@ -266,7 +290,7 @@ def make_handler(config, repo: Repository):
                         if send_limit > 0:
                             sent = OutreachService(config, repo).send_due(send_limit, user=user)
                             quota_result = QuotaService(config, repo).consume(user, "send", sent)
-                    return {"parsed": len(seeds), "result": {**result, "queued": queued, "sent": sent}, "usage": quota_result["user_usage"], "quotas": quota_result}
+                    return {"parsed": len(seeds), "result": {**result, "queued": queued, "sent": sent}, "batch_report": batch_report, "usage": quota_result["user_usage"], "quotas": quota_result}
                 self._json(import_company_seeds)
                 return
             if parsed.path == "/api/source":
@@ -289,8 +313,6 @@ def make_handler(config, repo: Repository):
                     result = SourcingService(config, repo).source(
                         criteria,
                         limit,
-                        owner_user_id=int(user["id"]),
-                        owner=user.get("display_name") or user.get("username"),
                     )
                     quota_result = QuotaService(config, repo).consume(user, "source", limit)
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
@@ -326,11 +348,29 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/email-candidates/adopt":
                 self._json(lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()))
                 return
+            if parsed.path == "/api/customer-pool/claim":
+                self._json(lambda: {"contact": repo.claim_public_contact(int(payload["contact_id"]), self._current_user())})
+                return
+            if parsed.path == "/api/customer-pool/return":
+                self._json(lambda: {"contact": repo.return_contact_to_public(int(payload["contact_id"]), self._current_user(), reason=payload.get("reason") or "manual_return")})
+                return
+            if parsed.path == "/api/customer-pool/auto-assign":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: repo.auto_assign_public_pool(limit=int(payload.get("limit") or 100)))
+                return
+            if parsed.path == "/api/customer-pool/recycle-stale":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: {"recycled": repo.recycle_stale_private_pool(limit=int(payload.get("limit") or 100))})
+                return
             if parsed.path == "/api/enrich":
                 self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
                 return
             if parsed.path == "/api/enrich-one":
-                if not self._require_contact_access(int(payload["contact_id"])):
+                if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
                 self._json(lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
@@ -338,7 +378,7 @@ def make_handler(config, repo: Repository):
                 self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
                 return
             if parsed.path == "/api/social-enrich-one":
-                if not self._require_contact_access(int(payload["contact_id"])):
+                if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
                 self._json(lambda: SocialEnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
                 return
@@ -388,7 +428,7 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/mark":
                 def mark() -> dict[str, Any]:
-                    if not self._has_contact_access(int(payload["contact_id"])):
+                    if not self._has_private_contact_access(int(payload["contact_id"])):
                         raise RuntimeError("Contact not found")
                     repo.mark_status(int(payload["contact_id"]), payload["status"], notes=payload.get("notes"))
                     return {"ok": True}
@@ -396,7 +436,7 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/lifecycle":
                 def lifecycle() -> dict[str, Any]:
-                    if not self._has_contact_access(int(payload["contact_id"])):
+                    if not self._has_private_contact_access(int(payload["contact_id"])):
                         raise RuntimeError("Contact not found")
                     return LifecycleService(repo).update(
                         int(payload["contact_id"]),
@@ -406,6 +446,7 @@ def make_handler(config, repo: Repository):
                         notes=payload.get("notes"),
                         lost_reason=payload.get("lost_reason"),
                         owner=payload.get("owner"),
+                        sabcd_stage=payload.get("sabcd_stage"),
                     )
                 self._json(lifecycle)
                 return
@@ -416,7 +457,7 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/lifecycle-activity":
                 def activity() -> dict[str, Any]:
-                    if not self._has_contact_access(int(payload["contact_id"])):
+                    if not self._has_private_contact_access(int(payload["contact_id"])):
                         raise RuntimeError("Contact not found")
                     return repo.add_lifecycle_activity(
                         int(payload["contact_id"]),
@@ -430,7 +471,7 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/stage-agent":
                 def stage_agent() -> dict[str, Any]:
-                    if not self._has_contact_access(int(payload["contact_id"])):
+                    if not self._has_private_contact_access(int(payload["contact_id"])):
                         raise RuntimeError("Contact not found")
                     return {
                         "analysis": StageAgentService(config, repo).analyze(
@@ -456,7 +497,7 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/send-custom":
                 def send_custom() -> dict[str, Any]:
                     user = self._current_user()
-                    if not repo.get_contact_for_user(int(payload["contact_id"]), user):
+                    if not repo.get_private_contact_for_user(int(payload["contact_id"]), user):
                         raise RuntimeError("Contact not found")
                     snapshot = QuotaService(config, repo).snapshot(user)
                     if min(snapshot["send"]["remaining_user"], snapshot["send"]["remaining_global"]) <= 0:
@@ -610,10 +651,20 @@ def make_handler(config, repo: Repository):
             user = self._current_user()
             return bool(user and repo.get_contact_for_user(contact_id, user))
 
+        def _has_private_contact_access(self, contact_id: int) -> bool:
+            user = self._current_user()
+            return bool(user and repo.get_private_contact_for_user(contact_id, user))
+
         def _require_contact_access(self, contact_id: int) -> bool:
             if self._has_contact_access(contact_id):
                 return True
             self._send_json({"ok": False, "error": "contact_not_found"}, status=404)
+            return False
+
+        def _require_private_contact_access(self, contact_id: int) -> bool:
+            if self._has_private_contact_access(contact_id):
+                return True
+            self._send_json({"ok": False, "error": "claim_required"}, status=403)
             return False
 
         def _send_json(self, data: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:

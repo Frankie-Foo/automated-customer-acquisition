@@ -5,10 +5,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..clients import LLMClient, MailClient, is_full_email
+from ..clients import LLMClient, MailClient
 from ..config import AppConfig
+from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
 from ..logging_utils import log
+from ..outreach_guard import is_sendable_email, sleep_between_sends, validate_email_body
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 
@@ -33,7 +35,7 @@ class PersonalizedEmailService:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
-        if not is_full_email(contact.get("email")):
+        if not is_sendable_email(contact.get("email")):
             raise ValueError("Contact does not have a valid email")
         sender_pool = SenderPoolManager(self.config, self.repo)
         sender = sender_pool.pick_sender()
@@ -52,6 +54,7 @@ class PersonalizedEmailService:
         text = render_string(body, values)
         if "{{unsubscribe_url}}" not in body:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
+        validate_email_body(subject, text, min_chars=60)
         html_body = "<br>".join(html.escape(line) for line in text.splitlines())
         html_body += f'<img src="{open_pixel_url(contact, step, base_url)}" width="1" height="1" alt="" />'
         message_id = mailer.send(
@@ -81,19 +84,24 @@ class PersonalizedEmailService:
         if not api_key:
             return fallback
         insights = contact.get("profile_insights") if isinstance(contact.get("profile_insights"), dict) else {}
+        if not insights:
+            insights = build_customer_profile(contact)
         source_context = _source_context(contact)
         account_context = _account_context(contact)
+        framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(contact)
         activities = self.repo.list_lifecycle_activities(int(contact["id"]), limit=5)
         history = "\n".join(f"- {item.get('content')}" for item in activities if item.get("content"))
         prompt = (
             "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
             "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
-            "Include a light next-step request. "
+            "Use this fixed five-part structure without headings: 1) state the reason for writing, 2) match the recipient's business, "
+            "3) explain Vertu's relevant value, 4) make a low-barrier ask, 5) close briefly. "
             f"Recipient: {contact.get('first_name')} {contact.get('last_name')}; role: {contact.get('job_title')}; "
             f"company: {contact.get('company_name')}; industry: {contact.get('industry')}; location: {contact.get('location')}; "
             f"lifecycle stage: {contact.get('lifecycle_stage')}; profile insights: {insights}; recent notes: {history}; "
             f"imported account context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
+            f"five-part framework: {json.dumps(framework, ensure_ascii=False)}; "
             f"sender: {self.config.sender.get('name')}."
         )
         try:
@@ -134,11 +142,17 @@ class PersonalizedEmailService:
         company = contact.get("company_name") or "your business"
         first = contact.get("first_name") or "there"
         sender = self.config.sender.get("name", "")
+        profile = build_customer_profile(contact)
+        framework = profile.get("email_framework", outreach_framework(contact))
+        match = framework.get("business_match") or _fallback_opening(contact)
+        value = framework.get("our_value") or "Vertu may fit selective high-end retail and distributor channels."
         subject = f"Quick question about {company}"
         body = (
             f"Hi {first},\n\n"
-            f"{_fallback_opening(contact)}\n\n"
-            "Would it make sense to have a short conversation about overseas channel cooperation and the next practical step?\n\n"
+            f"I am reaching out because {company} looks relevant to a selective Vertu channel discussion.\n\n"
+            f"{match}\n\n"
+            f"{value}\n\n"
+            "Would you be open to a short reply or a 15-minute exploratory call to see whether there is a practical fit?\n\n"
             f"Best,\n{sender}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )
@@ -153,7 +167,11 @@ class OutreachService:
     def send_due(self, limit: int, *, user: dict[str, Any] | None = None) -> int:
         ai = self._ai_client()
         sent = 0
+        attempted = 0
         for contact in self.repo.due_for_sending(limit, user=user):
+            if attempted:
+                sleep_between_sends(self.config)
+            attempted += 1
             if self._send_contact(contact, ai, user=user):
                 sent += 1
         log("send.completed", sent=sent)
@@ -180,6 +198,14 @@ class OutreachService:
         )
 
     def _send_contact(self, contact: dict[str, Any], ai: LLMClient, *, user: dict[str, Any] | None = None) -> bool:
+        fresh = self.repo.due_contact_for_sending(int(contact["id"]), user=user)
+        if not fresh:
+            log("send.skipped_not_due", contact_id=contact.get("id"))
+            return False
+        contact = fresh
+        if not is_sendable_email(contact.get("email")):
+            log("send.skipped_email_not_sendable", contact_id=contact.get("id"), email=contact.get("email"))
+            return False
         step_cfg = self._next_step_config(contact)
         if not step_cfg or not self._step_due(contact, step_cfg):
             return False
@@ -200,6 +226,7 @@ class OutreachService:
         }
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
+        validate_email_body(subject, text)
         html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url)}" width="1" height="1" alt="" />'
         message_id = mailer.send(
             contact["email"],

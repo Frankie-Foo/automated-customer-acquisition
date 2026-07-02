@@ -5,7 +5,16 @@ import { api } from "./api.js";
 const statuses = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"];
 const filters = [
   ["", "全部客户"],
+  ["public_pool", "公共客户池"],
+  ["private_pool", "私人客户池"],
+  ["pool_expiring", "14天内到期"],
+  ["returned_pool", "已回公共池"],
   ["mine", "我的客户"],
+  ["sabcd_d", "D 未接触"],
+  ["sabcd_c", "C 已触达"],
+  ["sabcd_b", "B 多轮沟通"],
+  ["sabcd_a", "A 商业计划/试订单"],
+  ["sabcd_s", "S 签约建店"],
   ["needs_enrichment", "待富化"],
   ["ready_to_send", "有邮箱待发送"],
   ["opened_no_reply", "已打开未回复"],
@@ -33,6 +42,14 @@ const lifecycleLabels = {
   abandoned: "已放弃",
 };
 
+const sabcdLabels = {
+  D: "D 未接触",
+  C: "C 已触达",
+  B: "B 多轮沟通",
+  A: "A 商业计划/试订单",
+  S: "S 签约建店",
+};
+
 export default function ContactsPipelinePortal() {
   const [target, setTarget] = useState(null);
 
@@ -56,6 +73,7 @@ function ContactsPipeline() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [importReport, setImportReport] = useState(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: "100" });
@@ -70,9 +88,13 @@ function ContactsPipeline() {
     setLoading(true);
     setError("");
     try {
-      const data = await api(`/api/contacts?${query}`);
+      const [data, report] = await Promise.all([
+        api(`/api/contacts?${query}`),
+        api("/api/owner-import-report"),
+      ]);
       const rows = data.contacts || [];
       setContacts(rows);
+      setImportReport(report);
       window.latestContacts = rows;
       window.dispatchEvent(new CustomEvent("salesbot:contacts-updated", { detail: { contacts: rows } }));
     } catch (err) {
@@ -111,7 +133,11 @@ function ContactsPipeline() {
         window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } }));
         return;
       }
-      if (action === "enrich-email") {
+      if (action === "claim") {
+        await api("/api/customer-pool/claim", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+      } else if (action === "return-public") {
+        await api("/api/customer-pool/return", { method: "POST", body: JSON.stringify({ contact_id: contact.id, reason: "manual_return" }) });
+      } else if (action === "enrich-email") {
         await api("/api/enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
       } else if (action === "enrich-social") {
         await api("/api/social-enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
@@ -142,69 +168,51 @@ function ContactsPipeline() {
         <div>
           <span className="eyebrow">Pipeline</span>
           <h2>客户列表与邮件反馈</h2>
-          <p>销售团队每天在这里查看客户状态、最近触达和邮件行为反馈。</p>
+          <p>查看客户状态、最近触达、邮件行为和 SABCD 阶段。</p>
         </div>
         <div className="toolbar">
-          <label>
-            Status
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="">全部</option>
-              {statuses.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>
-            视图
-            <select value={filter} onChange={(event) => setFilter(event.target.value)}>
-              {filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}
-            </select>
-          </label>
-          <label>
-            Search
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" />
-          </label>
+          <label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
+          <label>视图<select value={filter} onChange={(event) => setFilter(event.target.value)}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
+          <label>Search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" /></label>
         </div>
       </div>
+      <ImportBatchReport report={importReport} />
       {error && <div className="admin-alert is-error">{error}</div>}
       <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>联系人</th>
-              <th>公司</th>
-              <th>邮箱</th>
-              <th>电话</th>
-              <th>状态</th>
-              <th>Step</th>
-              <th>社媒</th>
-              <th>邮件反馈</th>
-              <th>生命周期</th>
-              <th>客户画像</th>
-              <th>最近联系</th>
-              <th>操作</th>
-              <th>错误</th>
+              <th>ID</th><th>联系人</th><th>公司</th><th>邮箱</th><th>电话</th><th>状态</th><th>Step</th><th>社媒</th><th>邮件反馈</th><th>SABCD</th><th>客户池</th><th>生命周期</th><th>客户画像</th><th>最近联系</th><th>操作</th><th>错误</th>
             </tr>
           </thead>
           <tbody>
-            {loading && !contacts.length ? (
-              <tr><td colSpan="14"><div className="empty-state">正在加载客户...</div></td></tr>
-            ) : contacts.length ? (
-              contacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} />)
-            ) : (
-              <tr>
-                <td colSpan="14">
-                  <div className="empty-state">
-                    <strong>还没有客户</strong>
-                    <div>先用上方“自动获客”、CSV 导入，或手动新增一个联系人。</div>
-                  </div>
-                </td>
-              </tr>
-            )}
+            {loading && !contacts.length ? <tr><td colSpan="16"><div className="empty-state">正在加载客户...</div></td></tr> : contacts.length ? contacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} />) : <tr><td colSpan="16"><div className="empty-state"><strong>还没有客户</strong><div>先用上方获客、CSV 导入，或手动新增联系人。</div></div></td></tr>}
           </tbody>
         </table>
       </div>
     </>
   );
+}
+
+function ImportBatchReport({ report }) {
+  const owners = report?.owners || [];
+  if (!owners.length) return null;
+  const totals = report?.totals || {};
+  return (
+    <section className="import-report">
+      <div className="import-report-head">
+        <div><span className="eyebrow">Latest batch</span><h3>最近导入与触达结果</h3><p>{report.scope === "team" ? "管理员可查看团队批量导入和发送结果。" : "这里只展示你名下客户的处理结果。"}</p></div>
+        <div className="import-total-strip"><MetricChip label="导入客户" value={totals.total || 0} /><MetricChip label="有邮箱" value={totals.with_email || 0} /><MetricChip label="已发送" value={totals.sent_total || 0} /><MetricChip label="待发送" value={totals.queued || 0} /></div>
+      </div>
+      <div className="import-report-grid">
+        {owners.map((row) => <article key={row.owner} className="import-owner-card"><div className="import-owner-title"><strong>{row.owner}</strong><span>{row.sent_total ? "已触达" : row.without_email ? "待补邮箱" : "待处理"}</span></div><div className="import-owner-stats"><MetricChip label="导入" value={row.total} /><MetricChip label="邮箱" value={row.with_email} /><MetricChip label="已发" value={row.sent_total} /><MetricChip label="无邮箱" value={row.without_email} /></div><div className="import-owner-foot"><span>new {row.new}</span><span>enriched {row.enriched}</span><span>queued {row.queued}</span><span>sent_1 {row.sent_step_1}</span></div>{row.last_sent_at && <small>最后发送：{formatDate(row.last_sent_at)}</small>}</article>)}
+      </div>
+    </section>
+  );
+}
+
+function MetricChip({ label, value }) {
+  return <span className="metric-chip"><b>{Number(value || 0)}</b><em>{label}</em></span>;
 }
 
 function ContactRow({ contact, onAction }) {
@@ -213,11 +221,7 @@ function ContactRow({ contact, onAction }) {
   return (
     <tr>
       <td>{contact.id}</td>
-      <td>
-        <strong>{fullName(contact)}</strong>
-        <div className="muted">{contact.job_title || ""}</div>
-        {isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}
-      </td>
+      <td><strong>{fullName(contact)}</strong><div className="muted">{contact.job_title || ""}</div>{isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}</td>
       <td><strong>{contact.company_name || ""}</strong><div className="muted">{contact.company_domain || ""}</div></td>
       <td>{displayEmail(contact)}<div className="muted">{emailMeta(contact)}</div></td>
       <td>{displayPhone(contact)}<div className="muted">{phoneMeta(contact)}</div></td>
@@ -225,55 +229,31 @@ function ContactRow({ contact, onAction }) {
       <td>{contact.sequence_step || 0}</td>
       <td><SocialProfiles contact={contact} /></td>
       <td><EmailFeedback contact={contact} /></td>
-      <td>
-        <div className="lifecycle-cell">
-          <span className="stage-pill">{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span>
-          <div className="muted">{dispositionLabel(contact.disposition)}</div>
-          {contact.next_action_at && <div className="muted">下次：{formatDate(contact.next_action_at)}</div>}
-        </div>
-      </td>
-      <td>
-        {contact.profile_summary || Object.keys(insights).length ? (
-          <div className="profile-insights" title={contact.profile_summary || ""}>
-            <div className="fit-line"><b>{score || "--"}</b><span>{intentLabel(insights.intent_level)}</span></div>
-            <strong>{insights.persona || contact.profile_summary || "客户画像"}</strong>
-            <p>{insights.next_action || contact.profile_summary || "暂无下一步建议"}</p>
-          </div>
-        ) : <div className="profile-summary muted">待生成画像</div>}
-      </td>
+      <td><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span></td>
+      <td><PoolBadge contact={contact} /></td>
+      <td><div className="lifecycle-cell"><span className="stage-pill">{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><div className="muted">{dispositionLabel(contact.disposition)}</div>{contact.next_action_at && <div className="muted">下次：{formatDate(contact.next_action_at)}</div>}</div></td>
+      <td>{contact.profile_summary || Object.keys(insights).length ? <div className="profile-insights" title={contact.profile_summary || ""}><div className="fit-line"><b>{score || "--"}</b><span>{intentLabel(insights.intent_level)}</span></div><strong>{insights.persona || contact.profile_summary || "客户画像"}</strong><p>{insights.next_action || contact.profile_summary || "暂无下一步建议"}</p></div> : <div className="profile-summary muted">待生成画像</div>}</td>
       <td>{formatDate(contact.last_contacted_at)}</td>
-      <td>
-        <div className="row-actions">
-          {[
-            ["enrich-email", "邮箱"],
-            ["enrich-social", "社媒"],
-            ["queue-one", "入队"],
-            ["send-one", "发送"],
-            ["next", "推进"],
-            ["wait", "等待"],
-            ["abandon", "放弃"],
-            ["profile", "画像"],
-            ["detail", "详情"],
-          ].map(([action, label]) => <button key={action} type="button" onClick={() => onAction(contact, action)}>{label}</button>)}
-        </div>
-      </td>
+      <td><div className="row-actions">{rowActions(contact).map(([action, label]) => <button key={action} type="button" onClick={() => onAction(contact, action)}>{label}</button>)}</div></td>
       <td className="error-text" title={contact.enrich_error || ""}>{contact.enrich_error || ""}</td>
     </tr>
   );
 }
 
+function rowActions(contact) {
+  if (contact.pool_type === "public") return [["claim", "领取"], ["profile", "画像"], ["detail", "详情"]];
+  return [["enrich-email", "邮箱"], ["enrich-social", "社媒"], ["queue-one", "入队"], ["send-one", "发送"], ["next", "推进"], ["stage-d", "D"], ["stage-c", "C"], ["stage-b", "B"], ["stage-a", "A"], ["stage-s", "S"], ["wait", "等待"], ["abandon", "放弃"], ["profile", "画像"], ["detail", "详情"], ["return-public", "退回公池"]];
+}
+
+function PoolBadge({ contact }) {
+  const isPublic = contact.pool_type === "public";
+  return <div className="pool-cell"><span className={`pool-pill ${isPublic ? "public" : "private"}`}>{isPublic ? "公共池" : "私人池"}</span><div className="muted">{isPublic ? "可领取" : (contact.owner || "已分配")}</div>{!isPublic && contact.pool_expires_at && <div className="muted">保护期至 {formatDate(contact.pool_expires_at)}</div>}{isPublic && contact.returned_to_public_at && <div className="muted">回池 {formatDate(contact.returned_to_public_at)}</div>}{Number(contact.claim_count || 0) > 0 && <div className="muted">领取 {contact.claim_count} 次</div>}</div>;
+}
+
 function SocialProfiles({ contact }) {
   const profiles = contact.social_profiles || {};
-  const entries = [
-    ["linkedin", "LinkedIn"],
-    ["twitter", "X"],
-    ["github", "GitHub"],
-    ["facebook", "Facebook"],
-    ["website", "Website"],
-  ].filter(([key]) => isHttpUrl(profiles[key]));
-  if (entries.length) {
-    return <div className="social-links">{entries.map(([key, label]) => <a key={key} className="social-link" href={profiles[key]} target="_blank" rel="noreferrer">{label}</a>)}</div>;
-  }
+  const entries = [["linkedin", "LinkedIn"], ["twitter", "X"], ["github", "GitHub"], ["facebook", "Facebook"], ["website", "Website"]].filter(([key]) => isHttpUrl(profiles[key]));
+  if (entries.length) return <div className="social-links">{entries.map(([key, label]) => <a key={key} className="social-link" href={profiles[key]} target="_blank" rel="noreferrer">{label}</a>)}</div>;
   if (contact.social_error) return <span className="muted" title={contact.social_error}>未找到</span>;
   return <span className="muted">待富化</span>;
 }
@@ -323,28 +303,13 @@ function phoneMeta(contact) {
   if (candidates.length) return `${candidates.length} 个候选`;
   return "";
 }
+
 function statusLabel(status) {
-  return {
-    new: "新线索",
-    enriched: "已富化",
-    queued: "待发送",
-    sent_1: "已发第 1 封",
-    sent_2: "已发第 2 封",
-    sent_3: "已发第 3 封",
-    replied: "已回复",
-    bounced: "已退信",
-    unsubscribed: "已退订",
-  }[status] || status;
+  return { new: "新线索", enriched: "已富化", queued: "待发送", sent_1: "已发第1封", sent_2: "已发第2封", sent_3: "已发第3封", replied: "已回复", bounced: "已退信", unsubscribed: "已退订" }[status] || status;
 }
 
 function dispositionLabel(disposition) {
-  return {
-    active: "推进中",
-    waiting: "等待",
-    abandoned: "已放弃",
-    won: "已签约",
-    lost: "流失",
-  }[disposition] || disposition || "推进中";
+  return { active: "推进中", waiting: "等待", abandoned: "已放弃", won: "已签约", lost: "流失" }[disposition] || disposition || "推进中";
 }
 
 function intentLabel(level) {
@@ -357,14 +322,17 @@ function formatDate(value) {
 }
 
 function lifecyclePayload(action, contact) {
+  if (action.startsWith("stage-")) {
+    const stage = action.slice(-1).toUpperCase();
+    return { contact_id: contact.id, sabcd_stage: stage, notes: `set SABCD stage ${stage}` };
+  }
   if (action === "next") {
-    const order = ["lead", "replied", "conversation", "meeting", "business_plan", "trial_order", "agency_agreement", "store_creation", "signed"];
+    const order = ["lead", "replied", "conversation", "meeting", "business_plan", "trial_order", "agency_agreement", "store_visit", "signed"];
     const current = contact.lifecycle_stage || "lead";
-    const next = order[Math.min(order.indexOf(current) + 1 || 1, order.length - 1)];
-    return { contact_id: contact.id, lifecycle_stage: next, disposition: "active", notes: "react pipeline: advance lifecycle" };
+    const currentIndex = Math.max(0, order.indexOf(current));
+    const next = order[Math.min(currentIndex + 1, order.length - 1)];
+    return { contact_id: contact.id, lifecycle_stage: next, disposition: "active", notes: "advance lifecycle" };
   }
-  if (action === "wait") {
-    return { contact_id: contact.id, lifecycle_stage: contact.lifecycle_stage || "waiting_pool", disposition: "waiting", next_action_at: new Date(Date.now() + 7 * 86400000).toISOString(), notes: "react pipeline: move to waiting pool" };
-  }
-  return { contact_id: contact.id, lifecycle_stage: "abandoned", disposition: "abandoned", lost_reason: "react pipeline: manually abandoned", notes: "react pipeline: abandon customer" };
+  if (action === "wait") return { contact_id: contact.id, lifecycle_stage: contact.lifecycle_stage || "waiting_pool", disposition: "waiting", next_action_at: new Date(Date.now() + 7 * 86400000).toISOString(), notes: "move to waiting pool" };
+  return { contact_id: contact.id, lifecycle_stage: "abandoned", disposition: "abandoned", lost_reason: "manually abandoned", notes: "abandon customer" };
 }

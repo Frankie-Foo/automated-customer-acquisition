@@ -9,6 +9,8 @@ from typing import Any, Iterable
 
 from .auth import hash_password, new_session_token, session_expires_at, verify_password
 from .config import AppConfig
+from .customer_intelligence import build_customer_profile
+from .sabcd import stage_from_payload
 from .status import validate_status
 
 
@@ -373,7 +375,7 @@ class Repository:
             ).fetchone()
             if int(row[field] or 0) + amount > limit:
                 raise RuntimeError(f"global_daily_quota_exceeded:{field}:{row[field]}/{limit}")
-            return conn.execute(
+            rows = conn.execute(
                 f"""
                 UPDATE global_daily_usage
                 SET {field} = {field} + %s
@@ -476,23 +478,38 @@ class Repository:
                 (name, email, provider, daily_limit, warmup_stage, active, sender_id),
             ).fetchone()
 
-    def upsert_contacts(self, contacts: Iterable[dict[str, Any]], *, owner_user_id: int | None = None) -> tuple[int, int]:
+    def upsert_contacts(
+        self,
+        contacts: Iterable[dict[str, Any]],
+        *,
+        owner_user_id: int | None = None,
+        pool_type: str | None = None,
+    ) -> tuple[int, int]:
         inserted = skipped = 0
         sql = """
         INSERT INTO contacts (
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
           company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner,
-          email_candidates, lead_score, search_task_id, phone, phone_candidates, source_context
+          email_candidates, lead_score, search_task_id, phone, phone_candidates, source_context,
+          pool_type, assignment_source, assigned_at, pool_expires_at, last_stage_changed_at
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
           %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
           %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s,
-          %(phone)s, %(phone_candidates)s::jsonb, %(source_context)s::jsonb
+          %(phone)s, %(phone_candidates)s::jsonb, %(source_context)s::jsonb,
+          %(pool_type)s, %(assignment_source)s,
+          CASE WHEN %(owner_user_id)s::bigint IS NULL THEN NULL ELSE NOW() END,
+          CASE WHEN %(owner_user_id)s::bigint IS NULL THEN NULL ELSE NOW() + INTERVAL '60 days' END,
+          NOW()
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
             owner_user_id = COALESCE(contacts.owner_user_id, EXCLUDED.owner_user_id),
             owner = COALESCE(contacts.owner, EXCLUDED.owner),
+            pool_type = CASE
+                WHEN contacts.owner_user_id IS NULL AND contacts.pool_type = 'public' THEN contacts.pool_type
+                ELSE COALESCE(contacts.pool_type, EXCLUDED.pool_type)
+            END,
             lead_score = COALESCE(EXCLUDED.lead_score, contacts.lead_score),
             search_task_id = COALESCE(EXCLUDED.search_task_id, contacts.search_task_id),
             email_candidates = CASE
@@ -542,6 +559,8 @@ class Repository:
                 defaults = _contact_defaults(contact)
                 defaults["owner_user_id"] = owner_user_id or contact.get("owner_user_id")
                 defaults["owner"] = contact.get("owner")
+                defaults["pool_type"] = _normalize_pool_type(pool_type or contact.get("pool_type"), defaults["owner_user_id"])
+                defaults["assignment_source"] = contact.get("assignment_source") or ("import_owner" if defaults["owner_user_id"] else "automated_sourcing")
                 defaults["email_candidates"] = json.dumps(contact.get("email_candidates") or [])
                 defaults["phone_candidates"] = json.dumps(contact.get("phone_candidates") or [])
                 defaults["source_context"] = json.dumps(contact.get("source_context") or {}, ensure_ascii=False)
@@ -556,7 +575,7 @@ class Repository:
 
     def get_contact(self, contact_id: int) -> dict[str, Any] | None:
         with self.db.connect() as conn:
-            return conn.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,)).fetchone()
+            return _with_customer_intelligence(conn.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,)).fetchone())
 
     def get_contact_by_linkedin_url(self, linkedin_url: str) -> dict[str, Any] | None:
         with self.db.connect() as conn:
@@ -587,10 +606,19 @@ class Repository:
         if user.get("role") == "admin":
             return self.get_contact(contact_id)
         with self.db.connect() as conn:
-            return conn.execute(
-                "SELECT * FROM contacts WHERE id = %s AND owner_user_id = %s",
+            return _with_customer_intelligence(conn.execute(
+                "SELECT * FROM contacts WHERE id = %s AND (owner_user_id = %s OR pool_type = 'public')",
                 (contact_id, user["id"]),
-            ).fetchone()
+            ).fetchone())
+
+    def get_private_contact_for_user(self, contact_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
+        if user.get("role") == "admin":
+            return self.get_contact(contact_id)
+        with self.db.connect() as conn:
+            return _with_customer_intelligence(conn.execute(
+                "SELECT * FROM contacts WHERE id = %s AND owner_user_id = %s AND pool_type = 'private'",
+                (contact_id, user["id"]),
+            ).fetchone())
 
     def list_for_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
@@ -649,6 +677,16 @@ class Repository:
                 """,
                 tuple(owner_params),
             ).fetchall()
+            sabcd = conn.execute(
+                f"""
+                SELECT sabcd_stage, COUNT(*) AS count
+                FROM contacts c
+                {owner_filter}
+                GROUP BY sabcd_stage
+                ORDER BY sabcd_stage
+                """,
+                tuple(owner_params),
+            ).fetchall()
             disposition = conn.execute(
                 f"""
                 SELECT disposition, COUNT(*) AS count
@@ -665,7 +703,176 @@ class Repository:
             "statuses": {row["status"]: int(row["count"]) for row in statuses},
             "events_7d": {row["event_type"]: int(row["count"]) for row in events},
             "lifecycle": {row["lifecycle_stage"]: int(row["count"]) for row in lifecycle},
+            "sabcd": {row["sabcd_stage"]: int(row["count"]) for row in sabcd},
             "dispositions": {row["disposition"]: int(row["count"]) for row in disposition},
+        }
+
+    def owner_import_report(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        tracked_owners = ("April", "Haiwen", "Viki", "Ivan", "Vivi")
+        owner_scope = ""
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            owner_scope = "AND c.owner_user_id = %s"
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  c.owner,
+                  COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE c.email IS NOT NULL AND c.email <> '') AS with_email,
+                  COUNT(*) FILTER (WHERE c.email IS NULL OR c.email = '') AS without_email,
+                  COUNT(*) FILTER (WHERE c.status = 'sent_1') AS sent_step_1,
+                  COUNT(*) FILTER (WHERE c.status = 'queued') AS queued,
+                  COUNT(*) FILTER (WHERE c.status = 'enriched') AS enriched,
+                  COUNT(*) FILTER (WHERE c.status = 'new') AS new_contacts,
+                  COUNT(*) FILTER (WHERE c.status = 'bounced') AS bounced
+                FROM contacts c
+                WHERE c.owner IN ('April', 'Haiwen', 'Viki', 'Ivan', 'Vivi')
+                  {owner_scope}
+                GROUP BY c.owner
+                ORDER BY c.owner
+                """,
+                tuple(params),
+            ).fetchall()
+            sent_rows = conn.execute(
+                f"""
+                SELECT
+                  c.owner,
+                  COUNT(*) AS sent_total,
+                  MAX(e.occurred_at) AS last_sent_at
+                FROM email_events e
+                JOIN contacts c ON c.id = e.contact_id
+                WHERE e.event_type = 'sent'
+                  AND c.owner IN ('April', 'Haiwen', 'Viki', 'Ivan', 'Vivi')
+                  {owner_scope}
+                GROUP BY c.owner
+                """,
+                tuple(params),
+            ).fetchall()
+        sent_by_owner = {row["owner"]: row for row in sent_rows}
+        owners = []
+        for owner in tracked_owners:
+            base = next((row for row in rows if row["owner"] == owner), None)
+            sent = sent_by_owner.get(owner, {})
+            owners.append(
+                {
+                    "owner": owner,
+                    "total": int(base["total"]) if base else 0,
+                    "with_email": int(base["with_email"]) if base else 0,
+                    "without_email": int(base["without_email"]) if base else 0,
+                    "sent_step_1": int(base["sent_step_1"]) if base else 0,
+                    "queued": int(base["queued"]) if base else 0,
+                    "enriched": int(base["enriched"]) if base else 0,
+                    "new": int(base["new_contacts"]) if base else 0,
+                    "bounced": int(base["bounced"]) if base else 0,
+                    "sent_total": int(sent.get("sent_total") or 0),
+                    "last_sent_at": sent.get("last_sent_at"),
+                }
+            )
+        return {
+            "scope": "team" if not user or user.get("role") == "admin" else "mine",
+            "owners": [item for item in owners if item["total"] or (user and user.get("role") == "admin")],
+            "totals": {
+                "total": sum(item["total"] for item in owners),
+                "with_email": sum(item["with_email"] for item in owners),
+                "sent_total": sum(item["sent_total"] for item in owners),
+                "queued": sum(item["queued"] for item in owners),
+            },
+        }
+
+    def company_seed_batch_report(self, task_ids: list[int], *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        task_ids = [int(task_id) for task_id in task_ids if task_id]
+        if not task_ids:
+            return {"sendable": [], "review": [], "summary": {"contacts": 0, "sendable": 0, "review": 0}}
+        placeholders = ", ".join(["%s"] * len(task_ids))
+        params: list[Any] = [*task_ids]
+        owner_clause = ""
+        if user and user.get("role") != "admin":
+            owner_clause = "AND c.owner_user_id = %s"
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.first_name, c.last_name, c.email, c.email_status, c.job_title,
+                       c.company_name, c.company_domain, c.status::text, c.email_source,
+                       c.email_confidence, c.email_candidates, c.phone, c.phone_candidates,
+                       c.search_task_id, c.owner
+                FROM contacts c
+                WHERE c.search_task_id IN ({placeholders})
+                  {owner_clause}
+                ORDER BY c.company_name, c.id
+                """,
+                tuple(params),
+            ).fetchall()
+        sendable_by_email: dict[str, dict[str, Any]] = {}
+        review_by_email: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            full_name = " ".join([str(row.get("first_name") or "").strip(), str(row.get("last_name") or "").strip()]).strip()
+            base = {
+                "contact_id": row.get("id"),
+                "name": full_name,
+                "job_title": row.get("job_title") or "",
+                "company_name": row.get("company_name") or "",
+                "company_domain": row.get("company_domain") or "",
+                "status": row.get("status") or "",
+                "owner": row.get("owner") or "",
+                "phone": row.get("phone") or "",
+                "search_task_id": row.get("search_task_id"),
+            }
+            email = str(row.get("email") or "").strip().lower()
+            if email and (row.get("email_status") == "valid" or row.get("status") in {"enriched", "queued", "sent_1", "sent_2", "sent_3"}):
+                sendable_by_email.setdefault(
+                    email,
+                    {
+                        **base,
+                        "email": email,
+                        "email_status": row.get("email_status") or "",
+                        "email_source": row.get("email_source") or "",
+                        "email_confidence": row.get("email_confidence") or "",
+                        "contact_ids": [],
+                    },
+                )["contact_ids"].append(row.get("id"))
+            candidates = row.get("email_candidates") or []
+            if isinstance(candidates, str):
+                try:
+                    candidates = json.loads(candidates)
+                except Exception:
+                    candidates = []
+            for candidate in candidates if isinstance(candidates, list) else []:
+                candidate_email = str(candidate.get("email") or "").strip().lower()
+                if not candidate_email or candidate_email in sendable_by_email:
+                    continue
+                category = candidate.get("category") or ""
+                candidate_status = candidate.get("status") or "candidate"
+                if category == "company_generic":
+                    risk = "公司通用邮箱，只能人工复核，不建议自动群发"
+                elif candidate_status in {"accept_all", "unknown", "unverified", "candidate"}:
+                    risk = "未验证或 accept_all，存在退信风险"
+                else:
+                    risk = "候选邮箱，需人工确认"
+                review_by_email.setdefault(
+                    candidate_email,
+                    {
+                        **base,
+                        "email": candidate_email,
+                        "candidate_status": candidate_status,
+                        "category": category,
+                        "source": candidate.get("source") or "",
+                        "confidence": candidate.get("confidence") or "",
+                        "risk": risk,
+                        "contact_ids": [],
+                    },
+                )["contact_ids"].append(row.get("id"))
+        return {
+            "summary": {
+                "tasks": len(task_ids),
+                "contacts": len(rows),
+                "sendable": len(sendable_by_email),
+                "review": len(review_by_email),
+            },
+            "sendable": list(sendable_by_email.values()),
+            "review": list(review_by_email.values()),
         }
 
     def list_contacts(
@@ -680,7 +887,7 @@ class Repository:
         clauses: list[str] = []
         params: list[Any] = []
         if user and user.get("role") != "admin":
-            clauses.append("c.owner_user_id = %s")
+            clauses.append("(c.owner_user_id = %s OR c.pool_type = 'public')")
             params.append(user["id"])
         if status:
             validate_status(status)
@@ -707,6 +914,9 @@ class Repository:
                        c.source_context,
                        c.social_profiles, c.social_enriched_at, c.social_error,
                        c.outreach_stage, c.lifecycle_stage, c.disposition, c.next_action_at,
+                       c.sabcd_stage,
+                       c.pool_type, c.assignment_source, c.assigned_at, c.pool_expires_at,
+                       c.last_stage_changed_at, c.returned_to_public_at, c.claim_count,
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
                        c.lead_score, c.search_task_id,
                        COALESCE(ev.sent_count, 0) AS sent_count,
@@ -739,6 +949,7 @@ class Repository:
                 """,
                 tuple(params),
             ).fetchall()
+            return [_with_customer_intelligence(row) for row in rows]
 
     def _owner_filter(self, alias: str, user: dict[str, Any] | None = None, *, prefix: str = "WHERE") -> tuple[str, list[Any]]:
         if user and user.get("role") != "admin":
@@ -753,6 +964,11 @@ class Repository:
     def _append_contact_filter(self, clauses: list[str], filter_key: str) -> None:
         filters = {
             "mine": "c.owner_user_id IS NOT NULL",
+            "public_pool": "c.pool_type = 'public'",
+            "private_pool": "c.pool_type = 'private'",
+            "my_private_pool": "c.pool_type = 'private' AND c.owner_user_id IS NOT NULL",
+            "pool_expiring": "c.pool_type = 'private' AND c.sabcd_stage <> 'S' AND c.pool_expires_at <= NOW() + INTERVAL '14 days'",
+            "returned_pool": "c.pool_type = 'public' AND c.returned_to_public_at IS NOT NULL",
             "needs_enrichment": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
             "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched'",
             "opened_no_reply": "COALESCE(ev.opened_count, 0) > 0 AND c.status NOT IN ('replied', 'bounced', 'unsubscribed')",
@@ -762,10 +978,92 @@ class Repository:
             "third_touch_due": "c.status = 'sent_2'",
             "waiting_pool": "c.lifecycle_stage = 'waiting_pool'",
             "abandoned": "(c.lifecycle_stage = 'abandoned' OR c.disposition = 'abandoned')",
+            "sabcd_d": "c.sabcd_stage = 'D'",
+            "sabcd_c": "c.sabcd_stage = 'C'",
+            "sabcd_b": "c.sabcd_stage = 'B'",
+            "sabcd_a": "c.sabcd_stage = 'A'",
+            "sabcd_s": "c.sabcd_stage = 'S'",
         }
         clause = filters.get(filter_key)
         if clause:
             clauses.append(clause)
+
+    def list_sent_emails(
+        self,
+        *,
+        user: dict[str, Any] | None = None,
+        limit: int = 100,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        owner_filter, owner_params = self._owner_filter("c", user, prefix="AND")
+        clauses = ["e.event_type = 'sent'"]
+        params: list[Any] = []
+        if search:
+            clauses.append(
+                """
+                (
+                  c.email ILIKE %s
+                  OR c.company_name ILIKE %s
+                  OR c.first_name ILIKE %s
+                  OR c.last_name ILIKE %s
+                  OR e.email_subject ILIKE %s
+                  OR COALESCE(e.metadata->>'sender_email', '') ILIKE %s
+                )
+                """
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like, like, like])
+        where = "WHERE " + " AND ".join(clauses)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT e.id,
+                       e.contact_id,
+                       e.sequence_step,
+                       e.email_subject,
+                       e.message_id,
+                       e.occurred_at,
+                       e.metadata,
+                       COALESCE(e.metadata->>'sender_email', '') AS sender_email,
+                       COALESCE(e.metadata->>'sender_id', '') AS sender_id,
+                       COALESCE(e.metadata->>'mode', '') AS mode,
+                       COALESCE((e.metadata->>'dry_run')::boolean, FALSE) AS dry_run,
+                       c.first_name,
+                       c.last_name,
+                       c.email AS recipient_email,
+                       c.job_title,
+                       c.company_name,
+                       c.company_domain,
+                       c.status,
+                       c.sabcd_stage,
+                       COALESCE(ev.delivered_count, 0) AS delivered_count,
+                       COALESCE(ev.opened_count, 0) AS opened_count,
+                       COALESCE(ev.replied_count, 0) AS replied_count,
+                       COALESCE(ev.bounced_count, 0) AS bounced_count,
+                       COALESCE(ev.complained_count, 0) AS complained_count,
+                       COALESCE(ev.last_feedback_at, e.occurred_at) AS last_feedback_at,
+                       ev.last_feedback_type
+                FROM email_events e
+                JOIN contacts c ON c.id = e.contact_id
+                LEFT JOIN LATERAL (
+                    SELECT COUNT(*) FILTER (WHERE event_type = 'delivered') AS delivered_count,
+                           COUNT(*) FILTER (WHERE event_type = 'opened') AS opened_count,
+                           COUNT(*) FILTER (WHERE event_type = 'replied') AS replied_count,
+                           COUNT(*) FILTER (WHERE event_type = 'bounced') AS bounced_count,
+                           COUNT(*) FILTER (WHERE event_type = 'complained') AS complained_count,
+                           MAX(occurred_at) FILTER (WHERE event_type <> 'sent') AS last_feedback_at,
+                           (ARRAY_AGG(event_type::text ORDER BY occurred_at DESC) FILTER (WHERE event_type <> 'sent'))[1] AS last_feedback_type
+                    FROM email_events
+                    WHERE contact_id = e.contact_id
+                      AND sequence_step = e.sequence_step
+                ) ev ON TRUE
+                {where}
+                  {owner_filter}
+                ORDER BY e.occurred_at DESC, e.id DESC
+                LIMIT %s
+                """,
+                tuple(params + owner_params + [max(1, min(int(limit), 500))]),
+            ).fetchall()
 
     def operations_report(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
         is_admin = bool(user and user.get("role") == "admin")
@@ -1228,9 +1526,18 @@ class Repository:
                 """,
                 tuple(owner_params),
             ).fetchall()
+            sabcd = conn.execute(
+                f"""
+                SELECT sabcd_stage, COUNT(*) AS count
+                FROM contacts c
+                {owner_where}
+                GROUP BY sabcd_stage
+                """,
+                tuple(owner_params),
+            ).fetchall()
             action_rows = conn.execute(
                 f"""
-                SELECT id, first_name, last_name, company_name, lifecycle_stage, disposition,
+                SELECT id, first_name, last_name, company_name, lifecycle_stage, sabcd_stage, disposition,
                        next_action_at, profile_summary
                 FROM contacts c
                 WHERE disposition IN ('active', 'waiting')
@@ -1244,6 +1551,7 @@ class Repository:
         return {
             "stages": {row["lifecycle_stage"]: int(row["count"]) for row in stages},
             "outreach": {row["outreach_stage"]: int(row["count"]) for row in outreach},
+            "sabcd": {row["sabcd_stage"]: int(row["count"]) for row in sabcd},
             "actions": action_rows,
         }
 
@@ -1257,20 +1565,226 @@ class Repository:
         notes: str | None = None,
         lost_reason: str | None = None,
         owner: str | None = None,
+        sabcd_stage: str | None = None,
     ) -> None:
+        sabcd_stage = stage_from_payload(sabcd_stage)
+        private_days = _private_pool_days(self.db.config.raw)
         with self.db.connect() as conn:
             conn.execute(
                 """
                 UPDATE contacts
-                SET lifecycle_stage = COALESCE(%s, lifecycle_stage),
+                SET last_stage_changed_at = CASE
+                        WHEN COALESCE(
+                            %s,
+                            CASE
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                                ELSE sabcd_stage
+                            END
+                        ) IS DISTINCT FROM sabcd_stage THEN NOW()
+                        ELSE last_stage_changed_at
+                    END,
+                    pool_expires_at = CASE
+                        WHEN pool_type = 'private'
+                         AND COALESCE(
+                            %s,
+                            CASE
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                                ELSE sabcd_stage
+                            END
+                         ) IS DISTINCT FROM sabcd_stage THEN NOW() + (%s::text || ' days')::interval
+                        ELSE pool_expires_at
+                    END,
+                    lifecycle_stage = COALESCE(%s, lifecycle_stage),
                     disposition = COALESCE(%s, disposition),
                     next_action_at = COALESCE(%s::timestamptz, next_action_at),
                     notes = COALESCE(%s, notes),
                     lost_reason = COALESCE(%s, lost_reason),
-                    owner = COALESCE(%s, owner)
+                    owner = COALESCE(%s, owner),
+                    sabcd_stage = COALESCE(
+                        %s,
+                        CASE
+                            WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
+                            WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
+                            WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                            ELSE sabcd_stage
+                        END
+                    )
                 WHERE id = %s
                 """,
-                (lifecycle_stage, disposition, next_action_at, notes, lost_reason, owner, contact_id),
+                (
+                    sabcd_stage,
+                    lifecycle_stage,
+                    disposition,
+                    lifecycle_stage,
+                    lifecycle_stage,
+                    sabcd_stage,
+                    lifecycle_stage,
+                    disposition,
+                    lifecycle_stage,
+                    lifecycle_stage,
+                    private_days,
+                    lifecycle_stage,
+                    disposition,
+                    next_action_at,
+                    notes,
+                    lost_reason,
+                    owner,
+                    sabcd_stage,
+                    lifecycle_stage,
+                    disposition,
+                    lifecycle_stage,
+                    lifecycle_stage,
+                    contact_id,
+                ),
+            )
+        if sabcd_stage == "S" or lifecycle_stage in {"signed", "maintenance"} or disposition == "won":
+            self.refresh_customer_profile_snapshot(contact_id)
+
+    def claim_public_contact(self, contact_id: int, user: dict[str, Any]) -> dict[str, Any]:
+        private_days = _private_pool_days(self.db.config.raw)
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE contacts
+                SET pool_type = 'private',
+                    owner_user_id = %s,
+                    owner = %s,
+                    assignment_source = 'manual_claim',
+                    assigned_at = NOW(),
+                    pool_expires_at = NOW() + (%s::text || ' days')::interval,
+                    returned_to_public_at = NULL,
+                    claim_count = claim_count + 1
+                WHERE id = %s
+                  AND pool_type = 'public'
+                  AND sabcd_stage <> 'S'
+                RETURNING *
+                """,
+                (user["id"], user.get("display_name") or user.get("username"), private_days, contact_id),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Contact is not available in public pool")
+            return _with_customer_intelligence(row)
+
+    def return_contact_to_public(self, contact_id: int, user: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
+        params: list[Any] = [reason, contact_id]
+        owner_clause = ""
+        if user.get("role") != "admin":
+            owner_clause = "AND owner_user_id = %s"
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            row = conn.execute(
+                f"""
+                UPDATE contacts
+                SET pool_type = 'public',
+                    owner_user_id = NULL,
+                    owner = NULL,
+                    assignment_source = COALESCE(%s, 'manual_return'),
+                    assigned_at = NULL,
+                    pool_expires_at = NULL,
+                    returned_to_public_at = NOW(),
+                    disposition = CASE WHEN disposition = 'won' THEN disposition ELSE 'active' END
+                WHERE id = %s
+                  AND sabcd_stage <> 'S'
+                  {owner_clause}
+                RETURNING *
+                """,
+                tuple(params),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Contact cannot be returned to public pool")
+            return _with_customer_intelligence(row)
+
+    def recycle_stale_private_pool(self, *, limit: int = 100) -> int:
+        private_days = _private_pool_days(self.db.config.raw)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                UPDATE contacts
+                SET pool_type = 'public',
+                    owner_user_id = NULL,
+                    owner = NULL,
+                    assignment_source = 'stale_recycle',
+                    assigned_at = NULL,
+                    pool_expires_at = NULL,
+                    returned_to_public_at = NOW()
+                WHERE id IN (
+                    SELECT id
+                    FROM contacts
+                    WHERE pool_type = 'private'
+                      AND sabcd_stage <> 'S'
+                      AND COALESCE(last_stage_changed_at, assigned_at, created_at) <= NOW() - (%s::text || ' days')::interval
+                      AND COALESCE(assigned_at, created_at) <= NOW() - (%s::text || ' days')::interval
+                    ORDER BY pool_expires_at NULLS FIRST, created_at
+                    LIMIT %s
+                )
+                RETURNING id
+                """,
+                (private_days, private_days, limit),
+            ).fetchall()
+            return len(rows)
+
+    def auto_assign_public_pool(self, *, limit: int = 100) -> dict[str, Any]:
+        rules = _region_assignment_rules(self.db.config.raw)
+        if not rules:
+            return {"assigned": 0, "skipped": 0, "missing_rules": True}
+        users = {str(row["username"]).lower(): row for row in self.list_users() if row.get("active")}
+        users.update({str(row["display_name"]).lower(): row for row in self.list_users() if row.get("active")})
+        private_days = _private_pool_days(self.db.config.raw)
+        assigned = skipped = 0
+        with self.db.connect() as conn:
+            contacts = conn.execute(
+                """
+                SELECT id, location, company_name, source_context
+                FROM contacts
+                WHERE pool_type = 'public'
+                  AND sabcd_stage <> 'S'
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+            for contact in contacts:
+                owner = _match_region_owner(contact, rules, users)
+                if not owner:
+                    skipped += 1
+                    continue
+                row = conn.execute(
+                    """
+                    UPDATE contacts
+                    SET pool_type = 'private',
+                        owner_user_id = %s,
+                        owner = %s,
+                        assignment_source = 'auto_region',
+                        assigned_at = NOW(),
+                        pool_expires_at = NOW() + (%s::text || ' days')::interval,
+                        returned_to_public_at = NULL
+                    WHERE id = %s
+                      AND pool_type = 'public'
+                    RETURNING id
+                    """,
+                    (owner["id"], owner.get("display_name") or owner.get("username"), private_days, contact["id"]),
+                ).fetchone()
+                assigned += 1 if row else 0
+                skipped += 0 if row else 1
+        return {"assigned": assigned, "skipped": skipped, "missing_rules": False}
+
+    def refresh_customer_profile_snapshot(self, contact_id: int) -> None:
+        contact = self.get_contact(contact_id)
+        if not contact:
+            return
+        snapshot = build_customer_profile(contact)
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET customer_profile_snapshot = %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(snapshot, ensure_ascii=False), contact_id),
             )
 
     def update_profile_summary(self, contact_id: int, summary: str, insights: dict[str, Any] | None = None) -> None:
@@ -1333,10 +1847,16 @@ class Repository:
                 """
                 UPDATE contacts
                 SET lifecycle_stage = %s,
-                    notes = COALESCE(%s, notes)
+                    notes = COALESCE(%s, notes),
+                    sabcd_stage = CASE
+                        WHEN %s IN ('signed', 'maintenance') THEN 'S'
+                        WHEN %s IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
+                        WHEN %s IN ('replied', 'conversation', 'meeting') THEN 'B'
+                        ELSE sabcd_stage
+                    END
                 WHERE id = %s
                 """,
-                (lifecycle_stage, content[:500], contact_id),
+                (lifecycle_stage, content[:500], lifecycle_stage, lifecycle_stage, lifecycle_stage, contact_id),
             )
             return row
 
@@ -1361,6 +1881,7 @@ class Repository:
                 WHERE id IN (
                   SELECT id FROM contacts
                   WHERE status = 'enriched'
+                    AND pool_type = 'private'
                     AND email_status = 'valid'
                     AND email IS NOT NULL
                     AND email NOT LIKE '%%*%%'
@@ -1388,6 +1909,7 @@ class Repository:
                 SET status = 'queued'
                 WHERE c.id = %s
                   AND c.status = 'enriched'
+                  AND c.pool_type = 'private'
                   AND c.email_status = 'valid'
                   AND c.email IS NOT NULL
                   AND c.email NOT LIKE '%%*%%'
@@ -1410,6 +1932,7 @@ class Repository:
                 f"""
                 SELECT * FROM contacts
                 WHERE email_status = 'valid'
+                  AND pool_type = 'private'
                   AND status IN ('queued', 'sent_1', 'sent_2')
                   AND NOT EXISTS (
                     SELECT 1 FROM blacklist b
@@ -1430,6 +1953,7 @@ class Repository:
                 SELECT * FROM contacts
                 WHERE id = %s
                   AND email_status = 'valid'
+                  AND pool_type = 'private'
                   AND status IN ('queued', 'sent_1', 'sent_2')
                   AND NOT EXISTS (
                     SELECT 1 FROM blacklist b
@@ -1448,6 +1972,7 @@ class Repository:
             return int(row["count"])
 
     def record_sent(self, contact_id: int, step: int, subject: str, message_id: str | None, metadata: dict[str, Any]) -> bool:
+        private_days = _private_pool_days(self.db.config.raw)
         with self.db.connect() as conn:
             row = conn.execute(
                 """
@@ -1463,14 +1988,18 @@ class Repository:
             conn.execute(
                 """
                 UPDATE contacts
-                SET status = %s, sequence_step = %s, last_contacted_at = NOW()
+                SET status = %s, sequence_step = %s, last_contacted_at = NOW(),
+                    last_stage_changed_at = CASE WHEN sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
+                    pool_expires_at = CASE WHEN pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                    sabcd_stage = CASE WHEN sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END
                 WHERE id = %s
                 """,
-                (f"sent_{step}", step, contact_id),
+                (f"sent_{step}", step, private_days, contact_id),
             )
             return True
 
     def record_manual_sent(self, contact_id: int, step: int, subject: str, message_id: str | None, metadata: dict[str, Any]) -> bool:
+        private_days = _private_pool_days(self.db.config.raw)
         with self.db.connect() as conn:
             row = conn.execute(
                 """
@@ -1485,6 +2014,9 @@ class Repository:
                 UPDATE contacts
                 SET sequence_step = GREATEST(sequence_step, %s),
                     last_contacted_at = NOW(),
+                    last_stage_changed_at = CASE WHEN sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
+                    pool_expires_at = CASE WHEN pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                    sabcd_stage = CASE WHEN sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END,
                     status = CASE
                         WHEN %s <= 1 THEN 'sent_1'::contact_status
                         WHEN %s = 2 THEN 'sent_2'::contact_status
@@ -1492,7 +2024,7 @@ class Repository:
                     END
                 WHERE id = %s
                 """,
-                (step, step, step, contact_id),
+                (step, private_days, step, step, contact_id),
             )
             return bool(row)
 
@@ -1512,16 +2044,20 @@ class Repository:
 
     def mark_status(self, contact_id: int, status: str, *, notes: str | None = None) -> None:
         validate_status(status)
+        private_days = _private_pool_days(self.db.config.raw)
         with self.db.connect() as conn:
             conn.execute(
                 """
                 UPDATE contacts
                 SET status = %s,
                     replied_at = CASE WHEN %s = 'replied' THEN NOW() ELSE replied_at END,
+                    last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage <> 'B' THEN NOW() ELSE last_stage_changed_at END,
+                    pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage <> 'B' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                    sabcd_stage = CASE WHEN %s = 'replied' THEN 'B' ELSE sabcd_stage END,
                     notes = COALESCE(%s, notes)
                 WHERE id = %s
                 """,
-                (status, status, notes, contact_id),
+                (status, status, status, status, private_days, status, notes, contact_id),
             )
 
     def record_event(self, contact_id: int, event_type: str, payload: dict[str, Any]) -> None:
@@ -1547,7 +2083,23 @@ class Repository:
                 (contact_id, contact["sequence_step"] or 0, terminal.get(event_type, event_type), json.dumps(payload)),
             )
             if event_type in terminal:
-                conn.execute("UPDATE contacts SET status = %s WHERE id = %s", (terminal[event_type], contact_id))
+                delivery_reason = payload.get("delivery_reason") if isinstance(payload, dict) else None
+                private_days = _private_pool_days(self.db.config.raw)
+                conn.execute(
+                    """
+                    UPDATE contacts
+                    SET status = %s,
+                        last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage <> 'B' THEN NOW() ELSE last_stage_changed_at END,
+                        pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage <> 'B' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                        sabcd_stage = CASE WHEN %s = 'replied' THEN 'B' ELSE sabcd_stage END,
+                        enrich_error = CASE
+                            WHEN %s IN ('bounced', 'unsubscribed') THEN COALESCE(%s, enrich_error)
+                            ELSE enrich_error
+                        END
+                    WHERE id = %s
+                    """,
+                    (terminal[event_type], terminal[event_type], terminal[event_type], private_days, terminal[event_type], terminal[event_type], delivery_reason, contact_id),
+                )
 
     def record_webhook_delivery(self, provider: str, event_type: str, payload: dict[str, Any], external_id: str | None = None) -> bool:
         with self.db.connect() as conn:
@@ -1636,6 +2188,63 @@ def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
         "phone_candidates": contact.get("phone_candidates") or [],
         "source_context": contact.get("source_context") or {},
     }
+
+
+def _with_customer_intelligence(contact: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not contact:
+        return contact
+    insights = contact.get("profile_insights")
+    if not isinstance(insights, dict):
+        insights = {}
+    if not insights.get("icp_fit_score"):
+        fallback = build_customer_profile(contact)
+        insights = {**fallback, **insights}
+        contact = {**contact, "profile_insights": insights}
+        if not contact.get("profile_summary"):
+            contact["profile_summary"] = fallback["summary"]
+    return contact
+
+
+def _normalize_pool_type(value: Any, owner_user_id: Any = None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"public", "private"}:
+        return normalized
+    return "private" if owner_user_id else "public"
+
+
+def _private_pool_days(raw_config: dict[str, Any]) -> int:
+    try:
+        return max(1, int(raw_config.get("customer_pool", {}).get("private_pool_days") or 60))
+    except Exception:
+        return 60
+
+
+def _region_assignment_rules(raw_config: dict[str, Any]) -> list[dict[str, Any]]:
+    rules = raw_config.get("customer_pool", {}).get("region_assignments") or []
+    if isinstance(rules, list):
+        return [rule for rule in rules if isinstance(rule, dict) and rule.get("owner")]
+    return []
+
+
+def _match_region_owner(contact: dict[str, Any], rules: list[dict[str, Any]], users: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    context = contact.get("source_context") if isinstance(contact.get("source_context"), dict) else {}
+    haystack = " ".join(
+        str(item or "").lower()
+        for item in (
+            contact.get("location"),
+            contact.get("company_name"),
+            context.get("seed_location"),
+            context.get("seed_category"),
+            context.get("seed_reason"),
+        )
+    )
+    for rule in rules:
+        matches = rule.get("match") or rule.get("regions") or rule.get("countries") or []
+        if isinstance(matches, str):
+            matches = [matches]
+        if not matches or any(str(item or "").lower() in haystack for item in matches):
+            return users.get(str(rule.get("owner") or "").lower())
+    return None
 
 
 def _infer_email_pattern(email: str, first_name: str | None, last_name: str | None) -> str | None:

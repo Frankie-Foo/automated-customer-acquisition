@@ -5,6 +5,7 @@ from typing import Any
 
 from ..clients import LLMClient
 from ..config import AppConfig
+from ..customer_intelligence import build_customer_profile
 from ..db import Repository
 from ..logging_utils import log
 
@@ -80,36 +81,7 @@ def _profile_insights_via_llm(api_key: str, provider: str, llm_cfg: dict[str, An
 
 
 def _fallback_profile_insights(contact: dict[str, Any]) -> dict[str, Any]:
-    name = " ".join(str(contact.get(key) or "") for key in ("first_name", "last_name")).strip() or "该客户"
-    company = contact.get("company_name") or "未知公司"
-    role = contact.get("job_title") or "未知职位"
-    stage = contact.get("lifecycle_stage") or "lead"
-    sent = int(contact.get("sequence_step") or 0)
-    status = contact.get("status") or "new"
-    score = 45
-    if contact.get("email_status") == "valid":
-        score += 15
-    if str(contact.get("linkedin_url") or "").startswith("http"):
-        score += 10
-    if stage not in {"lead", "abandoned"}:
-        score += 15
-    if status in {"bounced", "unsubscribed"}:
-        score = 0
-    score = max(0, min(100, score))
-    return {
-        "summary": f"{name} 是 {company} 的 {role}，当前生命周期阶段为 {stage}。已完成第 {sent} 次外联，建议结合打开/回复情况决定继续跟进、等待或放弃。",
-        "persona": f"{company} / {role}",
-        "icp_fit_score": score,
-        "intent_level": "unknown" if stage == "lead" else "medium",
-        "buying_stage": stage,
-        "interests": [],
-        "pain_points": [],
-        "objections": [],
-        "risks": ["暂无足够互动信号"] if status not in {"replied", "sent_1", "sent_2", "sent_3"} else [],
-        "next_action": "继续按照外联节奏触达；若第三次后仍未回复，进入等待池或放弃。",
-        "why_now": "当前仅基于职位、公司、邮箱和外联状态判断。",
-    }
-
+    return build_customer_profile(contact)
 
 def _normalize_profile_insights(insights: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     result = {**fallback, **(insights or {})}

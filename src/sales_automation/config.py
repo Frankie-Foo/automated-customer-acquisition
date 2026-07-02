@@ -32,7 +32,7 @@ class AppConfig:
         return self.raw.get("sequence", [])
 
 
-def load_dotenv(path: Path = Path(".env")) -> None:
+def load_dotenv(path: Path = Path(".env"), *, override: bool = True) -> None:
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -40,7 +40,10 @@ def load_dotenv(path: Path = Path(".env")) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip().lstrip("\ufeff"), value.strip().strip('"').strip("'"))
+        key = key.strip().lstrip("\ufeff")
+        value = value.strip().strip('"').strip("'")
+        if override or key not in os.environ:
+            os.environ[key] = value
 
 
 def expand_env(value: Any) -> Any:
@@ -54,8 +57,8 @@ def expand_env(value: Any) -> Any:
 
 
 def load_config(path: str | Path) -> AppConfig:
-    load_dotenv()
     config_path = Path(path)
+    load_dotenv(config_path.parent / ".env")
     text = config_path.read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore

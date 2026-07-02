@@ -5,16 +5,15 @@
     <div class="mark">LA</div>
     <div>
       <h1>Outbound Ops</h1>
-      <p>LinkedIn sales automation</p>
+      <p>Sales automation</p>
     </div>
   </div>
 
-  <nav class="nav">
-    <a href="#pipeline" class="active">客户列表</a>
-    <a href="#workbench">获客操作</a>
-    <a href="#ops-report">团队运营</a>
-    <a href="#admin-console" id="nav-admin-link" class="hidden">管理员</a>
-    <a href="#readiness">上线检查</a>
+  <nav class="nav" aria-label="Primary">
+    <a href="#dashboard" class="active" data-page-link="dashboard">展示看板</a>
+    <a href="#lifecycle" data-page-link="lifecycle">客户跟进</a>
+    <a href="#emails" data-page-link="emails">邮件中心</a>
+    <a href="#admin" data-page-link="admin" id="nav-admin-link" class="hidden">管理员控制台</a>
   </nav>
 
   <section class="side-section">
@@ -25,9 +24,9 @@
 <main>
   <header class="appbar">
     <div>
-      <span class="eyebrow">Overseas PDCA · Sales Automation</span>
-      <h2>获客运营控制台</h2>
-      <p>采集线索、富化邮箱、加入发送队列，并持续追踪打开、回复、退订等反馈。</p>
+      <span class="eyebrow" id="page-eyebrow">Overseas PDCA · Sales Automation</span>
+      <h2 id="page-title">展示看板</h2>
+      <p id="page-subtitle">查看获客、发信、回流和团队运营关键指标。</p>
     </div>
     <div class="top-actions">
       <div class="account-box">
@@ -42,43 +41,39 @@
 
   <section id="notice" class="notice hidden"></section>
 
-  <div id="react-dashboard-root"></div>
-
-  <section class="customer-workspace" id="customer-workspace">
-    <div id="react-workspace-root"></div>
-  </section>
-
-  <section class="guide">
-    <div class="guide-card active">
-      <span>01</span>
-      <div>
-        <strong>获取线索</strong>
-        <p>用自动获客、LinkedIn 公网搜索、CSV 或手动新增把客户放进系统。</p>
-      </div>
-    </div>
-    <div class="guide-card">
-      <span>02</span>
-      <div>
-        <strong>富化邮箱</strong>
-        <p>为没有邮箱的客户补充工作邮箱和公司信息。</p>
-      </div>
-    </div>
-    <div class="guide-card">
-      <span>03</span>
-      <div>
-        <strong>入队发送</strong>
-        <p>把有效邮箱加入队列，先演练，确认后再真实发送。</p>
-      </div>
+  <section class="app-page active" data-page="dashboard">
+    <div class="page-stack">
+      <div id="react-dashboard-root"></div>
+      <div id="react-ops-root"></div>
     </div>
   </section>
 
-  <section id="workbench" class="workbench">
-    <div id="react-workbench-root"></div>
+  <section class="app-page" data-page="lifecycle">
+    <div class="page-stack">
+      <div id="react-followups-root"></div>
+      <div id="react-lifecycle-root"></div>
+
+      <section id="workbench" class="workbench">
+        <div id="react-workbench-root"></div>
+      </section>
+
+      <section id="pipeline" class="list-section">
+        <div id="react-pipeline-root"></div>
+      </section>
+
+      <section class="customer-workspace" id="customer-workspace">
+        <div id="react-workspace-root"></div>
+      </section>
+    </div>
   </section>
 
-  <section id="pipeline" class="list-section">
-    <div id="react-pipeline-root"></div>
+  <section class="app-page" data-page="emails">
+    <section id="sent-emails" class="sent-emails-section">
+      <div id="react-sent-emails-root"></div>
+    </section>
   </section>
 
-  <section id="admin-console" class="admin-console hidden"></section>
+  <section class="app-page" data-page="admin">
+    <section id="admin-console" class="admin-console hidden"></section>
+  </section>
 </main>

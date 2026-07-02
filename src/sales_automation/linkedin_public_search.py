@@ -185,7 +185,7 @@ class LinkedInPublicSearchService:
                         continue
                     inserted, _ = self.repo.upsert_contacts(
                         [contact],
-                        owner_user_id=int(user["id"]),
+                        pool_type="public",
                     )
                     if inserted:
                         promoted += 1
@@ -235,7 +235,6 @@ class LinkedInPublicSearchService:
                     int(result["task_id"]),
                     phone=seed.get("phone"),
                     phone_candidates=phone_candidates,
-                    owner_user_id=int(user["id"]),
                 )
         return {"companies": len(seeds), "tasks": tasks, "results": totals["results"], "promoted": totals["promoted"], "skipped": totals["skipped"], "phone_attached": totals["phone_attached"], "auto_queue": auto_queue}
 
@@ -244,14 +243,14 @@ class LinkedInPublicSearchService:
         if not result:
             raise RuntimeError("Search result not found")
         contact = _contact_from_search_result(result, result["task_id"])
-        inserted, skipped = self.repo.upsert_contacts([contact], owner_user_id=int(user["id"]))
+        inserted, skipped = self.repo.upsert_contacts([contact], pool_type="public")
         promoted_contact = self.repo.get_contact_by_linkedin_url(result["linkedin_url"])
         if promoted_contact:
             self.repo.mark_lead_search_result_promoted(result_id, promoted_contact["id"])
         return {"inserted": inserted, "skipped": skipped, "contact_id": promoted_contact["id"] if promoted_contact else None}
 
     def adopt_candidate(self, contact_id: int, email: str, *, user: dict[str, Any]) -> dict[str, Any]:
-        contact = self.repo.get_contact_for_user(contact_id, user)
+        contact = self.repo.get_private_contact_for_user(contact_id, user)
         if not contact:
             raise RuntimeError("Contact not found")
         candidates = contact.get("email_candidates") or []

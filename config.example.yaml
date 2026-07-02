@@ -80,11 +80,25 @@ email_discovery:
 queue:
   batch_size: 100
 
+outreach:
+  send_delay_seconds: 10
+  send_jitter_seconds: 5
+
 quotas:
   global_daily_send_limit: 3000
   global_daily_source_limit: 3000
   default_user_daily_send: 100
   default_user_daily_source: 100
+
+customer_pool:
+  private_pool_days: 60
+  region_assignments:
+    - owner: Lina
+      match: ["middle east", "uae", "dubai", "qatar", "kuwait", "iraq", "iran", "turkey", "europe", "russia"]
+    - owner: April
+      match: ["india", "south asia"]
+    - owner: Viki
+      match: ["southeast asia", "singapore", "thailand", "vietnam", "cambodia", "malaysia", "indonesia", "philippines"]
 
 sequence:
   - step: 1
