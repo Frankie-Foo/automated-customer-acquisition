@@ -470,6 +470,7 @@ select:focus {
 .followups,
 .lifecycle-board,
 .customer-workspace,
+.quickstart,
 .ops-report,
 .admin-console {
   margin-bottom: 14px;
@@ -485,6 +486,85 @@ select:focus {
   grid-template-columns: repeat(8, minmax(112px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
+}
+
+.quickstart {
+  display: grid;
+  gap: 14px;
+}
+
+.quickstart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.quickstart-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.quickstart-head p {
+  max-width: 680px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.quickstart-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.quickstart-card {
+  position: relative;
+  min-height: 150px;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.quickstart-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-tint);
+  transform: translateY(-1px);
+}
+
+.quickstart-card b {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+}
+
+.quickstart-card strong {
+  font-size: 14px;
+}
+
+.quickstart-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.quickstart-card em {
+  align-self: end;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
 }
 
 .ops-cards article {
@@ -2404,6 +2484,7 @@ button.primary.soft:hover {
 .followups,
 .lifecycle-board,
 .customer-workspace,
+.quickstart,
 .ops-report,
 .admin-console,
 .workbench,
@@ -2420,6 +2501,7 @@ button.primary.soft:hover {
 .followups,
 .lifecycle-board,
 .customer-workspace,
+.quickstart,
 .ops-report,
 .admin-console {
   padding: 18px 20px;
@@ -2429,6 +2511,7 @@ button.primary.soft:hover {
   margin-bottom: 16px;
 }
 
+.quickstart-head h2,
 .followup-head h2,
 .section-head h2,
 .admin-card h3,
@@ -2439,9 +2522,34 @@ button.primary.soft:hover {
 }
 
 .followup-head p,
+.quickstart-head p,
 .section-head p {
   color: var(--text-3);
   font-size: 12px;
+}
+
+.quickstart {
+  box-shadow: none;
+}
+
+.quickstart-grid {
+  gap: 12px;
+}
+
+.quickstart-card {
+  min-height: 160px;
+  border-color: var(--border);
+  background: linear-gradient(180deg, #ffffff 0%, var(--surface-2) 100%);
+  box-shadow: var(--shadow-sm);
+}
+
+.quickstart-card strong {
+  color: var(--text-1);
+  font-weight: 800;
+}
+
+.quickstart-card b {
+  background: var(--primary);
 }
 
 .ops-cards {
@@ -2887,6 +2995,10 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
+  .quickstart-grid {
+    grid-template-columns: 1fr;
+  }
+
   .lifecycle-grid {
     grid-template-columns: repeat(2, minmax(130px, 1fr));
   }
@@ -2897,6 +3009,7 @@ tbody tr:hover {
   }
 
   .appbar,
+  .quickstart-head,
   .section-head,
   .followup-head {
     flex-direction: column;

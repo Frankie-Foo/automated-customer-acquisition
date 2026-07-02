@@ -35,6 +35,7 @@ export default function DashboardViewsPortal() {
     document.body.classList.add("react-dashboard-enabled");
     setTargets({
       dashboard: document.querySelector("#react-dashboard-root"),
+      quickstart: document.querySelector("#react-quickstart-root"),
       ops: document.querySelector("#react-ops-root"),
       followups: document.querySelector("#react-followups-root"),
       lifecycle: document.querySelector("#react-lifecycle-root"),
@@ -105,10 +106,49 @@ function DashboardViews({ targets }) {
   return (
     <>
       {targets.dashboard && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
+      {targets.quickstart && createPortal(<QuickStart user={user} />, targets.quickstart)}
       {targets.ops && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
       {targets.followups && createPortal(<Followups contacts={contacts} />, targets.followups)}
       {targets.lifecycle && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
     </>
+  );
+}
+
+function QuickStart({ user }) {
+  const isAdmin = user?.role === "admin";
+  const items = isAdmin
+    ? [
+        ["账号与权限", "创建销售账号、设置每日获客/发信配额，确认销售只能看自己的客户。", "#admin", "去管理员控制台"],
+        ["导入与分配", "批量导入公司/门店表，获客结果先进入客户池，再按销售或地区分配。", "#lifecycle", "开始获客"],
+        ["发信与回流", "检查发件域名、发件池和邮件中心，确认送达、打开、退信回流正常。", "#emails", "查看邮件"],
+        ["复盘与优化", "每天看有效邮箱、发送、打开、回复、退信，调整数据源和邮件话术。", "#dashboard", "看日报"],
+      ]
+    : [
+        ["今天先看待办", "优先处理已打开未回复、已回复、退信客户，避免客户卡在无人跟进。", "#lifecycle", "去跟进"],
+        ["导入客户来源", "上传公司/门店表，系统会找负责人、补邮箱，并把结果放进你的客户列表。", "#lifecycle", "导入线索"],
+        ["确认再发邮件", "有 valid 工作邮箱后加入队列，发送前可用 AI 生成或手动修改邮件内容。", "#lifecycle", "准备发信"],
+        ["推进 SABCD", "每次沟通后更新 D/C/B/A/S 阶段，系统会沉淀客户画像和下一步建议。", "#lifecycle", "更新阶段"],
+      ];
+  return (
+    <section className="quickstart">
+      <div className="quickstart-head">
+        <div>
+          <span className="eyebrow">{isAdmin ? "Admin workflow" : "Daily workflow"}</span>
+          <h2>{isAdmin ? "管理员上线工作台" : "今日操作路径"}</h2>
+        </div>
+        <p>{isAdmin ? "先保证账号、配额、发件和数据回流可控，再放量给团队使用。" : "按照这四步走，从找客户到发邮件再到销售跟进闭环。"}</p>
+      </div>
+      <div className="quickstart-grid">
+        {items.map(([title, text, href, cta], index) => (
+          <a className="quickstart-card" href={href} key={title}>
+            <b>{index + 1}</b>
+            <strong>{title}</strong>
+            <span>{text}</span>
+            <em>{cta}</em>
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 
