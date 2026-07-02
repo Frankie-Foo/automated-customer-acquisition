@@ -132,14 +132,23 @@ def outreach_framework(contact: dict[str, Any]) -> dict[str, str]:
     company = contact.get("company_name") or "your company"
     role = contact.get("job_title") or "your role"
     source_context = _source_context(contact)
-    business_match = source_context.get("seed_reason") or source_context.get("seed_category") or contact.get("industry") or ""
+    business_match = _business_match_sentence(company, role, source_context, contact.get("industry"))
     return {
         "intent": f"Briefly ask whether {company} is open to a practical channel cooperation conversation.",
-        "business_match": business_match or f"Reference the recipient's work as {role} at {company}.",
+        "business_match": business_match,
         "our_value": "Position Vertu as a premium mobile and luxury technology brand suitable for selective high-end retail or distributor channels.",
         "low_barrier_ask": "Ask for a short reply or a 15-minute exploratory call, not a heavy proposal immediately.",
         "close": "Keep the ending direct, polite, and easy to say yes/no to.",
     }
+
+
+def _business_match_sentence(company: str, role: str, source_context: dict[str, str], industry: Any) -> str:
+    if source_context.get("seed_reason"):
+        return f"I noticed {company} in our market research: {source_context['seed_reason']}"
+    category = source_context.get("seed_category") or str(industry or "").strip()
+    if category:
+        return f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."
+    return f"I noticed your work as {role} at {company} and thought this could be relevant to a selective Vertu channel discussion."
 
 
 def next_best_action(contact: dict[str, Any], score: int | None = None) -> str:
