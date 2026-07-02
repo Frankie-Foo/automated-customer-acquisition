@@ -5,7 +5,7 @@
 把系统部署为公网生产地址：
 
 ```text
-https://sales.frelys.xyz
+https://global-autoleads.vertu.cn
 ```
 
 系统包含：线索采集、LinkedIn 公网搜索、邮箱富化、客户生命周期、AI 画像、Resend 发信、打开/退信/退订回流、管理员账号和每日配额。
@@ -48,7 +48,7 @@ Ubuntu 22.04 / Debian 12
 确认解析：
 
 ```bash
-nslookup sales.frelys.xyz
+nslookup global-autoleads.vertu.cn
 ```
 
 ## 安装 Docker
@@ -72,8 +72,8 @@ nano deployment/production.env
 必须填写：
 
 ```env
-SALES_DOMAIN=sales.frelys.xyz
-PUBLIC_BASE_URL=https://sales.frelys.xyz
+SALES_DOMAIN=global-autoleads.vertu.cn
+PUBLIC_BASE_URL=https://global-autoleads.vertu.cn
 
 DB_USER=salesbot
 DB_PASSWORD=请改成强密码
@@ -131,7 +131,7 @@ docker compose --env-file deployment/production.env -f deployment/docker-compose
 通过后访问：
 
 ```text
-https://sales.frelys.xyz
+https://global-autoleads.vertu.cn
 ```
 
 ## Resend Webhook
@@ -139,7 +139,7 @@ https://sales.frelys.xyz
 系统上线且 HTTPS 可访问后，在 Resend 后台配置 webhook：
 
 ```text
-https://sales.frelys.xyz/webhooks/resend
+https://global-autoleads.vertu.cn/webhooks/resend
 ```
 
 建议选择事件：
