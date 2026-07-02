@@ -15,7 +15,7 @@
 
 - 一台稳定服务器，30 人建议 4C8G / 100GB SSD 起步
 - PostgreSQL 正式库
-- 一个正式访问域名，例如 `https://sales.frelys.xyz`
+- 一个正式访问域名，例如 `https://global-autoleads.vertu.cn`
 - Resend 已验证发件域名
 - DeepSeek API Key
 - 至少一个邮箱发现 API Key，建议 Prospeo + Hunter
@@ -69,7 +69,7 @@ docker compose --env-file deployment/production.env -f deployment/docker-compose
 生产访问地址是 `PUBLIC_BASE_URL`，例如：
 
 ```text
-https://sales.frelys.xyz
+https://global-autoleads.vertu.cn
 ```
 
 查看状态：
