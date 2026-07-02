@@ -42,5 +42,7 @@ def test_personalized_fallback_draft_uses_imported_account_context():
 
     draft = PersonalizedEmailService(Config(), Repo()).draft(1)
 
-    assert draft["subject"] == "Quick question about Luxepolis"
+    assert draft["subject"] == "Possible Vertu channel fit for Luxepolis"
     assert "curated luxury resale marketplace in India" in draft["body"]
+    assert "premium mobile and luxury technology brand" in draft["body"]
+    assert "brief reply" in draft["body"]

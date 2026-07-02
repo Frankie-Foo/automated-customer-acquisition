@@ -77,8 +77,8 @@ function CustomerWorkspace() {
       setContent("");
       setAnalysis(null);
       setEmailMode("ai");
-      setSubject(`Quick question about ${next.contact.company_name || "your business"}`);
-      setBody("");
+      setSubject(defaultEmailSubject(next.contact));
+      setBody(defaultEmailBody(next.contact));
       setTimeout(() => document.querySelector("#customer-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     } catch (err) {
       setError(err.message);
@@ -350,4 +350,37 @@ function activityTypeLabel(type) {
 function formatDate(value) {
   if (!value) return "";
   return String(value).replace("T", " ").slice(0, 16);
+}
+
+function defaultEmailSubject(contact) {
+  const company = contact?.company_name || "your business";
+  return `Possible Vertu channel fit for ${company}`;
+}
+
+function defaultEmailBody(contact) {
+  const firstName = contact?.first_name || "there";
+  const company = contact?.company_name || "your company";
+  const role = contact?.job_title || "your team";
+  const context = contact?.source_context || {};
+  const reason = context.seed_reason || context.reason || "";
+  const category = context.seed_category || contact?.industry || "premium retail/distribution";
+  const matchLine = reason
+    ? `I noticed ${company} in our market research: ${reason}`
+    : `I noticed ${company} is relevant to ${category}, and your role as ${role} looks close to channel or commercial decisions.`;
+  return [
+    `Hi ${firstName},`,
+    "",
+    matchLine,
+    "",
+    "I work with Vertu, a premium mobile and luxury technology brand. We are looking for selective partners where the customer base already values high-end products, service, and differentiated retail experiences.",
+    "",
+    `If ${company} is exploring new premium categories or partner brands, I can send a short note on where Vertu may fit and what a lightweight cooperation model could look like.`,
+    "",
+    "Would it be worth a brief reply to see if this is relevant?",
+    "",
+    "Best,",
+    "{{sender_name}}",
+    "",
+    "Unsubscribe: {{unsubscribe_url}}",
+  ].join("\n");
 }

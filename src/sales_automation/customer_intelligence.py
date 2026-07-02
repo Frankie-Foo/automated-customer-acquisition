@@ -136,7 +136,7 @@ def outreach_framework(contact: dict[str, Any]) -> dict[str, str]:
     return {
         "intent": f"Briefly ask whether {company} is open to a practical channel cooperation conversation.",
         "business_match": business_match or f"Reference the recipient's work as {role} at {company}.",
-        "our_value": "Position Vertu as a premium mobile/luxury technology brand suitable for selective high-end retail or distributor channels.",
+        "our_value": "Position Vertu as a premium mobile and luxury technology brand suitable for selective high-end retail or distributor channels.",
         "low_barrier_ask": "Ask for a short reply or a 15-minute exploratory call, not a heavy proposal immediately.",
         "close": "Keep the ending direct, polite, and easy to say yes/no to.",
     }

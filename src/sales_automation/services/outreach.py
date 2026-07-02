@@ -144,15 +144,23 @@ class PersonalizedEmailService:
         sender = self.config.sender.get("name", "")
         profile = build_customer_profile(contact)
         framework = profile.get("email_framework", outreach_framework(contact))
+        context = _source_context(contact)
+        category = context.get("seed_category") or contact.get("industry") or "premium retail/distribution"
+        role = contact.get("job_title") or "your team"
         match = framework.get("business_match") or _fallback_opening(contact)
-        value = framework.get("our_value") or "Vertu may fit selective high-end retail and distributor channels."
-        subject = f"Quick question about {company}"
+        if not match or match.startswith("Reference the recipient"):
+            match = f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."
+        value = (
+            framework.get("our_value")
+            or "Vertu is a premium mobile and luxury technology brand for selective high-end retail and distributor channels."
+        )
+        subject = f"Possible Vertu channel fit for {company}"
         body = (
             f"Hi {first},\n\n"
-            f"I am reaching out because {company} looks relevant to a selective Vertu channel discussion.\n\n"
             f"{match}\n\n"
-            f"{value}\n\n"
-            "Would you be open to a short reply or a 15-minute exploratory call to see whether there is a practical fit?\n\n"
+            f"{value} We are looking for partners where the customer base already values high-end products, service, and differentiated retail experiences.\n\n"
+            f"If {company} is exploring new premium categories or partner brands, I can send a short note on where Vertu may fit and what a lightweight cooperation model could look like.\n\n"
+            "Would it be worth a brief reply to see if this is relevant?\n\n"
             f"Best,\n{sender}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )
