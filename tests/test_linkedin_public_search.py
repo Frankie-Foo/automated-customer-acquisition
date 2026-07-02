@@ -1,4 +1,5 @@
 from sales_automation.linkedin_public_search import (
+    BraveSearchClient,
     CompanyDomainResolver,
     FallbackSearchClient,
     LinkedInPublicSearchService,
@@ -120,6 +121,31 @@ def test_tavily_search_maps_results_to_google_shape():
     assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada"}]
 
 
+def test_brave_search_maps_results_to_google_shape():
+    class Http:
+        def request(self, method, url, *, headers=None, json_body=None):
+            assert method == "GET"
+            assert url.startswith("https://api.search.brave.com/res/v1/web/search?")
+            assert headers["X-Subscription-Token"] == "brave-test"
+            assert headers["Accept"] == "application/json"
+            assert json_body is None
+            return {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Ada - Founder | LinkedIn",
+                            "url": "https://www.linkedin.com/in/ada",
+                            "description": "Founder at Example.",
+                        }
+                    ]
+                }
+            }
+
+    items = BraveSearchClient("brave-test", Http()).search("site:linkedin.com/in Ada", limit=1)
+
+    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada"}]
+
+
 def test_fallback_search_uses_second_provider_after_first_fails():
     class Broken:
         def search(self, query, *, limit=10):
@@ -143,6 +169,16 @@ def test_linkedin_public_search_prefers_tavily_when_configured():
     service = LinkedInPublicSearchService(Config(), repo=None)
 
     assert [name for name, _client in service.client.clients] == ["tavily", "google_cse"]
+
+
+def test_linkedin_public_search_adds_brave_after_existing_search_sources():
+    class Config:
+        apis = {"google_cse_key": "google", "google_cse_id": "cx", "tavily_key": "tvly", "brave_search_key": "brave"}
+        raw = {"sourcing": {"linkedin_public_search": {}}}
+
+    service = LinkedInPublicSearchService(Config(), repo=None)
+
+    assert [name for name, _client in service.client.clients] == ["tavily", "google_cse", "brave_search"]
 
 
 def test_candidate_generation_prefers_historical_patterns(monkeypatch):

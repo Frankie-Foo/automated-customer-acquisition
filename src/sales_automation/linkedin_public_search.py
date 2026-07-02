@@ -82,6 +82,39 @@ class TavilySearchClient:
         ]
 
 
+class BraveSearchClient:
+    def __init__(self, api_key: str, http: HttpClient | None = None):
+        self.api_key = api_key
+        self.http = http or HttpClient(timeout=30)
+
+    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        params = {
+            "q": query,
+            "count": max(1, min(20, int(limit or 10))),
+            "search_lang": "en",
+            "safesearch": "moderate",
+            "text_decorations": "false",
+        }
+        url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(params)
+        data = self.http.request(
+            "GET",
+            url,
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": self.api_key,
+            },
+        )
+        results = (data.get("web") or {}).get("results") or []
+        return [
+            {
+                "title": item.get("title") or item.get("url") or "",
+                "snippet": item.get("description") or item.get("snippet") or "",
+                "link": item.get("url") or "",
+            }
+            for item in results
+        ]
+
+
 class FallbackSearchClient:
     def __init__(self, clients: list[tuple[str, SearchClient]]):
         self.clients = clients
@@ -129,11 +162,14 @@ class LinkedInPublicSearchService:
         key = config.apis.get("google_cse_key", "")
         cse_id = config.apis.get("google_cse_id", "")
         tavily_key = config.apis.get("tavily_key", "")
+        brave_key = config.apis.get("brave_search_key", "")
         clients: list[tuple[str, SearchClient]] = []
         if tavily_key:
             clients.append(("tavily", TavilySearchClient(tavily_key)))
         if key and cse_id:
             clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
+        if brave_key:
+            clients.append(("brave_search", BraveSearchClient(brave_key)))
         self.client = FallbackSearchClient(clients) if clients else None
         self.domain_resolver = CompanyDomainResolver(self.client)
 

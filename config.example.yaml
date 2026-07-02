@@ -24,6 +24,7 @@ apis:
   google_cse_key: ${GOOGLE_CSE_API_KEY}
   google_cse_id: ${GOOGLE_CSE_ID}
   tavily_key: ${TAVILY_API_KEY}
+  brave_search_key: ${BRAVE_SEARCH_API_KEY}
 
 llm:
   provider: deepseek
