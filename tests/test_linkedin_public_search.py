@@ -102,6 +102,27 @@ def test_domain_resolver_excludes_non_official_domains():
     assert CompanyDomainResolver(Client()).resolve("Acme") == "acme.com"
 
 
+def test_domain_resolver_uses_middle_east_group_mapping_before_search():
+    class Client:
+        def search(self, query, limit=5):
+            raise AssertionError("mapped Middle East domains should not require search")
+
+    assert CompanyDomainResolver(Client()).resolve("The Ritz-Carlton, Riyadh", location="KSA") == "marriott.com"
+    assert CompanyDomainResolver(Client()).resolve("Chalhoub Group", location="Dubai") == "chalhoubgroup.com"
+
+
+def test_domain_resolver_rejects_low_quality_directory_domains():
+    class Client:
+        def search(self, query, limit=5):
+            return [
+                {"link": "https://www.zoominfo.com/c/acme"},
+                {"link": "https://www.visitsaudi.com/en/acme"},
+                {"link": "https://www.acme-official.com/about"},
+            ]
+
+    assert CompanyDomainResolver(Client()).resolve("Acme", existing_domain="zoominfo.com") == "acme-official.com"
+
+
 def test_domain_normalization_preserves_meaningful_subdomains():
     assert _domain_from_website("https://www.example.com/path") == "example.com"
     assert _domain_from_website("https://invest.gov.kz") == "invest.gov.kz"

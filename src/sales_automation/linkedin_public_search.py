@@ -13,6 +13,7 @@ from .db import Repository
 from .email_discovery import EmailCandidate, guess_email_candidates
 from .http import HttpClient
 from .logging_utils import log
+from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
 
 BLOCKED_DOMAINS = {
     "linkedin.com",
@@ -140,16 +141,19 @@ class CompanyDomainResolver:
     def __init__(self, client: SearchClient | None = None):
         self.client = client
 
-    def resolve(self, company_name: str | None, existing_domain: str | None = None) -> str | None:
+    def resolve(self, company_name: str | None, existing_domain: str | None = None, *, location: str | None = None, category: str | None = None) -> str | None:
+        mapped = mapped_middle_east_domain(company_name, location=location, category=category)
+        if mapped:
+            return mapped
         domain = _domain_from_website(existing_domain or "")
-        if domain and not _is_blocked_domain(domain):
+        if domain and not _is_blocked_domain(domain) and not is_low_quality_domain(domain):
             return domain
         if not company_name or not self.client:
             return None
         query = f'"{company_name}" official website'
         for item in self.client.search(query, limit=5):
             candidate = _domain_from_website(item.get("link") or "")
-            if candidate and not _is_blocked_domain(candidate):
+            if candidate and not _is_blocked_domain(candidate) and not is_low_quality_domain(candidate):
                 return candidate
         return None
 
@@ -202,7 +206,12 @@ class LinkedInPublicSearchService:
                         continue
                     seen_urls.add(parsed["linkedin_url"])
                     if auto_domain_lookup:
-                        parsed["company_domain"] = self.domain_resolver.resolve(parsed.get("company_name"), parsed.get("company_domain"))
+                        parsed["company_domain"] = self.domain_resolver.resolve(
+                            parsed.get("company_name"),
+                            parsed.get("company_domain"),
+                            location=parsed.get("location") or criteria.get("location"),
+                            category=parsed.get("industry") or criteria.get("industry") or criteria.get("seed_category"),
+                        )
                     parsed["lead_score"] = score_lead(parsed, criteria)
                     if auto_generate_candidates:
                         parsed["email_candidates"] = [asdict(item) for item in generate_public_search_email_candidates(parsed, self.repo)]
@@ -255,9 +264,15 @@ class LinkedInPublicSearchService:
         for seed in seeds:
             phone_candidates = list(seed.get("phone_candidates") or [])
             if not seed.get("phone") and not phone_candidates:
-                phone_candidates = find_public_company_phone_candidates(
-                    seed.get("company_domain") or seed.get("website") or ""
+                seed_domain = self.domain_resolver.resolve(
+                    seed.get("company_name"),
+                    seed.get("company_domain") or seed.get("website"),
+                    location=seed.get("location"),
+                    category=seed.get("category") or seed.get("industry"),
                 )
+                if seed_domain:
+                    seed["company_domain"] = seed_domain
+                phone_candidates = find_public_company_phone_candidates(seed.get("company_domain") or seed.get("website") or "")
             criteria = company_seed_to_search_criteria(seed)
             result = self.run(criteria, per_company_limit, user=user)
             result["company_name"] = seed.get("company_name")

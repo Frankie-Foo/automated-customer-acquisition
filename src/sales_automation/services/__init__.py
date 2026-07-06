@@ -8,7 +8,7 @@ from .queue import QueueService
 from .scheduler import SchedulerService
 from .social_enrichment import SocialEnrichmentService
 from .sourcing import SourcingService
-from .webhooks import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id
+from .webhooks import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id, _extract_recipient_email
 
 __all__ = [
     "EnrichmentService",
@@ -25,4 +25,5 @@ __all__ = [
     "_extract_contact_id",
     "_extract_event_type",
     "_extract_message_id",
+    "_extract_recipient_email",
 ]

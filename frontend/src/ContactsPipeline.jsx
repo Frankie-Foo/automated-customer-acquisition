@@ -288,7 +288,22 @@ function emailMeta(contact) {
   const parts = [contact.email_status || "unknown"];
   if (contact.email_source) parts.push(contact.email_source);
   if (contact.email_confidence !== null && contact.email_confidence !== undefined) parts.push(`${contact.email_confidence}%`);
+  const quality = emailQuality(contact);
+  if (quality) parts.push(quality);
   return parts.join(" · ");
+}
+
+function emailQuality(contact) {
+  const email = String(contact.email || "");
+  if (!email || email.includes("*")) return "not ready";
+  const local = email.split("@", 1)[0].toLowerCase();
+  const roleBased = new Set(["admin", "billing", "contact", "hello", "help", "info", "office", "press", "sales", "support", "team"]);
+  if (contact.email_status !== "valid" || roleBased.has(local)) return "blocked";
+  const leadScore = Number(contact.lead_score ?? 60);
+  const title = String(contact.job_title || "").toLowerCase();
+  if (leadScore < 50 || /(assistant|customer service|intern|reception|receptionist|support)/.test(title)) return "blocked";
+  if (Number(contact.email_confidence ?? 100) < 70) return "review";
+  return "sendable";
 }
 
 function displayPhone(contact) {

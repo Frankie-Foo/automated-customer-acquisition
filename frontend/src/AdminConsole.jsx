@@ -6,6 +6,7 @@ const emptyNewUser = {
   username: "",
   display_name: "",
   password: "",
+  reply_to_email: "",
   daily_source_limit: 100,
   daily_send_limit: 100,
 };
@@ -181,6 +182,10 @@ function AdminConsole() {
               <input type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} placeholder="强密码" />
             </label>
             <label>
+              Reply-To
+              <input value={newUser.reply_to_email} onChange={(event) => setNewUser({ ...newUser, reply_to_email: event.target.value })} placeholder="name@vertu.cn" />
+            </label>
+            <label>
               获客配额
               <input type="number" value={newUser.daily_source_limit} onChange={(event) => setNewUser({ ...newUser, daily_source_limit: event.target.value })} />
             </label>
@@ -232,6 +237,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
     onUpdate(user.id, {
       daily_source_limit: Number(valueFor(user, "daily_source_limit") || 100),
       daily_send_limit: Number(valueFor(user, "daily_send_limit") || 100),
+      reply_to_email: valueFor(user, "reply_to_email") || "",
     });
 
   return (
@@ -244,6 +250,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
             <th>今日获客</th>
             <th>今日发信</th>
             <th>状态</th>
+            <th>Reply-To</th>
             <th>配额设置</th>
             <th>操作</th>
           </tr>
@@ -264,6 +271,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
                 <span className={`status-pill ${user.active ? "is-active" : "is-paused"}`}>{user.active ? "启用" : "停用"}</span>
                 {user.must_change_password && <span className="status-pill is-warning">待改密码</span>}
               </td>
+              <td><input className="mini-input wide" value={valueFor(user, "reply_to_email") || ""} onChange={(event) => updateDraft(user.id, "reply_to_email", event.target.value)} placeholder="name@vertu.cn" /></td>
               <td>
                 <div className="quota-edit">
                   <label>获客<input className="mini-input" type="number" value={valueFor(user, "daily_source_limit")} onChange={(event) => updateDraft(user.id, "daily_source_limit", event.target.value)} /></label>

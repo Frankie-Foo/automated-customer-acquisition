@@ -525,6 +525,7 @@ def make_handler(config, repo: Repository):
                         role=payload.get("role") or "sales",
                         daily_source_limit=int(payload.get("daily_source_limit") or 100),
                         daily_send_limit=int(payload.get("daily_send_limit") or 100),
+                        reply_to_email=payload.get("reply_to_email"),
                         must_change_password=True,
                     )
                 self._json(add_user)
@@ -543,6 +544,7 @@ def make_handler(config, repo: Repository):
                         role=payload.get("role"),
                         daily_source_limit=int(payload["daily_source_limit"]) if payload.get("daily_source_limit") is not None else None,
                         daily_send_limit=int(payload["daily_send_limit"]) if payload.get("daily_send_limit") is not None else None,
+                        reply_to_email=payload.get("reply_to_email"),
                         active=payload.get("active"),
                     )
                 self._json(update_user)
@@ -588,6 +590,7 @@ def make_handler(config, repo: Repository):
                         return {"event_type": event_type, "duplicate": True}
                     notifier = SlackClient(config.raw.get("notifications", {}).get("slack_webhook_url"))
                     event = WebhookService(repo, notifier).process_payload(provider, verified_payload)
+                    repo.mark_webhook_delivery_processed(provider, external_id)
                     return {"event_type": event}
                 self._json(public_webhook)
                 return

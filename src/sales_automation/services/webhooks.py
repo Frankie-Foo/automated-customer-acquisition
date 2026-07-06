@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,8 @@ from ..clients import SlackClient
 from ..db import Repository
 from ..logging_utils import log
 from ..outreach_guard import annotate_delivery_payload
+
+EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
 class WebhookService:
@@ -22,6 +25,10 @@ class WebhookService:
             message_id = _extract_message_id(payload)
             if message_id:
                 contact_id = self.repo.find_contact_id_by_message_id(message_id)
+        if not contact_id and hasattr(self.repo, "find_contact_id_by_email"):
+            recipient_email = _extract_recipient_email(payload)
+            if recipient_email:
+                contact_id = self.repo.find_contact_id_by_email(recipient_email)
         if not contact_id:
             raise ValueError("Webhook payload does not include contact_id metadata or a known message id")
         payload = annotate_delivery_payload(event_type, payload)
@@ -106,4 +113,43 @@ def _extract_message_id(payload: dict[str, Any]) -> str | None:
     return None
 
 
-__all__ = ["WebhookService", "_extract_contact_id", "_extract_event_type", "_extract_message_id"]
+def _extract_recipient_email(payload: dict[str, Any]) -> str | None:
+    for path in (
+        ("to",),
+        ("recipient",),
+        ("email",),
+        ("data", "to"),
+        ("data", "recipient"),
+        ("data", "email"),
+        ("data", "email", "to"),
+    ):
+        value: Any = payload
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        email = _first_email_value(value)
+        if email:
+            return email
+    return None
+
+
+def _first_email_value(value: Any) -> str | None:
+    if isinstance(value, str) and "@" in value:
+        match = EMAIL_RE.search(value)
+        return match.group(0).lower() if match else value.strip().lower()
+    if isinstance(value, dict):
+        for key in ("email", "address"):
+            item = value.get(key)
+            if isinstance(item, str) and "@" in item:
+                return item.strip().lower()
+    if isinstance(value, list):
+        for item in value:
+            email = _first_email_value(item)
+            if email:
+                return email
+    return None
+
+
+__all__ = ["WebhookService", "_extract_contact_id", "_extract_event_type", "_extract_message_id", "_extract_recipient_email"]

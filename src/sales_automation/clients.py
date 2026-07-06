@@ -243,38 +243,53 @@ class MailClient:
         self.sender = sender
         self.http = http or HttpClient()
 
-    def send(self, to_email: str, subject: str, html: str, text: str, *, metadata: dict[str, Any] | None = None) -> str | None:
+    def send(
+        self,
+        to_email: str,
+        subject: str,
+        html: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        reply_to: str | None = None,
+    ) -> str | None:
         if self.sender.get("dry_run", True):
             return f"dry-run:{to_email}:{subject}"
         if self.provider == "resend":
             tags = []
             for key, value in (metadata or {}).items():
                 tags.append({"name": str(key).replace("-", "_")[:256], "value": str(value).replace(" ", "_")[:256]})
+            payload = {
+                "from": f"{self.sender.get('name')} <{self.sender.get('email')}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html,
+                "text": text,
+                "tags": tags,
+            }
+            if reply_to:
+                payload["reply_to"] = [reply_to]
             data = self.http.request(
                 "POST",
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json_body={
-                    "from": f"{self.sender.get('name')} <{self.sender.get('email')}>",
-                    "to": [to_email],
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                    "tags": tags,
-                },
+                json_body=payload,
             )
             return data.get("id")
         if self.provider == "sendgrid":
+            payload = {
+                "personalizations": [{"to": [{"email": to_email}]}],
+                "from": {"email": self.sender.get("email"), "name": self.sender.get("name")},
+                "subject": subject,
+                "content": [{"type": "text/plain", "value": text}, {"type": "text/html", "value": html}],
+            }
+            if reply_to:
+                payload["reply_to"] = {"email": reply_to}
             data = self.http.request(
                 "POST",
                 "https://api.sendgrid.com/v3/mail/send",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json_body={
-                    "personalizations": [{"to": [{"email": to_email}]}],
-                    "from": {"email": self.sender.get("email"), "name": self.sender.get("name")},
-                    "subject": subject,
-                    "content": [{"type": "text/plain", "value": text}, {"type": "text/html", "value": html}],
-                },
+                json_body=payload,
             )
             return data.get("id")
         raise ValueError(f"Unsupported mail provider: {self.provider}")

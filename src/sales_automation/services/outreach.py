@@ -10,7 +10,7 @@ from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
 from ..logging_utils import log
-from ..outreach_guard import is_sendable_email, sleep_between_sends, validate_email_body
+from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 
@@ -35,12 +35,14 @@ class PersonalizedEmailService:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
-        if not is_sendable_email(contact.get("email")):
-            raise ValueError("Contact does not have a valid email")
+        readiness = send_readiness(contact)
+        if not readiness["ok"]:
+            raise ValueError(f"Contact is not ready to send: {', '.join(readiness['reasons'])}")
         sender_pool = SenderPoolManager(self.config, self.repo)
         sender = sender_pool.pick_sender()
         api_key = self.config.apis.get(f"{sender.get('provider', 'resend')}_key", "")
         mailer = MailClient(sender.get("provider", "resend"), api_key, sender)
+        reply_to = _reply_to_email(user)
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
         step = int(contact.get("sequence_step") or 0) + 1
         values = {
@@ -63,12 +65,14 @@ class PersonalizedEmailService:
             html_body,
             text,
             metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": user.get("id") if user else None},
+            reply_to=reply_to,
         )
         metadata = {
             "dry_run": sender.get("dry_run", True),
             "mode": mode,
             "sender_id": sender.get("id"),
             "sender_email": sender.get("email"),
+            "reply_to_email": reply_to,
             "user_id": user.get("id") if user else None,
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
@@ -211,8 +215,9 @@ class OutreachService:
             log("send.skipped_not_due", contact_id=contact.get("id"))
             return False
         contact = fresh
-        if not is_sendable_email(contact.get("email")):
-            log("send.skipped_email_not_sendable", contact_id=contact.get("id"), email=contact.get("email"))
+        readiness = send_readiness(contact)
+        if not readiness["ok"]:
+            log("send.skipped_quality_gate", contact_id=contact.get("id"), email=contact.get("email"), reasons=readiness["reasons"], score=readiness["score"])
             return False
         step_cfg = self._next_step_config(contact)
         if not step_cfg or not self._step_due(contact, step_cfg):
@@ -221,6 +226,7 @@ class OutreachService:
         sender = sender_pool.pick_sender()
         api_key = self.config.apis.get(f"{sender.get('provider', 'resend')}_key", "")
         mailer = MailClient(sender.get("provider", "resend"), api_key, sender)
+        reply_to = _reply_to_email(user)
         subject = render_string(step_cfg["subject"], contact)
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
         values = {
@@ -242,11 +248,13 @@ class OutreachService:
             html_body,
             text,
             metadata={"contact_id": contact["id"], "sequence_step": step_cfg["step"], "user_id": user.get("id") if user else None},
+            reply_to=reply_to,
         )
         metadata = {
             "dry_run": sender.get("dry_run", True),
             "sender_id": sender.get("id"),
             "sender_email": sender.get("email"),
+            "reply_to_email": reply_to,
             "user_id": user.get("id") if user else None,
         }
         sent = self.repo.record_sent(contact["id"], int(step_cfg["step"]), subject, message_id, metadata)
@@ -300,6 +308,13 @@ def _fallback_opening(contact: dict[str, Any]) -> str:
     if context.get("seed_category"):
         return f"I noticed {company} is relevant to {context['seed_category']} and thought this might be worth a quick conversation."
     return f"I noticed your work as {contact.get('job_title') or 'a leader'} at {company} and thought this might be relevant."
+
+
+def _reply_to_email(user: dict[str, Any] | None) -> str | None:
+    value = str((user or {}).get("reply_to_email") or "").strip()
+    if "@" not in value or " " in value:
+        return None
+    return value
 
 
 __all__ = ["OutreachService", "PersonalizedEmailService"]

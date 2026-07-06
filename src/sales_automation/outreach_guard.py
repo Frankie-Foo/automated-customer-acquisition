@@ -23,12 +23,113 @@ ROLE_BASED_PREFIXES = {
     "team",
 }
 
+DECISION_TITLE_KEYWORDS = {
+    "bd",
+    "business development",
+    "ceo",
+    "chairman",
+    "channel",
+    "commercial",
+    "co-founder",
+    "cofounder",
+    "director",
+    "founder",
+    "head",
+    "managing director",
+    "owner",
+    "partner",
+    "partnership",
+    "president",
+    "principal",
+    "procurement",
+    "retail",
+    "sales director",
+    "vp",
+}
+
+LOW_VALUE_TITLE_KEYWORDS = {
+    "assistant",
+    "customer service",
+    "intern",
+    "reception",
+    "receptionist",
+    "support",
+}
+
 
 def is_sendable_email(value: str | None) -> bool:
     if not value or not is_full_email(value):
         return False
     local = value.split("@", 1)[0].lower()
     return local not in ROLE_BASED_PREFIXES and "*" not in value
+
+
+def lead_quality_score(contact: dict[str, Any]) -> int:
+    explicit = contact.get("lead_score")
+    if explicit not in {None, ""}:
+        try:
+            return max(0, min(100, int(explicit)))
+        except (TypeError, ValueError):
+            pass
+    score = 0
+    if is_sendable_email(contact.get("email")) and contact.get("email_status") == "valid":
+        score += 30
+    if contact.get("company_name") or contact.get("company_domain"):
+        score += 20
+    if is_decision_title(contact.get("job_title")):
+        score += 20
+    if contact.get("first_name") or contact.get("last_name"):
+        score += 10
+    if contact.get("location") or contact.get("industry"):
+        score += 10
+    context = contact.get("source_context") if isinstance(contact.get("source_context"), dict) else {}
+    if context.get("seed_reason") or context.get("seed_category"):
+        score += 10
+    return max(0, min(100, score))
+
+
+def is_decision_title(title: str | None) -> bool:
+    normalized = str(title or "").strip().lower()
+    return bool(normalized) and any(keyword in normalized for keyword in DECISION_TITLE_KEYWORDS)
+
+
+def is_low_value_title(title: str | None) -> bool:
+    normalized = str(title or "").strip().lower()
+    return bool(normalized) and any(keyword in normalized for keyword in LOW_VALUE_TITLE_KEYWORDS)
+
+
+def send_readiness(contact: dict[str, Any], *, min_score: int = 50) -> dict[str, Any]:
+    reasons: list[str] = []
+    warnings: list[str] = []
+    email = str(contact.get("email") or "")
+    if contact.get("email_status") != "valid":
+        reasons.append("email_not_verified")
+    if not is_sendable_email(email):
+        reasons.append("email_not_personal_work")
+    confidence = contact.get("email_confidence")
+    if confidence not in {None, ""}:
+        try:
+            if int(confidence) < 70:
+                warnings.append("email_confidence_below_70")
+        except (TypeError, ValueError):
+            pass
+    source = str(contact.get("email_source") or "").lower()
+    if source in {"public_website", "company_seed", "manual_company_seed"}:
+        warnings.append("email_source_needs_review")
+    if is_low_value_title(contact.get("job_title")):
+        reasons.append("low_value_title")
+    elif contact.get("job_title") and not is_decision_title(contact.get("job_title")):
+        warnings.append("title_not_decision_role")
+    score = lead_quality_score(contact)
+    if score < min_score:
+        reasons.append("lead_score_below_threshold")
+    return {
+        "ok": not reasons,
+        "score": score,
+        "reasons": list(dict.fromkeys(reasons)),
+        "warnings": list(dict.fromkeys(warnings)),
+        "tier": "sendable" if not reasons else "review",
+    }
 
 
 def validate_email_body(subject: str, text: str, *, min_chars: int = 80) -> None:

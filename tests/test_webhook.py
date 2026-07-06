@@ -1,4 +1,4 @@
-from sales_automation.services import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id
+from sales_automation.services import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id, _extract_recipient_email
 
 
 def test_extract_contact_id_from_metadata():
@@ -22,6 +22,11 @@ def test_extract_message_id_from_resend_payload():
     assert _extract_message_id({"data": {"email": {"id": "abc123"}}}) == "abc123"
 
 
+def test_extract_recipient_email_from_resend_payload():
+    assert _extract_recipient_email({"data": {"to": ["Person <lead@example.com>"]}}) == "lead@example.com"
+    assert _extract_recipient_email({"data": {"to": [{"email": "lead@example.com"}]}}) == "lead@example.com"
+
+
 def test_webhook_falls_back_to_message_id_when_metadata_missing():
     class Repo:
         def __init__(self):
@@ -37,4 +42,25 @@ def test_webhook_falls_back_to_message_id_when_metadata_missing():
     event = WebhookService(repo).process_payload("resend", {"type": "email.delivered", "data": {"id": "email_123"}})
     assert event == "delivered"
     assert repo.events == [(42, "delivered", {"type": "email.delivered", "data": {"id": "email_123"}})]
+
+
+def test_webhook_falls_back_to_recipient_email_when_message_id_missing():
+    class Repo:
+        def __init__(self):
+            self.events = []
+
+        def find_contact_id_by_message_id(self, message_id):
+            return None
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def record_event(self, contact_id, event_type, payload):
+            self.events.append((contact_id, event_type, payload))
+
+    repo = Repo()
+    payload = {"type": "email.opened", "data": {"to": [{"email": "lead@example.com"}]}}
+    event = WebhookService(repo).process_payload("resend", payload)
+    assert event == "opened"
+    assert repo.events == [(77, "opened", payload)]
 

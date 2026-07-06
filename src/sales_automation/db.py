@@ -110,6 +110,7 @@ class Repository:
         role: str = "sales",
         daily_source_limit: int = 100,
         daily_send_limit: int = 100,
+        reply_to_email: str | None = None,
         must_change_password: bool = True,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -117,13 +118,23 @@ class Repository:
                 """
                 INSERT INTO sales_users(
                     username, password_hash, display_name, role, daily_source_limit, daily_send_limit,
-                    must_change_password, password_changed_at
+                    reply_to_email, must_change_password, password_changed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          active, must_change_password, created_at
+                          reply_to_email, active, must_change_password, created_at
                 """,
-                (username, hash_password(password), display_name, role, daily_source_limit, daily_send_limit, must_change_password, must_change_password),
+                (
+                    username,
+                    hash_password(password),
+                    display_name,
+                    role,
+                    daily_source_limit,
+                    daily_send_limit,
+                    _clean_optional_email(reply_to_email),
+                    must_change_password,
+                    must_change_password,
+                ),
             ).fetchone()
 
     def list_users(self) -> list[dict[str, Any]]:
@@ -131,6 +142,7 @@ class Repository:
             return conn.execute(
                 """
                 SELECT u.id, u.username, u.display_name, u.role, u.daily_source_limit, u.daily_send_limit,
+                       u.reply_to_email,
                        u.active, u.must_change_password, u.created_at,
                        COALESCE(usage.source_count, 0) AS source_count_today,
                        COALESCE(usage.send_count, 0) AS send_count_today
@@ -149,6 +161,7 @@ class Repository:
         role: str | None = None,
         daily_source_limit: int | None = None,
         daily_send_limit: int | None = None,
+        reply_to_email: str | None = None,
         active: bool | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -159,12 +172,13 @@ class Repository:
                     role = COALESCE(%s, role),
                     daily_source_limit = COALESCE(%s, daily_source_limit),
                     daily_send_limit = COALESCE(%s, daily_send_limit),
+                    reply_to_email = COALESCE(%s, reply_to_email),
                     active = COALESCE(%s, active)
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          active, must_change_password, created_at
+                          reply_to_email, active, must_change_password, created_at
                 """,
-                (display_name, role, daily_source_limit, daily_send_limit, active, user_id),
+                (display_name, role, daily_source_limit, daily_send_limit, _clean_optional_email(reply_to_email), active, user_id),
             ).fetchone()
 
     def reset_user_password(self, user_id: int, password: str) -> dict[str, Any]:
@@ -177,7 +191,7 @@ class Repository:
                     password_changed_at = NULL
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          active, must_change_password, created_at
+                          reply_to_email, active, must_change_password, created_at
                 """,
                 (hash_password(password), user_id),
             ).fetchone()
@@ -197,7 +211,7 @@ class Repository:
                     password_changed_at = NOW()
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          active, must_change_password, created_at
+                          reply_to_email, active, must_change_password, created_at
                 """,
                 (hash_password(new_password), user_id),
             ).fetchone()
@@ -970,7 +984,7 @@ class Repository:
             "pool_expiring": "c.pool_type = 'private' AND c.sabcd_stage <> 'S' AND c.pool_expires_at <= NOW() + INTERVAL '14 days'",
             "returned_pool": "c.pool_type = 'public' AND c.returned_to_public_at IS NOT NULL",
             "needs_enrichment": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
-            "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched'",
+            "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched' AND c.email IS NOT NULL AND lower(split_part(c.email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team') AND COALESCE(c.lead_score, 60) >= 50 AND COALESCE(c.job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'",
             "opened_no_reply": "COALESCE(ev.opened_count, 0) > 0 AND c.status NOT IN ('replied', 'bounced', 'unsubscribed')",
             "replied": "(c.status = 'replied' OR COALESCE(ev.replied_count, 0) > 0)",
             "bounced": "(c.status = 'bounced' OR COALESCE(ev.bounced_count, 0) > 0)",
@@ -1103,7 +1117,7 @@ class Repository:
             by_user = conn.execute(
                 f"""
                 SELECT u.id, u.username, u.display_name, u.role, u.active,
-                       u.daily_source_limit, u.daily_send_limit,
+                       u.reply_to_email, u.daily_source_limit, u.daily_send_limit,
                        COALESCE(usage.source_count, 0) AS source_count_today,
                        COALESCE(usage.send_count, 0) AS send_count_today,
                        COUNT(c.id) AS owned_contacts
@@ -1886,6 +1900,9 @@ class Repository:
                     AND email IS NOT NULL
                     AND email NOT LIKE '%%*%%'
                     AND email LIKE '%%@%%'
+                    AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
+                    AND COALESCE(lead_score, 60) >= 50
+                    AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
                     AND NOT EXISTS (
                       SELECT 1 FROM blacklist b
                       WHERE b.email = contacts.email OR b.domain = contacts.company_domain
@@ -1914,6 +1931,9 @@ class Repository:
                   AND c.email IS NOT NULL
                   AND c.email NOT LIKE '%%*%%'
                   AND c.email LIKE '%%@%%'
+                  AND lower(split_part(c.email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
+                  AND COALESCE(c.lead_score, 60) >= 50
+                  AND COALESCE(c.job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
                   AND NOT EXISTS (
                     SELECT 1 FROM blacklist b
                     WHERE b.email = c.email OR b.domain = c.company_domain
@@ -1934,6 +1954,12 @@ class Repository:
                 WHERE email_status = 'valid'
                   AND pool_type = 'private'
                   AND status IN ('queued', 'sent_1', 'sent_2')
+                  AND email IS NOT NULL
+                  AND email NOT LIKE '%%*%%'
+                  AND email LIKE '%%@%%'
+                  AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
+                  AND COALESCE(lead_score, 60) >= 50
+                  AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
                   AND NOT EXISTS (
                     SELECT 1 FROM blacklist b
                     WHERE b.email = contacts.email OR b.domain = contacts.company_domain
@@ -1955,6 +1981,12 @@ class Repository:
                   AND email_status = 'valid'
                   AND pool_type = 'private'
                   AND status IN ('queued', 'sent_1', 'sent_2')
+                  AND email IS NOT NULL
+                  AND email NOT LIKE '%%*%%'
+                  AND email LIKE '%%@%%'
+                  AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
+                  AND COALESCE(lead_score, 60) >= 50
+                  AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
                   AND NOT EXISTS (
                     SELECT 1 FROM blacklist b
                     WHERE b.email = contacts.email OR b.domain = contacts.company_domain
@@ -2042,6 +2074,20 @@ class Repository:
             ).fetchone()
             return int(row["contact_id"]) if row else None
 
+    def find_contact_id_by_email(self, email: str) -> int | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM contacts
+                WHERE lower(email) = lower(%s)
+                ORDER BY last_contacted_at DESC NULLS LAST, created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (email,),
+            ).fetchone()
+            return int(row["id"]) if row else None
+
     def mark_status(self, contact_id: int, status: str, *, notes: str | None = None) -> None:
         validate_status(status)
         private_days = _private_pool_days(self.db.config.raw)
@@ -2112,7 +2158,34 @@ class Repository:
                 """,
                 (provider, event_type, json.dumps(payload), external_id),
             ).fetchone()
-            return bool(row)
+            if row:
+                return True
+            if not external_id:
+                return False
+            existing = conn.execute(
+                """
+                SELECT processed_at
+                FROM webhook_events
+                WHERE provider = %s AND external_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (provider, external_id),
+            ).fetchone()
+            return bool(existing and existing["processed_at"] is None)
+
+    def mark_webhook_delivery_processed(self, provider: str, external_id: str | None) -> None:
+        if not external_id:
+            return
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE webhook_events
+                SET processed_at = COALESCE(processed_at, NOW())
+                WHERE provider = %s AND external_id = %s
+                """,
+                (provider, external_id),
+            )
 
     def add_blacklist(self, *, email: str | None, domain: str | None, reason: str | None = None) -> None:
         with self.db.connect() as conn:
@@ -2271,3 +2344,12 @@ def _infer_email_pattern(email: str, first_name: str | None, last_name: str | No
 
 def _email_token(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _clean_optional_email(value: str | None) -> str | None:
+    email = str(value or "").strip()
+    if not email:
+        return None
+    if "@" not in email or " " in email:
+        raise ValueError("invalid_reply_to_email")
+    return email
