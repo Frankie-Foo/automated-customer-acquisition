@@ -21,6 +21,7 @@ COPY --from=frontend-build /app/frontend/dist ./src/sales_automation/web_static
 COPY templates ./templates
 COPY migrations ./migrations
 COPY scripts ./scripts
+COPY tools ./tools
 COPY config.example.yaml ./config.yaml
 
 RUN pip install --no-cache-dir .
