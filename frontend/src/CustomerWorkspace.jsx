@@ -378,8 +378,9 @@ function defaultEmailBody(contact) {
     "",
     "Would it be worth a brief reply to see if this is relevant?",
     "",
-    "Best,",
-    "{{sender_name}}",
+    "Best regards,",
+    "{{sender_name}} You",
+    "BD Manager Of Media East Region | VERTU",
     "",
     "Unsubscribe: {{unsubscribe_url}}",
   ].join("\n");

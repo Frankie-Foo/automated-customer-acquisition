@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,16 +21,40 @@ class PersonalizedEmailService:
         self.config = config
         self.repo = repo
 
-    def draft(self, contact_id: int, *, mode: str = "ai", custom_subject: str | None = None, custom_body: str | None = None) -> dict[str, str]:
+    def draft(
+        self,
+        contact_id: int,
+        *,
+        mode: str = "ai",
+        custom_subject: str | None = None,
+        custom_body: str | None = None,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
         if mode == "custom":
             return {
                 "subject": custom_subject or f"Quick question about {contact.get('company_name') or 'your business'}",
-                "body": custom_body or "",
+                "body": _normalize_sender_signature(
+                    custom_body or "",
+                    user,
+                    fallback_name=self.config.sender.get("name", ""),
+                    unsubscribe_value="{{unsubscribe_url}}",
+                )
+                if custom_body
+                else "",
             }
-        return self._ai_draft(contact)
+        draft = self._ai_draft(contact, user=user)
+        return {
+            "subject": draft["subject"],
+            "body": _normalize_sender_signature(
+                draft["body"],
+                user,
+                fallback_name=self.config.sender.get("name", ""),
+                unsubscribe_value="{{unsubscribe_url}}",
+            ),
+        }
 
     def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom", user: dict[str, Any] | None = None) -> dict[str, Any]:
         contact = self.repo.get_contact(contact_id)
@@ -47,14 +72,16 @@ class PersonalizedEmailService:
         step = int(contact.get("sequence_step") or 0) + 1
         values = {
             **contact,
-            "sender_name": sender.get("name", ""),
+            "sender_name": _sender_signature_name(user, sender.get("name", "")),
+            "sender_signature": _sender_signature(user, sender.get("name", "")),
             "unsubscribe_url": unsubscribe_url(contact, base_url),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
         }
         text = render_string(body, values)
-        if "{{unsubscribe_url}}" not in body:
+        text = _normalize_sender_signature(text, user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
+        if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
         html_body = "<br>".join(html.escape(line) for line in text.splitlines())
@@ -80,8 +107,8 @@ class PersonalizedEmailService:
             sender_pool.record_send(sender)
         return {"sent": bool(recorded), "contact_id": contact_id, "step": step, "message_id": message_id}
 
-    def _ai_draft(self, contact: dict[str, Any]) -> dict[str, str]:
-        fallback = self._fallback_draft(contact)
+    def _ai_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
+        fallback = self._fallback_draft(contact, user=user)
         llm_cfg = self.config.raw.get("llm", {})
         provider = llm_cfg.get("provider", "deepseek")
         api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
@@ -142,10 +169,9 @@ class PersonalizedEmailService:
             log("email_draft.failed", contact_id=contact.get("id"), error=str(exc))
             return fallback
 
-    def _fallback_draft(self, contact: dict[str, Any]) -> dict[str, str]:
+    def _fallback_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
         company = contact.get("company_name") or "your business"
         first = contact.get("first_name") or "there"
-        sender = self.config.sender.get("name", "")
         profile = build_customer_profile(contact)
         framework = profile.get("email_framework", outreach_framework(contact))
         context = _source_context(contact)
@@ -165,7 +191,7 @@ class PersonalizedEmailService:
             f"{value} We are looking for partners where the customer base already values high-end products, service, and differentiated retail experiences.\n\n"
             f"If {company} is exploring new premium categories or partner brands, I can send a short note on where Vertu may fit and what a lightweight cooperation model could look like.\n\n"
             "Would it be worth a brief reply to see if this is relevant?\n\n"
-            f"Best,\n{sender}\n\n"
+            f"{_sender_signature(user, self.config.sender.get('name', ''))}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )
         return {"subject": subject, "body": body}
@@ -231,7 +257,8 @@ class OutreachService:
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
         values = {
             **contact,
-            "sender_name": sender.get("name", ""),
+            "sender_name": _sender_signature_name(user, sender.get("name", "")),
+            "sender_signature": _sender_signature(user, sender.get("name", "")),
             "unsubscribe_url": unsubscribe_url(contact, base_url),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
@@ -240,6 +267,8 @@ class OutreachService:
         }
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
+        text = _normalize_sender_signature(text, user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
+        html_body = "<br>".join(html.escape(line) for line in text.splitlines())
         validate_email_body(subject, text)
         html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url)}" width="1" height="1" alt="" />'
         message_id = mailer.send(
@@ -315,6 +344,41 @@ def _reply_to_email(user: dict[str, Any] | None) -> str | None:
     if "@" not in value or " " in value:
         return None
     return value
+
+
+def _sender_signature_name(user: dict[str, Any] | None, fallback_name: str = "") -> str:
+    value = str((user or {}).get("display_name") or (user or {}).get("username") or fallback_name or "Vertu").strip()
+    return value or "Vertu"
+
+
+def _sender_signature(user: dict[str, Any] | None, fallback_name: str = "") -> str:
+    name = _sender_signature_name(user, fallback_name)
+    signature_name = name if name.lower().endswith(" you") else f"{name} You"
+    return f"Best regards,\n{signature_name}\nBD Manager Of Media East Region | VERTU"
+
+
+_SIGNOFF_RE = re.compile(r"\n+(?:Best|Best regards|Regards),\s*\n(?:[^\n]*\n?){0,4}\s*$", re.IGNORECASE)
+
+
+def _normalize_sender_signature(
+    text: str,
+    user: dict[str, Any] | None,
+    *,
+    fallback_name: str = "",
+    unsubscribe_value: str | None = None,
+) -> str:
+    body = str(text or "").rstrip()
+    unsubscribe = ""
+    marker_index = body.lower().rfind("\nunsubscribe:")
+    if marker_index >= 0:
+        unsubscribe = body[marker_index:].strip()
+        body = body[:marker_index].rstrip()
+    elif unsubscribe_value:
+        unsubscribe = f"Unsubscribe: {unsubscribe_value}"
+
+    body = _SIGNOFF_RE.sub("", body).rstrip()
+    parts = [part for part in [body, _sender_signature(user, fallback_name), unsubscribe] if part]
+    return "\n\n".join(parts)
 
 
 __all__ = ["OutreachService", "PersonalizedEmailService"]

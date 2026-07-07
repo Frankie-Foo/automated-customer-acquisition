@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-07
+
+- Forced outbound email signatures to use the logged-in sales account:
+  - emails now end with `Best regards, <login display name> You, BD Manager Of Media East Region | VERTU`;
+  - manual drafts, custom sends, and queued sequence sends share the same backend signature normalization;
+  - sender `reply_to_email` continues to route customer replies to the logged-in sales account mailbox.
+- Updated the customer workspace default email draft preview to match the production signature format.
+- Added regression tests for sales-account signatures and reply-to behavior.
+
 ## 2026-07-06
 
 - Fixed Resend webhook feedback handling for production email callbacks:

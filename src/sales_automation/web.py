@@ -492,6 +492,7 @@ def make_handler(config, repo: Repository):
                     mode=payload.get("mode") or "ai",
                     custom_subject=payload.get("subject"),
                     custom_body=payload.get("body"),
+                    user=self._current_user(),
                 ))
                 return
             if parsed.path == "/api/send-custom":
