@@ -1331,6 +1331,94 @@ select:focus {
   background: var(--surface-soft);
 }
 
+.pain-strategy,
+.followup-plan-box {
+  grid-column: 1 / -1;
+  padding: 14px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: #f7fffd;
+}
+
+.pain-strategy header,
+.followup-plan-box header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.pain-strategy header strong,
+.followup-plan-box header strong {
+  color: #0f3d3a;
+  font-size: 14px;
+}
+
+.pain-strategy header span,
+.followup-plan-box header span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.strategy-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.strategy-row b {
+  color: #0f766e;
+  font-size: 12px;
+}
+
+.strategy-row span {
+  color: #1e293b;
+  line-height: 1.5;
+}
+
+.followup-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.followup-plan-grid article {
+  min-height: 116px;
+  padding: 12px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.followup-plan-grid article b {
+  display: block;
+  color: #0f766e;
+  font-size: 13px;
+}
+
+.followup-plan-grid article span {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.followup-plan-grid article strong {
+  display: block;
+  margin-top: 8px;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.followup-plan-grid article p {
+  margin: 7px 0 0;
+  color: #475569;
+  line-height: 1.45;
+}
+
 .email-candidates header {
   display: flex;
   justify-content: space-between;

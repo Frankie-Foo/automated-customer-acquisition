@@ -61,6 +61,7 @@ def build_customer_profile(contact: dict[str, Any]) -> dict[str, Any]:
     score_parts = score_customer(contact)
     icp_score = max(0, min(100, int(sum(score_parts.values()))))
     next_action = next_best_action(contact, icp_score)
+    pain_strategy = pain_point_strategy(contact)
     return {
         "summary": profile_summary(contact, icp_score, next_action),
         "persona": persona_label(contact),
@@ -74,6 +75,8 @@ def build_customer_profile(contact: dict[str, Any]) -> dict[str, Any]:
         "risks": inferred_risks(contact),
         "next_action": next_action,
         "why_now": why_now(contact, icp_score),
+        "pain_point_strategy": pain_strategy,
+        "followup_plan": followup_plan(contact, pain_strategy),
         "email_framework": outreach_framework(contact),
     }
 
@@ -140,6 +143,88 @@ def outreach_framework(contact: dict[str, Any]) -> dict[str, str]:
         "low_barrier_ask": "Ask for a short reply or a 15-minute exploratory call, not a heavy proposal immediately.",
         "close": "Keep the ending direct, polite, and easy to say yes/no to.",
     }
+
+
+def pain_point_strategy(contact: dict[str, Any]) -> dict[str, str]:
+    """Build a practical outreach angle without inventing private facts."""
+    company = contact.get("company_name") or "the account"
+    role = contact.get("job_title") or "the team"
+    context = _source_context(contact)
+    text = _joined_text(
+        contact.get("industry"),
+        contact.get("company_name"),
+        contact.get("company_domain"),
+        context.get("seed_category"),
+        context.get("seed_reason"),
+    )
+
+    if any(keyword in text for keyword in ("hotel", "hospitality", "resort", "concierge")):
+        pain = "needs differentiated VIP guest experiences and high-ticket retail/service add-ons"
+        angle = "position Vertu as a premium guest gifting, concierge, or VIP retail conversation"
+        proof = "connect the message to luxury hospitality, concierge service, and customer experience"
+    elif any(keyword in text for keyword in ("watch", "jewelry", "jewellery", "luxury", "boutique", "fashion", "pre-owned", "second hand")):
+        pain = "needs high-margin premium categories that fit an existing luxury customer base"
+        angle = "position Vertu as a selective luxury technology category, not a mass electronics product"
+        proof = "connect the message to curated assortment, status products, and premium service"
+    elif any(keyword in text for keyword in ("dealer", "distributor", "reseller", "retail", "automotive", "supercar")):
+        pain = "needs differentiated products, channel margin, and a low-friction cooperation model"
+        angle = "position Vertu as an incremental premium category for existing high-value customers"
+        proof = "connect the message to channel expansion, customer upgrade, and selective distribution"
+    else:
+        pain = "may need a differentiated premium offer but the evidence is still limited"
+        angle = "ask a light qualification question before sending a heavier proposal"
+        proof = "use only the imported account context and avoid unsupported claims"
+
+    return {
+        "suspected_pain": f"{company} {pain}.",
+        "outreach_angle": angle,
+        "message_hook": _message_hook(contact, pain),
+        "evidence_to_use": context.get("seed_reason") or proof,
+        "question_to_ask": f"Would it be relevant to explore whether Vertu fits {company}'s current customer base or channel plans?",
+        "avoid": f"Do not claim {company} has a confirmed problem unless it appears in source notes; frame it as a practical fit question for {role}.",
+    }
+
+
+def followup_plan(contact: dict[str, Any], strategy: dict[str, str] | None = None) -> list[dict[str, str]]:
+    strategy = strategy or pain_point_strategy(contact)
+    company = contact.get("company_name") or "the account"
+    return [
+        {
+            "day": "Day 1",
+            "trigger": "first touch",
+            "goal": "open a relevant business conversation",
+            "message": strategy.get("message_hook", ""),
+        },
+        {
+            "day": "Day 3",
+            "trigger": "not opened",
+            "goal": "test a sharper subject and lighter value statement",
+            "message": f"Reframe around {company}'s likely business fit and one low-friction cooperation point.",
+        },
+        {
+            "day": "Day 7",
+            "trigger": "opened but no reply",
+            "goal": "reduce perceived risk and add one new value point",
+            "message": "Add one concrete cooperation angle: selective channel, premium category extension, light trial, or VIP customer experience.",
+        },
+        {
+            "day": "Day 14",
+            "trigger": "still no reply",
+            "goal": "close politely or move to waiting pool",
+            "message": "Send a short closing note with a simple yes/no question; stop automatic chasing after this step.",
+        },
+    ]
+
+
+def _message_hook(contact: dict[str, Any], pain: str) -> str:
+    company = contact.get("company_name") or "your company"
+    context = _source_context(contact)
+    if context.get("seed_reason"):
+        return f"I noticed {company} in our account research: {context['seed_reason']}"
+    category = context.get("seed_category") or contact.get("industry")
+    if category:
+        return f"I noticed {company} is relevant to {category}; this usually means the right premium category must protect margin, service quality, and customer fit."
+    return f"I noticed {company} may be relevant to selective premium distribution, and wanted to ask whether a differentiated luxury technology category is worth exploring."
 
 
 def _business_match_sentence(company: str, role: str, source_context: dict[str, str], industry: Any) -> str:

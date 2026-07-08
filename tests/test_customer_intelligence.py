@@ -24,6 +24,9 @@ def test_customer_score_prioritizes_high_value_luxury_account():
     assert profile["intent_level"] == "medium"
     assert "fit_score_breakdown" in profile
     assert profile["email_framework"]["low_barrier_ask"]
+    assert profile["pain_point_strategy"]["suspected_pain"]
+    assert len(profile["followup_plan"]) == 4
+    assert profile["followup_plan"][0]["day"] == "Day 1"
 
 
 def test_customer_score_penalizes_closed_loop_status():

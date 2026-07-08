@@ -120,19 +120,28 @@ class PersonalizedEmailService:
         source_context = _source_context(contact)
         account_context = _account_context(contact)
         framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(contact)
+        pain_strategy = insights.get("pain_point_strategy") if isinstance(insights.get("pain_point_strategy"), dict) else {}
+        followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
         activities = self.repo.list_lifecycle_activities(int(contact["id"]), limit=5)
         history = "\n".join(f"- {item.get('content')}" for item in activities if item.get("content"))
         prompt = (
             "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
             "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
-            "Use this fixed five-part structure without headings: 1) state the reason for writing, 2) match the recipient's business, "
-            "3) explain Vertu's relevant value, 4) make a low-barrier ask, 5) close briefly. "
+            "Use this fixed pain-led five-part structure without headings: "
+            "1) state the observed account signal or research reason, "
+            "2) name the likely business pain as a hypothesis, not a fact, "
+            "3) connect Vertu to that pain with a practical channel value, "
+            "4) ask one low-barrier qualification question, "
+            "5) close briefly. "
+            "Avoid generic claims such as 'we are a leading brand' or 'high quality and good price'. "
             f"Recipient: {contact.get('first_name')} {contact.get('last_name')}; role: {contact.get('job_title')}; "
             f"company: {contact.get('company_name')}; industry: {contact.get('industry')}; location: {contact.get('location')}; "
             f"lifecycle stage: {contact.get('lifecycle_stage')}; profile insights: {insights}; recent notes: {history}; "
             f"imported account context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
             f"five-part framework: {json.dumps(framework, ensure_ascii=False)}; "
+            f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
+            f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
             f"sender: {self.config.sender.get('name')}."
         )
         try:
@@ -174,12 +183,15 @@ class PersonalizedEmailService:
         first = contact.get("first_name") or "there"
         profile = build_customer_profile(contact)
         framework = profile.get("email_framework", outreach_framework(contact))
+        strategy = profile.get("pain_point_strategy") or {}
         context = _source_context(contact)
         category = context.get("seed_category") or contact.get("industry") or "premium retail/distribution"
         role = contact.get("job_title") or "your team"
-        match = framework.get("business_match") or _fallback_opening(contact)
+        match = strategy.get("message_hook") or framework.get("business_match") or _fallback_opening(contact)
         if not match or match.startswith("Reference the recipient"):
             match = f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."
+        pain = strategy.get("suspected_pain") or f"For partners in {category}, the challenge is usually finding premium categories that add margin without adding heavy operational complexity."
+        question = strategy.get("question_to_ask") or f"Would it be useful to explore whether Vertu could fit {company}'s current customer base?"
         value = (
             framework.get("our_value")
             or "Vertu is a premium mobile and luxury technology brand for selective high-end retail and distributor channels."
@@ -188,9 +200,9 @@ class PersonalizedEmailService:
         body = (
             f"Hi {first},\n\n"
             f"{match}\n\n"
-            f"{value} We are looking for partners where the customer base already values high-end products, service, and differentiated retail experiences.\n\n"
-            f"If {company} is exploring new premium categories or partner brands, I can send a short note on where Vertu may fit and what a lightweight cooperation model could look like.\n\n"
-            "Would it be worth a brief reply to see if this is relevant?\n\n"
+            f"My guess is that {pain[0].lower() + pain[1:] if pain else 'the right premium category must be easy to explain and low-friction to test.'}\n\n"
+            f"{value} The practical angle is a selective, lightweight cooperation discussion rather than a heavy proposal upfront.\n\n"
+            f"{question} A brief reply is enough to tell me whether this is relevant.\n\n"
             f"{_sender_signature(user, self.config.sender.get('name', ''))}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )

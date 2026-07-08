@@ -27,19 +27,22 @@ class ProfileAgentService:
             self.repo.update_profile_summary(contact_id, fallback["summary"], fallback)
             return fallback
         prompt = (
-            "你是海外销售运营画像 Agent。只根据已提供字段做结构化客户画像，不得编造事实。"
-            "请只输出 JSON，不要 Markdown。字段必须包括："
-            "summary, persona, icp_fit_score, intent_level, buying_stage, interests, pain_points, objections, risks, next_action, why_now。"
-            "icp_fit_score 是 0-100 整数；intent_level 只能是 high/medium/low/unknown；"
-            "interests/pain_points/objections/risks 是字符串数组；没有证据就用空数组。"
-            f"姓名：{contact.get('first_name')} {contact.get('last_name')}；"
-            f"职位：{contact.get('job_title')}；公司：{contact.get('company_name')}；行业：{contact.get('industry')}；"
-            f"地区：{contact.get('location')}；邮箱状态：{contact.get('email_status')}；"
-            f"外联状态：{contact.get('status')}，第 {contact.get('sequence_step')} 步；"
-            f"已发送：{contact.get('sequence_step')}；生命周期：{contact.get('lifecycle_stage')}；"
-            f"生命周期：{contact.get('lifecycle_stage')}；结论：{contact.get('disposition')}；"
-            f"打开次数未知时不要推断；备注：{contact.get('notes')}；流失原因：{contact.get('lost_reason')}；"
-            f"社媒：{contact.get('social_profiles')}。"
+            "You are an overseas B2B sales customer-insight agent for Vertu. "
+            "Use only the provided fields. Do not invent facts, revenue, news, suppliers, meetings, or pain points. "
+            "Return strict JSON only, no Markdown. Required fields: "
+            "summary, persona, icp_fit_score, intent_level, buying_stage, interests, pain_points, objections, risks, next_action, why_now, "
+            "pain_point_strategy, followup_plan. "
+            "pain_point_strategy must be an object with suspected_pain, outreach_angle, message_hook, evidence_to_use, question_to_ask, avoid. "
+            "followup_plan must be four objects for Day 1, Day 3, Day 7, Day 14 with day, trigger, goal, message. "
+            "icp_fit_score is 0-100. intent_level is only high/medium/low/unknown. "
+            "If evidence is weak, say it is a hypothesis and recommend enrichment. "
+            f"Name: {contact.get('first_name')} {contact.get('last_name')}; "
+            f"role: {contact.get('job_title')}; company: {contact.get('company_name')}; industry: {contact.get('industry')}; "
+            f"location: {contact.get('location')}; email status: {contact.get('email_status')}; "
+            f"outreach status: {contact.get('status')}; sent step: {contact.get('sequence_step')}; "
+            f"lifecycle: {contact.get('lifecycle_stage')}; SABCD: {contact.get('sabcd_stage')}; disposition: {contact.get('disposition')}; "
+            f"notes: {contact.get('notes')}; lost reason: {contact.get('lost_reason')}; "
+            f"source context: {contact.get('source_context')}; social profiles: {contact.get('social_profiles')}."
         )
         try:
             insights = _profile_insights_via_llm(api_key, provider, llm_cfg, prompt) or fallback
@@ -65,10 +68,13 @@ def _profile_insights_via_llm(api_key: str, provider: str, llm_cfg: dict[str, An
         json_body={
             "model": client.model,
             "messages": [
-                {"role": "system", "content": "你只输出严格 JSON。你只根据已提供字段总结客户画像，不编造事实。"},
+                {
+                    "role": "system",
+                    "content": "Return strict JSON only. Summarize the customer from provided fields only and do not invent facts.",
+                },
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 520,
+            "max_tokens": 820,
             "temperature": 0.2,
         },
     )
@@ -82,6 +88,7 @@ def _profile_insights_via_llm(api_key: str, provider: str, llm_cfg: dict[str, An
 
 def _fallback_profile_insights(contact: dict[str, Any]) -> dict[str, Any]:
     return build_customer_profile(contact)
+
 
 def _normalize_profile_insights(insights: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     result = {**fallback, **(insights or {})}
@@ -97,11 +104,45 @@ def _normalize_profile_insights(insights: dict[str, Any], fallback: dict[str, An
         value = result.get(key)
         if not isinstance(value, list):
             value = []
-        result[key] = [str(item)[:120] for item in value[:5] if item]
+        result[key] = [str(item)[:160] for item in value[:5] if item]
+    result["pain_point_strategy"] = _normalize_strategy(
+        result.get("pain_point_strategy"),
+        fallback.get("pain_point_strategy") or {},
+    )
+    result["followup_plan"] = _normalize_followup_plan(
+        result.get("followup_plan"),
+        fallback.get("followup_plan") or [],
+    )
     result["next_action"] = str(result.get("next_action") or fallback["next_action"])[:300]
     result["why_now"] = str(result.get("why_now") or fallback["why_now"])[:300]
     result["buying_stage"] = str(result.get("buying_stage") or fallback["buying_stage"])[:80]
     return result
+
+
+def _normalize_strategy(value: Any, fallback: dict[str, Any]) -> dict[str, str]:
+    strategy = value if isinstance(value, dict) else fallback
+    return {
+        "suspected_pain": str(strategy.get("suspected_pain") or fallback.get("suspected_pain") or "")[:300],
+        "outreach_angle": str(strategy.get("outreach_angle") or fallback.get("outreach_angle") or "")[:220],
+        "message_hook": str(strategy.get("message_hook") or fallback.get("message_hook") or "")[:300],
+        "evidence_to_use": str(strategy.get("evidence_to_use") or fallback.get("evidence_to_use") or "")[:300],
+        "question_to_ask": str(strategy.get("question_to_ask") or fallback.get("question_to_ask") or "")[:220],
+        "avoid": str(strategy.get("avoid") or fallback.get("avoid") or "")[:220],
+    }
+
+
+def _normalize_followup_plan(value: Any, fallback: list[dict[str, Any]]) -> list[dict[str, str]]:
+    plan = value if isinstance(value, list) else fallback
+    normalized = []
+    for item in plan[:4]:
+        if isinstance(item, dict):
+            normalized.append({
+                "day": str(item.get("day") or "")[:30],
+                "trigger": str(item.get("trigger") or "")[:80],
+                "goal": str(item.get("goal") or "")[:120],
+                "message": str(item.get("message") or "")[:220],
+            })
+    return normalized
 
 
 class StageAgentService:
@@ -109,7 +150,14 @@ class StageAgentService:
         self.config = config
         self.repo = repo
 
-    def analyze(self, contact_id: int, activity_id: int | None = None, content: str | None = None, stage: str | None = None, activity_type: str | None = None) -> dict[str, Any]:
+    def analyze(
+        self,
+        contact_id: int,
+        activity_id: int | None = None,
+        content: str | None = None,
+        stage: str | None = None,
+        activity_type: str | None = None,
+    ) -> dict[str, Any]:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
@@ -123,14 +171,13 @@ class StageAgentService:
         provider = llm_cfg.get("provider", "deepseek")
         api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
         if not api_key:
+            return fallback
+        try:
+            analysis = _stage_analysis_via_llm(api_key, provider, llm_cfg, contact, activities, stage, activity_type, content) or fallback
+            analysis = _normalize_stage_analysis(analysis, fallback)
+        except Exception as exc:
+            log("stage_agent.failed", contact_id=contact_id, activity_id=activity_id, error=str(exc))
             analysis = fallback
-        else:
-            try:
-                analysis = _stage_analysis_via_llm(api_key, provider, llm_cfg, contact, activities, stage, activity_type, content) or fallback
-                analysis = _normalize_stage_analysis(analysis, fallback)
-            except Exception as exc:
-                log("stage_agent.failed", contact_id=contact_id, activity_id=activity_id, error=str(exc))
-                analysis = fallback
         if activity_id:
             self.repo.update_lifecycle_activity_analysis(activity_id, analysis)
         return analysis
@@ -158,15 +205,16 @@ def _stage_analysis_via_llm(
         if item.get("content")
     )
     prompt = (
-        "你是海外销售生命周期阶段 Agent。只根据提供信息分析，不编造事实。"
-        "请只输出 JSON，不要 Markdown。字段必须包括：summary, intent, risks, missing_info, next_steps, suggested_stage, materials_to_prepare。"
-        "intent 只能是 high/medium/low/unknown；risks/missing_info/next_steps/materials_to_prepare 都是字符串数组。"
-        f"客户：{contact.get('first_name')} {contact.get('last_name')}；公司：{contact.get('company_name')}；职位：{contact.get('job_title')}；"
-        f"国家/地区：{contact.get('location')}；行业：{contact.get('industry')}；当前阶段：{stage}；记录类型：{activity_type}。"
-        f"本次记录：{content}\n历史记录：{history}"
-        "阶段要求：回复阶段分析回复意图和下一步；初步沟通列缺失资料；约会分析会议下一步；"
-        "商业计划分析落地可能性和准备资料；试订单按国家分析安全、关税、标签、物流风险；"
-        "代理协议分析条款风险；门店创建分析客户类型、陈列、库存、产品占比和开店准备。"
+        "You are a sales lifecycle analysis agent for Vertu overseas channel development. "
+        "Use only provided facts and return strict JSON with: summary, intent, risks, missing_info, next_steps, suggested_stage, materials_to_prepare. "
+        "intent must be high/medium/low/unknown. Arrays must contain short practical actions. "
+        "For replied: analyze intent and next reply. For conversation: collect missing account facts. "
+        "For meeting: suggest next meeting preparation. For business_plan: analyze landing likelihood and preparation materials. "
+        "For trial_order: list country/logistics/compliance/order risks. For agency_agreement: list contract risk points. "
+        "For store_creation: suggest store type, display, inventory, and opening preparation. "
+        f"Contact: {contact.get('first_name')} {contact.get('last_name')}; company: {contact.get('company_name')}; role: {contact.get('job_title')}; "
+        f"location: {contact.get('location')}; industry: {contact.get('industry')}; stage: {stage}; activity type: {activity_type}. "
+        f"Current content: {content}\nHistory:\n{history}"
     )
     data = client.http.request(
         "POST",
@@ -175,10 +223,10 @@ def _stage_analysis_via_llm(
         json_body={
             "model": client.model,
             "messages": [
-                {"role": "system", "content": "你只输出严格 JSON。你是销售生命周期阶段分析 Agent。"},
+                {"role": "system", "content": "Return strict JSON only. You analyze sales lifecycle stages from provided facts only."},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 620,
+            "max_tokens": 720,
             "temperature": 0.2,
         },
     )
@@ -192,56 +240,31 @@ def _stage_analysis_via_llm(
 
 def _fallback_stage_analysis(contact: dict[str, Any], stage: str, activity_type: str, content: str) -> dict[str, Any]:
     label = {
-        "lead": "线索",
-        "replied": "回复",
-        "conversation": "初步沟通",
-        "meeting": "约会/会议",
-        "business_plan": "商业计划",
-        "trial_order": "试订单",
-        "agency_agreement": "代理协议",
-        "store_creation": "门店创建",
+        "lead": "lead",
+        "replied": "replied",
+        "conversation": "initial conversation",
+        "meeting": "meeting",
+        "business_plan": "business plan",
+        "trial_order": "trial order",
+        "agency_agreement": "agency agreement",
+        "store_creation": "store creation",
     }.get(stage, stage)
     lower_content = content.lower()
     intent = "unknown"
-    if any(token in lower_content for token in ("可以", "了解", "资料", "政策", "报价", "合作", "meeting", "call", "interested")):
+    if any(token in lower_content for token in ("interested", "price", "proposal", "call", "meeting", "合作", "报价", "资料")):
         intent = "medium"
-    if any(token in lower_content for token in ("下单", "订单", "签", "代理", "合同", "visit", "buy")):
+    if any(token in lower_content for token in ("order", "contract", "agreement", "visit", "buy", "订单", "合同", "代理")):
         intent = "high"
-    next_steps = {
-        "replied": ["判断客户意图", "准备首次沟通问题", "约定下一次沟通时间"],
-        "conversation": ["补齐公司背景、渠道、预算、国家和门店信息", "整理客户缺失资料清单"],
-        "meeting": ["沉淀会议纪要", "确认下一次会议议题", "准备客户关注材料"],
-        "business_plan": ["准备落地模型", "整理对方国家和渠道资料", "确认预算与销量目标"],
-        "trial_order": ["整理 SKU、数量、金额和物流方式", "检查安全、关税、标签和物流风险"],
-        "agency_agreement": ["提取客户修改点", "标记独家、付款、售后、库存等风险条款"],
-        "store_creation": ["收集门店面积、城市、商圈、预算和库存计划", "准备陈列和首批备货建议"],
-    }.get(stage, ["补充阶段记录", "生成下一步跟进任务"])
-    materials = {
-        "replied": ["海外渠道合作资料", "首批订单政策", "品牌/产品介绍", "下一步沟通问题清单"],
-        "conversation": ["客户背景调研表", "渠道能力问题清单", "国家/城市/门店信息模板"],
-        "meeting": ["会议议程", "产品资料", "报价或合作政策", "会议后待办清单"],
-        "business_plan": ["商业计划模板", "渠道测算表", "市场进入资料", "下次沟通问题"],
-        "trial_order": ["SKU 清单", "试订单报价", "物流方案", "安全/关税/标签检查清单"],
-        "agency_agreement": ["协议版本", "客户修改点清单", "付款/独家/售后/库存条款风险表"],
-        "store_creation": ["OA 标准陈列", "库存结构建议", "产品占比建议", "开业准备清单"],
-    }.get(stage, ["客户背景资料", "产品资料", "下一步沟通问题清单"])
-    missing = {
-        "replied": ["客户国家/市场", "渠道类型", "预计首批订单规模", "是否决策人"],
-        "conversation": ["公司背景", "渠道能力", "预算", "门店数量", "决策链"],
-        "meeting": ["会议目标", "参会人角色", "客户关注点", "下一次会议时间"],
-        "business_plan": ["目标国家", "落地渠道", "预算", "销量目标", "时间表"],
-        "trial_order": ["SKU", "数量", "金额", "目的国", "物流方式", "标签要求"],
-        "agency_agreement": ["代理区域", "独家要求", "付款周期", "售后责任", "库存义务"],
-        "store_creation": ["城市/商圈", "门店面积", "装修预算", "人员配置", "库存计划"],
-    }.get(stage, ["国家/地区", "预算", "渠道能力", "决策人", "时间计划"])
     return {
-        "summary": f"当前处于{label}阶段，已记录 {activity_type} 内容。需要基于更多客户资料继续判断推进路径。",
+        "summary": f"Current stage is {label}. Record type: {activity_type}. Use the note to decide the next sales action.",
         "intent": intent,
-        "risks": ["信息不足，暂不能做强判断"] if not content else [],
-        "missing_info": missing,
-        "next_steps": next_steps,
+        "risks": [] if content else ["Stage note is empty, so the analysis is only a default checklist."],
+        "missing_info": _missing_info_for_stage(stage),
+        "next_steps": _next_steps_for_stage(stage),
+        "next_step": " / ".join(_next_steps_for_stage(stage)[:3]),
         "suggested_stage": stage,
-        "materials_to_prepare": materials,
+        "materials_to_prepare": _materials_for_stage(stage),
+        "prep_materials": _materials_for_stage(stage),
     }
 
 
@@ -254,9 +277,47 @@ def _normalize_stage_analysis(analysis: dict[str, Any], fallback: dict[str, Any]
         value = result.get(key)
         if not isinstance(value, list):
             value = []
-        result[key] = [str(item)[:140] for item in value[:8] if item]
+        result[key] = [str(item)[:160] for item in value[:8] if item]
+    result["next_step"] = " / ".join(result["next_steps"][:3])
+    result["prep_materials"] = result["materials_to_prepare"]
     result["suggested_stage"] = str(result.get("suggested_stage") or fallback["suggested_stage"])[:80]
     return result
+
+
+def _missing_info_for_stage(stage: str) -> list[str]:
+    return {
+        "replied": ["customer country/market", "channel type", "decision maker", "first order scale"],
+        "conversation": ["company background", "channel capability", "budget", "store count", "decision chain"],
+        "meeting": ["meeting objective", "attendee roles", "customer concerns", "next meeting time"],
+        "business_plan": ["target country", "landing channel", "budget", "sales target", "timeline"],
+        "trial_order": ["SKU", "quantity", "amount", "destination country", "logistics method", "label requirements"],
+        "agency_agreement": ["agency territory", "exclusivity request", "payment cycle", "after-sales responsibility", "inventory obligation"],
+        "store_creation": ["city/business district", "store size", "fit-out budget", "staffing", "inventory plan"],
+    }.get(stage, ["country/region", "budget", "channel capability", "decision maker", "timeline"])
+
+
+def _next_steps_for_stage(stage: str) -> list[str]:
+    return {
+        "replied": ["judge reply intent", "prepare three qualification questions", "schedule the next conversation"],
+        "conversation": ["complete account background", "record missing customer facts", "confirm decision process"],
+        "meeting": ["summarize meeting notes", "confirm next meeting topic", "prepare customer-specific materials"],
+        "business_plan": ["prepare landing model", "estimate channel economics", "confirm budget and rollout target"],
+        "trial_order": ["confirm SKU and quantity", "check compliance/logistics risk", "prepare trial order quote"],
+        "agency_agreement": ["extract requested changes", "mark exclusivity/payment/after-sales/inventory risk points"],
+        "store_creation": ["collect store facts", "prepare OA display suggestions", "suggest inventory and product mix"],
+    }.get(stage, ["add a stage note", "generate the next follow-up task"])
+
+
+def _materials_for_stage(stage: str) -> list[str]:
+    return {
+        "replied": ["channel cooperation overview", "brand/product introduction", "first order policy", "qualification questions"],
+        "conversation": ["account research sheet", "channel capability checklist", "country/store information template"],
+        "meeting": ["meeting agenda", "product materials", "cooperation policy", "post-meeting action list"],
+        "business_plan": ["business plan template", "channel forecast sheet", "market entry notes", "next discussion questions"],
+        "trial_order": ["SKU list", "trial order quote", "logistics proposal", "safety/tariff/label checklist"],
+        "agency_agreement": ["agreement draft", "requested change list", "contract risk checklist"],
+        "store_creation": ["OA display standard", "inventory structure proposal", "product mix suggestion", "opening checklist"],
+    }.get(stage, ["account background", "product materials", "next-step question list"])
 
 
 def _default_activity_type(stage: str) -> str:
@@ -269,5 +330,6 @@ def _default_activity_type(stage: str) -> str:
         "agency_agreement": "agreement_review",
         "store_creation": "store_plan",
     }.get(stage, "note")
+
 
 __all__ = ["ProfileAgentService", "StageAgentService"]

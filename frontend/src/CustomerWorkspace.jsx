@@ -250,9 +250,60 @@ function WorkspaceProfile({ contact, onAdoptEmail }) {
       <div><b>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "线索"}</b><span>{dispositionLabel(contact.disposition)}</span></div>
       <div><b>{insights.icp_fit_score ?? "--"}</b><span>拟合度 / {intentLabel(insights.intent_level)}</span></div>
       <p>{contact.profile_summary || "还没有客户画像，点击列表里的“画像”生成。"}</p>
+      <EnhancedProfileBlocks insights={insights} />
       <PhoneCandidates contact={contact} />
       <EmailCandidates contact={contact} onAdoptEmail={onAdoptEmail} />
     </div>
+  );
+}
+
+function EnhancedProfileBlocks({ insights }) {
+  return (
+    <>
+      <PainPointStrategy insights={insights} />
+      <FollowupPlan insights={insights} />
+    </>
+  );
+}
+
+function PainPointStrategy({ insights }) {
+  const strategy = insights?.pain_point_strategy || {};
+  const rows = [
+    ["Suspected pain", strategy.suspected_pain],
+    ["Outreach angle", strategy.outreach_angle],
+    ["Message hook", strategy.message_hook],
+    ["Evidence", strategy.evidence_to_use],
+    ["Question", strategy.question_to_ask],
+    ["Avoid", strategy.avoid],
+  ].filter(([, value]) => value);
+  if (!rows.length) return null;
+  return (
+    <section className="pain-strategy">
+      <header><strong>AI pain-point strategy</strong><span>Use as hypothesis, not invented fact</span></header>
+      {rows.map(([label, value]) => (
+        <div className="strategy-row" key={label}><b>{label}</b><span>{value}</span></div>
+      ))}
+    </section>
+  );
+}
+
+function FollowupPlan({ insights }) {
+  const plan = Array.isArray(insights?.followup_plan) ? insights.followup_plan : [];
+  if (!plan.length) return null;
+  return (
+    <section className="followup-plan-box">
+      <header><strong>14-day follow-up plan</strong><span>Day 1 / 3 / 7 / 14</span></header>
+      <div className="followup-plan-grid">
+        {plan.map((item, index) => (
+          <article key={`${item.day || index}-${item.trigger || ""}`}>
+            <b>{item.day || `Step ${index + 1}`}</b>
+            <span>{item.trigger || ""}</span>
+            <strong>{item.goal || ""}</strong>
+            <p>{item.message || ""}</p>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

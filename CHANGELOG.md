@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-08
+
+- Upgraded the customer-insight workflow from generic profiling to pain-led outreach:
+  - customer profiles now include `pain_point_strategy` with suspected pain, outreach angle, evidence, question, and avoid-list;
+  - profiles now include a 14-day follow-up plan for Day 1 / Day 3 / Day 7 / Day 14 outreach;
+  - AI profile prompts now require strict, evidence-bound JSON and avoid invented pain points.
+- Improved personalized email generation:
+  - AI drafts now follow a pain-led five-part structure;
+  - fallback drafts now use the customer pain strategy and keep a low-barrier "brief reply" ask.
+- Updated the customer workspace UI to show pain-point strategy and 14-day follow-up plan directly in the customer detail view.
+- Added regression coverage for pain strategy and follow-up plan generation.
+
 ## 2026-07-07
 
 - Reworked the frontend navigation around a six-agent outbound workflow:
