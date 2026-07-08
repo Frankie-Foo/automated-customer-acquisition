@@ -2,6 +2,13 @@
 
 ## 2026-07-07
 
+- Reworked the frontend navigation around a six-agent outbound workflow:
+  - 工作台 shows the six AI employee map and operating metrics;
+  - 市场与获客 contains sourcing and import workflows;
+  - 客户背调 contains the customer list and profile/research entry point;
+  - 邮件触达 contains sent email history and delivery feedback;
+  - 跟进任务 contains follow-up tasks, lifecycle funnel, and SABCD progression;
+  - 主管周报 contains operations reporting and team/provider statistics.
 - Raised production outbound capacity targets:
   - default sales user send quota is now 200 emails per day;
   - global daily send quota is now 6000 emails per day for 30-seat operation;

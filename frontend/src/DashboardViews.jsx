@@ -35,6 +35,7 @@ export default function DashboardViewsPortal() {
     document.body.classList.add("react-dashboard-enabled");
     setTargets({
       dashboard: document.querySelector("#react-dashboard-root"),
+      agentMap: document.querySelector("#react-agent-map-root"),
       quickstart: document.querySelector("#react-quickstart-root"),
       ops: document.querySelector("#react-ops-root"),
       followups: document.querySelector("#react-followups-root"),
@@ -106,11 +107,44 @@ function DashboardViews({ targets }) {
   return (
     <>
       {targets.dashboard && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
+      {targets.agentMap && createPortal(<AgentMap />, targets.agentMap)}
       {targets.quickstart && createPortal(<QuickStart user={user} />, targets.quickstart)}
       {targets.ops && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
       {targets.followups && createPortal(<Followups contacts={contacts} />, targets.followups)}
       {targets.lifecycle && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
     </>
+  );
+}
+
+function AgentMap() {
+  const agents = [
+    ["市场情报员", "产品、国家、客户类型", "市场方向、关键词、渠道"],
+    ["客户搜索员", "关键词、渠道、公司种子", "公司名单、联系人、官网来源"],
+    ["公司背调员", "官网、产品页、社媒资料", "客户画像、匹配度、风险点"],
+    ["开发信助理", "客户画像、产品卖点", "首封开发信、跟进邮件"],
+    ["跟进提醒员", "客户阶段、邮件反馈", "跟进时间、下一步动作"],
+    ["主管周报员", "客户表、跟进表、邮件回流", "周报、重点客户提醒"],
+  ];
+  return (
+    <section className="agent-map">
+      <div className="followup-head">
+        <div>
+          <span className="eyebrow">AI workforce</span>
+          <h2>6 个 AI 员工协同获客</h2>
+        </div>
+        <p>每个模块只负责一件事，销售按页面顺序推进，管理员看结果和风险。</p>
+      </div>
+      <div className="agent-grid">
+        {agents.map(([name, input, output], index) => (
+          <article className="agent-card" key={name}>
+            <b>{index + 1}</b>
+            <strong>{name}</strong>
+            <span>输入：{input}</span>
+            <em>输出：{output}</em>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

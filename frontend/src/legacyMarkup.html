@@ -10,9 +10,12 @@
   </div>
 
   <nav class="nav" aria-label="Primary">
-    <a href="#dashboard" class="active" data-page-link="dashboard">展示看板</a>
-    <a href="#lifecycle" data-page-link="lifecycle">客户跟进</a>
-    <a href="#emails" data-page-link="emails">邮件中心</a>
+    <a href="#dashboard" class="active" data-page-link="dashboard">工作台</a>
+    <a href="#source" data-page-link="source">市场与获客</a>
+    <a href="#research" data-page-link="research">客户背调</a>
+    <a href="#outreach" data-page-link="outreach">邮件触达</a>
+    <a href="#followup" data-page-link="followup">跟进任务</a>
+    <a href="#report" data-page-link="report">主管周报</a>
     <a href="#admin" data-page-link="admin" id="nav-admin-link" class="hidden">管理员控制台</a>
   </nav>
 
@@ -25,8 +28,8 @@
   <header class="appbar">
     <div>
       <span class="eyebrow" id="page-eyebrow">Overseas PDCA · Sales Automation</span>
-      <h2 id="page-title">展示看板</h2>
-      <p id="page-subtitle">查看获客、发信、回流和团队运营关键指标。</p>
+      <h2 id="page-title">工作台</h2>
+      <p id="page-subtitle">按 AI 员工流水线推进：找客户、查客户、写邮件、做跟进、出周报。</p>
     </div>
     <div class="top-actions">
       <div class="account-box">
@@ -44,34 +47,49 @@
   <section class="app-page active" data-page="dashboard">
     <div class="page-stack">
       <div id="react-dashboard-root"></div>
+      <div id="react-agent-map-root"></div>
       <div id="react-quickstart-root"></div>
-      <div id="react-ops-root"></div>
     </div>
   </section>
 
-  <section class="app-page" data-page="lifecycle">
+  <section class="app-page" data-page="source">
     <div class="page-stack">
-      <div id="react-followups-root"></div>
-      <div id="react-lifecycle-root"></div>
-
       <section id="workbench" class="workbench">
         <div id="react-workbench-root"></div>
       </section>
+    </div>
+  </section>
 
+  <section class="app-page" data-page="research">
+    <div class="page-stack">
       <section id="pipeline" class="list-section">
         <div id="react-pipeline-root"></div>
       </section>
+    </div>
+  </section>
 
+  <section class="app-page" data-page="outreach">
+    <div class="page-stack">
+      <section id="sent-emails" class="sent-emails-section">
+        <div id="react-sent-emails-root"></div>
+      </section>
+    </div>
+  </section>
+
+  <section class="app-page" data-page="followup">
+    <div class="page-stack">
+      <div id="react-followups-root"></div>
+      <div id="react-lifecycle-root"></div>
       <section class="customer-workspace" id="customer-workspace">
         <div id="react-workspace-root"></div>
       </section>
     </div>
   </section>
 
-  <section class="app-page" data-page="emails">
-    <section id="sent-emails" class="sent-emails-section">
-      <div id="react-sent-emails-root"></div>
-    </section>
+  <section class="app-page" data-page="report">
+    <div class="page-stack">
+      <div id="react-ops-root"></div>
+    </div>
   </section>
 
   <section class="app-page" data-page="admin">

@@ -3038,3 +3038,73 @@ tbody tr:hover {
     overflow-x: auto;
   }
 }
+
+.agent-map {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.agent-card {
+  min-height: 148px;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.agent-card b {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+}
+
+.agent-card strong {
+  color: var(--text-1);
+  font-size: 15px;
+}
+
+.agent-card span,
+.agent-card em {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  font-style: normal;
+}
+
+.agent-card em {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+@media (max-width: 1180px) {
+  .agent-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
