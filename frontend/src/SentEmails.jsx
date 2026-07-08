@@ -58,6 +58,12 @@ function SentEmails() {
         </div>
       </div>
       {error && <div className="admin-alert is-error">{error}</div>}
+      <div className="email-log-guide">
+        <span><b>送达</b> 表示 Resend 已投递到对方邮箱服务商。</span>
+        <span><b>打开</b> 表示追踪像素被加载，不等于客户已回复。</span>
+        <span><b>回复</b> 会回到“回复至”邮箱，同时需要 Webhook 回流才能自动计数。</span>
+        <span><b>退信/退订</b> 客户不会继续显示发送按钮。</span>
+      </div>
       <div className="table-shell">
         <table className="sent-email-table">
           <thead>
@@ -92,7 +98,7 @@ function SentEmailRow({ email }) {
   return (
     <tr>
       <td>{formatDate(email.occurred_at)}</td>
-      <td><strong>{email.sender_email || "未记录"}</strong>{email.dry_run && <div className="muted">dry run</div>}</td>
+      <td><strong>{email.sender_email || "未记录"}</strong><div className="muted">回复至：{email.reply_to_email || "未记录"}</div>{email.dry_run && <div className="muted">dry run</div>}</td>
       <td><strong>{email.recipient_email || ""}</strong><div className="muted">{fullName(email)}</div></td>
       <td className="subject-cell">{email.email_subject || ""}</td>
       <td><strong>{email.company_name || ""}</strong><div className="muted">{email.company_domain || email.job_title || ""}</div></td>

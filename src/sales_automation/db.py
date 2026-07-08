@@ -1040,6 +1040,7 @@ class Repository:
                        e.metadata,
                        COALESCE(e.metadata->>'sender_email', '') AS sender_email,
                        COALESCE(e.metadata->>'sender_id', '') AS sender_id,
+                       COALESCE(e.metadata->>'reply_to_email', '') AS reply_to_email,
                        COALESCE(e.metadata->>'mode', '') AS mode,
                        COALESCE((e.metadata->>'dry_run')::boolean, FALSE) AS dry_run,
                        c.first_name,
@@ -1145,7 +1146,7 @@ class Repository:
                 f"""
                 SELECT reason, COUNT(*) AS count
                 FROM (
-                  SELECT COALESCE(NULLIF(enrich_error, ''), '邮箱/富化无错误') AS reason
+                  SELECT COALESCE(NULLIF(enrich_error, ''), '邮箱富化无结果') AS reason
                   FROM contacts c
                   WHERE enrich_error IS NOT NULL {owner_filter}
                   UNION ALL

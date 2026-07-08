@@ -198,17 +198,33 @@ function ImportBatchReport({ report }) {
   const owners = report?.owners || [];
   if (!owners.length) return null;
   const totals = report?.totals || {};
+  const advice = importAdvice(totals);
   return (
     <section className="import-report">
       <div className="import-report-head">
         <div><span className="eyebrow">Latest batch</span><h3>最近导入与触达结果</h3><p>{report.scope === "team" ? "管理员可查看团队批量导入和发送结果。" : "这里只展示你名下客户的处理结果。"}</p></div>
         <div className="import-total-strip"><MetricChip label="导入客户" value={totals.total || 0} /><MetricChip label="有邮箱" value={totals.with_email || 0} /><MetricChip label="已发送" value={totals.sent_total || 0} /><MetricChip label="待发送" value={totals.queued || 0} /></div>
       </div>
+      <div className={`import-advice ${advice.tone}`}>
+        <strong>{advice.title}</strong>
+        <span>{advice.text}</span>
+      </div>
       <div className="import-report-grid">
         {owners.map((row) => <article key={row.owner} className="import-owner-card"><div className="import-owner-title"><strong>{row.owner}</strong><span>{row.sent_total ? "已触达" : row.without_email ? "待补邮箱" : "待处理"}</span></div><div className="import-owner-stats"><MetricChip label="导入" value={row.total} /><MetricChip label="邮箱" value={row.with_email} /><MetricChip label="已发" value={row.sent_total} /><MetricChip label="无邮箱" value={row.without_email} /></div><div className="import-owner-foot"><span>new {row.new}</span><span>enriched {row.enriched}</span><span>queued {row.queued}</span><span>sent_1 {row.sent_step_1}</span></div>{row.last_sent_at && <small>最后发送：{formatDate(row.last_sent_at)}</small>}</article>)}
       </div>
     </section>
   );
+}
+
+function importAdvice(totals) {
+  const total = Number(totals.total || 0);
+  const withEmail = Number(totals.with_email || 0);
+  const sent = Number(totals.sent_total || 0);
+  const withoutEmail = Number(totals.without_email || 0);
+  if (!total) return { tone: "neutral", title: "还没有批量结果", text: "导入客户后，这里会显示邮箱命中、待发送和已发送情况。" };
+  if (withoutEmail > withEmail) return { tone: "warning", title: "先补邮箱和社媒", text: `本批还有 ${withoutEmail} 个客户没有可发送邮箱，优先跑邮箱/社媒富化，再人工抽查公司邮箱。` };
+  if (withEmail > sent) return { tone: "ok", title: "可以准备触达", text: `本批已有 ${withEmail} 个客户带邮箱，其中 ${Math.max(withEmail - sent, 0)} 个还没发送。发送前先看客户画像和邮件正文。` };
+  return { tone: "done", title: "本批已完成触达", text: "继续盯邮件中心的打开、回复、退信回流，再按 SABCD 推进客户阶段。" };
 }
 
 function MetricChip({ label, value }) {
@@ -242,7 +258,12 @@ function ContactRow({ contact, onAction }) {
 
 function rowActions(contact) {
   if (contact.pool_type === "public") return [["claim", "领取"], ["profile", "画像"], ["detail", "详情"]];
-  return [["enrich-email", "邮箱"], ["enrich-social", "社媒"], ["queue-one", "入队"], ["send-one", "发送"], ["next", "推进"], ["stage-d", "D"], ["stage-c", "C"], ["stage-b", "B"], ["stage-a", "A"], ["stage-s", "S"], ["wait", "等待"], ["abandon", "放弃"], ["profile", "画像"], ["detail", "详情"], ["return-public", "退回公池"]];
+  const blocked = ["bounced", "unsubscribed"].includes(contact.status)
+    || Number(contact.bounced_count || 0) > 0
+    || Number(contact.unsubscribed_count || 0) > 0
+    || Number(contact.complained_count || 0) > 0;
+  const sendActions = blocked ? [] : [["queue-one", "入队"], ["send-one", "发送"]];
+  return [["enrich-email", "邮箱"], ["enrich-social", "社媒"], ...sendActions, ["next", "推进"], ["stage-d", "D"], ["stage-c", "C"], ["stage-b", "B"], ["stage-a", "A"], ["stage-s", "S"], ["wait", "等待"], ["abandon", "放弃"], ["profile", "画像"], ["detail", "详情"], ["return-public", "退回公池"]];
 }
 
 function PoolBadge({ contact }) {
@@ -285,31 +306,33 @@ function displayEmail(contact) {
 }
 
 function emailMeta(contact) {
-  const parts = [contact.email_status || "unknown"];
+  const parts = [emailQuality(contact)];
+  if (contact.email_status) parts.push(contact.email_status);
   if (contact.email_source) parts.push(contact.email_source);
   if (contact.email_confidence !== null && contact.email_confidence !== undefined) parts.push(`${contact.email_confidence}%`);
-  const quality = emailQuality(contact);
-  if (quality) parts.push(quality);
-  return parts.join(" · ");
+  return parts.filter(Boolean).join(" · ");
 }
 
 function emailQuality(contact) {
   const email = String(contact.email || "");
-  if (!email || email.includes("*")) return "not ready";
+  if (!email || email.includes("*")) return "待验证";
   const local = email.split("@", 1)[0].toLowerCase();
   const roleBased = new Set(["admin", "billing", "contact", "hello", "help", "info", "office", "press", "sales", "support", "team"]);
-  if (contact.email_status !== "valid" || roleBased.has(local)) return "blocked";
+  if (roleBased.has(local)) return "公司邮箱";
+  if (contact.email_status !== "valid") return "待验证";
   const leadScore = Number(contact.lead_score ?? 60);
   const title = String(contact.job_title || "").toLowerCase();
-  if (leadScore < 50 || /(assistant|customer service|intern|reception|receptionist|support)/.test(title)) return "blocked";
-  if (Number(contact.email_confidence ?? 100) < 70) return "review";
-  return "sendable";
+  if (Number(contact.bounced_count || 0) > 0 || contact.status === "bounced") return "退信风险";
+  if (leadScore < 50 || /(assistant|customer service|intern|reception|receptionist|support)/.test(title)) return "低优先级";
+  if (Number(contact.email_confidence ?? 100) < 70) return "待确认";
+  return "可发送";
 }
 
 function displayPhone(contact) {
   if (contact.phone) return contact.phone;
   const candidates = Array.isArray(contact.phone_candidates) ? contact.phone_candidates : [];
-  return candidates[0]?.phone || "待补充";
+  if (candidates[0]?.phone) return candidates[0].phone;
+  return "待补充";
 }
 
 function phoneMeta(contact) {

@@ -11,6 +11,12 @@
   - fallback drafts now use the customer pain strategy and keep a low-barrier "brief reply" ask.
 - Updated the customer workspace UI to show pain-point strategy and 14-day follow-up plan directly in the customer detail view.
 - Added regression coverage for pain strategy and follow-up plan generation.
+- Improved production UI readiness:
+  - dashboard now includes a sales playbook / admin launch checklist;
+  - import batches now show clear next-step advice based on email coverage and sent count;
+  - bounced, unsubscribed, and complained contacts no longer expose queue/send actions in the sales table;
+  - sent email history now shows the reply-to mailbox used for customer replies.
+- Added LinkedIn contact enrichment documentation for internal implementation and external partner explanation.
 
 ## 2026-07-07
 

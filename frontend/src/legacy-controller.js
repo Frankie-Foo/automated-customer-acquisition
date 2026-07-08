@@ -19,12 +19,12 @@ const pageLinks = Array.from(document.querySelectorAll("[data-page-link]"));
 const pages = Array.from(document.querySelectorAll("[data-page]"));
 
 const pageMeta = {
-  dashboard: ["工作台", "按 AI 员工流水线推进：找客户、查客户、写邮件、做跟进、出周报。"],
-  source: ["市场与获客", "市场情报员和客户搜索员负责拆方向、导入种子、搜索联系人和补邮箱。"],
-  research: ["客户背调", "公司背调员沉淀客户画像、匹配度、风险点和建议打法。"],
-  outreach: ["邮件触达", "开发信助理管理已发送邮件、发件身份、邮件内容和回流状态。"],
-  followup: ["跟进任务", "跟进提醒员负责打开未回复、已回复、退信处理和 SABCD 推进。"],
-  report: ["主管周报", "主管周报员汇总团队获客、发信、打开、回复、退信和重点客户。"],
+  dashboard: ["展示看板", "看今天要处理什么、整体邮件效果和 AI 获客流程。"],
+  source: ["市场与获客", "导入公司/门店种子表，或用公开搜索和 Provider 找联系人、官网和邮箱。"],
+  research: ["客户背调", "查看客户列表、邮箱候选、社媒资料、客户画像和 SABCD 阶段。"],
+  outreach: ["邮件中心", "查看已发送邮件、发件身份、标题、正文和投递回流。"],
+  followup: ["客户跟进", "处理已打开未回复、已回复、退信，并推进客户生命周期。"],
+  report: ["运营周报", "汇总获客、有效邮箱、发送、打开、回复、退信和 Provider 成本。"],
   admin: ["管理员控制台", "创建账号、调整配额、配置发件池、检查生产状态。"],
 };
 

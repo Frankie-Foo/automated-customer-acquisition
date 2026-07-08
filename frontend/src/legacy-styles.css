@@ -3196,3 +3196,94 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 }
+
+.training-guide {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.training-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.training-card {
+  min-height: 118px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.training-card strong {
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+.training-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.import-advice,
+.email-log-guide {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.import-advice strong,
+.email-log-guide b {
+  color: var(--text-1);
+}
+
+.import-advice.ok,
+.import-advice.done {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+}
+
+.import-advice.warning {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.import-advice.neutral {
+  background: #fff;
+}
+
+.email-log-guide span {
+  min-width: 180px;
+}
+
+@media (max-width: 1120px) {
+  .training-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .training-grid {
+    grid-template-columns: 1fr;
+  }
+}
