@@ -28,7 +28,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Configure production sales accounts without resetting existing passwords.")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--source-limit", type=int, default=100)
-    parser.add_argument("--send-limit", type=int, default=80)
+    parser.add_argument("--send-limit", type=int, default=200)
     parser.add_argument("--output", default="")
     args = parser.parse_args()
 

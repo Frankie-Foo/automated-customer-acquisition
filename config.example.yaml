@@ -35,7 +35,7 @@ sender:
   name: Your Name
   email: you@outreach-domain.com
   provider: resend
-  daily_limit: 100
+  daily_limit: 6000
   dry_run: true
 
 sender_pool:
@@ -44,7 +44,7 @@ sender_pool:
     - name: Your Name
       email: you@outreach-domain.com
       provider: resend
-      daily_limit: 100
+      daily_limit: 200
       warmup_stage: production
       dry_run: true
 
@@ -86,9 +86,9 @@ outreach:
   send_jitter_seconds: 5
 
 quotas:
-  global_daily_send_limit: 3000
+  global_daily_send_limit: 6000
   global_daily_source_limit: 3000
-  default_user_daily_send: 100
+  default_user_daily_send: 200
   default_user_daily_source: 100
 
 customer_pool:

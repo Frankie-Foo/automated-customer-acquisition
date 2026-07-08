@@ -2,6 +2,10 @@
 
 ## 2026-07-07
 
+- Raised production outbound capacity targets:
+  - default sales user send quota is now 200 emails per day;
+  - global daily send quota is now 6000 emails per day for 30-seat operation;
+  - sender account daily limit is raised so the internal sender pool does not block the per-user quota.
 - Forced outbound email signatures to use the logged-in sales account:
   - emails now end with `Best regards, <login display name> You, BD Manager Of Media East Region | VERTU`;
   - manual drafts, custom sends, and queued sequence sends share the same backend signature normalization;

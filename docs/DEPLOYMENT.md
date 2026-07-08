@@ -106,7 +106,7 @@ docker compose exec salesbot salesbot --config config.yaml user-add \
   --password "强密码" \
   --display-name "销售01" \
   --source-limit 100 \
-  --send-limit 100
+  --send-limit 200
 ```
 
 查看账号：
@@ -166,9 +166,9 @@ email_discovery:
 
 ```yaml
 quotas:
-  global_daily_send_limit: 3000
+  global_daily_send_limit: 6000
   global_daily_source_limit: 3000
-  default_user_daily_send: 80
+  default_user_daily_send: 200
   default_user_daily_source: 100
 ```
 
@@ -181,7 +181,7 @@ sender_pool:
     - name: sales01
       email: sales01@mail.frelys.xyz
       provider: resend
-      daily_limit: 100
+      daily_limit: 200
       warmup_stage: warmup
       dry_run: false
 ```
@@ -192,8 +192,8 @@ Warmup 建议：
 
 - 第 1-3 天：每账号 10-20 封/天
 - 第 4-7 天：每账号 30-50 封/天
-- 第 2 周：每账号 60-80 封/天
-- 第 3 周：稳定到 100 封/天
+- 第 2 周：每账号 60-100 封/天
+- 第 3 周：稳定到 200 封/天
 
 系统会按 `warmup_stage=warmup` 和账号创建时间自动压低可发送上限；确认域名声誉稳定后再切到 `production`。
 

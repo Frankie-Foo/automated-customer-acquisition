@@ -69,6 +69,21 @@ SENDGRID_API_KEY=
 SLACK_WEBHOOK_URL=
 ```
 
+### 本次额度目标
+
+本次生产配置按“每个销售每天最多 200 封邮件”设置：
+
+```yaml
+quotas:
+  global_daily_send_limit: 6000
+  default_user_daily_send: 200
+
+sender:
+  daily_limit: 6000
+```
+
+说明：系统上限放开到 30 人 × 200 封/天；Resend 实际可发量仍以 Resend 后台账户额度和域名信誉为准。
+
 说明：
 
 - `PUBLIC_BASE_URL` 必须是公网 HTTPS 地址，否则退订链接、打开追踪、Webhook 关联会不稳定。
@@ -183,6 +198,7 @@ docker compose exec salesbot python tools/configure_sales_accounts.py --output s
 这个脚本会：
 
 - 更新已有销售账号的显示名、角色、配额、`reply_to_email`。
+- 把销售账号每日发信上限同步为 `200`。
 - 不会重置已有账号密码。
 - 如果缺少 `Safae`，会自动创建并输出临时密码。
 
@@ -297,4 +313,3 @@ docker compose up -d
 ```
 
 确认恢复后，再联系 Frank/Codex 修复问题。
-
