@@ -8,7 +8,7 @@ const emptyNewUser = {
   password: "",
   reply_to_email: "",
   daily_source_limit: 100,
-  daily_send_limit: 100,
+  daily_send_limit: 200,
 };
 
 export default function AdminConsolePortal() {

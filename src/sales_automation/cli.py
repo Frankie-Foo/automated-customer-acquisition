@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     user_add.add_argument("--display-name", required=True)
     user_add.add_argument("--role", default="sales")
     user_add.add_argument("--source-limit", type=int, default=100)
-    user_add.add_argument("--send-limit", type=int, default=100)
+    user_add.add_argument("--send-limit", type=int, default=200)
     user_add.add_argument("--no-force-password-change", action="store_true")
 
     sub.add_parser("user-list", parents=[config_parent])

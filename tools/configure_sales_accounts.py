@@ -38,7 +38,9 @@ def main() -> None:
 
     updated: list[str] = []
     created: list[tuple[str, str, str]] = []
+    configured_usernames: set[str] = set()
     for account in SALES_ACCOUNTS:
+        configured_usernames.add(account["username"].lower())
         user = existing.get(account["username"].lower())
         if user:
             repo.update_user(
@@ -66,8 +68,21 @@ def main() -> None:
         )
         created.append((account["username"], password, account["reply_to_email"]))
 
+    quota_only_updated: list[str] = []
+    for user in repo.list_users():
+        if user["username"].lower() in configured_usernames:
+            continue
+        if user.get("role") == "sales" and user.get("active"):
+            repo.update_user(
+                int(user["id"]),
+                daily_source_limit=args.source_limit,
+                daily_send_limit=args.send_limit,
+            )
+            quota_only_updated.append(user["username"])
+
     lines = [
         f"updated: {', '.join(updated) if updated else 'none'}",
+        f"quota_only_updated: {', '.join(quota_only_updated) if quota_only_updated else 'none'}",
         f"created: {', '.join(item[0] for item in created) if created else 'none'}",
     ]
     if created:

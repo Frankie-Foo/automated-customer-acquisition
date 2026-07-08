@@ -525,7 +525,7 @@ def make_handler(config, repo: Repository):
                         display_name=payload.get("display_name") or payload["username"],
                         role=payload.get("role") or "sales",
                         daily_source_limit=int(payload.get("daily_source_limit") or 100),
-                        daily_send_limit=int(payload.get("daily_send_limit") or 100),
+                        daily_send_limit=int(payload.get("daily_send_limit") or 200),
                         reply_to_email=payload.get("reply_to_email"),
                         must_change_password=True,
                     )

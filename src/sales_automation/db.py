@@ -109,7 +109,7 @@ class Repository:
         display_name: str,
         role: str = "sales",
         daily_source_limit: int = 100,
-        daily_send_limit: int = 100,
+        daily_send_limit: int = 200,
         reply_to_email: str | None = None,
         must_change_password: bool = True,
     ) -> dict[str, Any]:
