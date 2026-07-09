@@ -26,6 +26,7 @@ function AdminConsole() {
   const [user, setUser] = useState(null);
   const [users, setUsers] = useState([]);
   const [senders, setSenders] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
   const [newUser, setNewUser] = useState(emptyNewUser);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -38,9 +39,14 @@ function AdminConsole() {
     setLoading(true);
     setError("");
     try {
-      const [userData, senderData] = await Promise.all([api("/api/admin/users"), api("/api/admin/senders")]);
+      const [userData, senderData, auditData] = await Promise.all([
+        api("/api/admin/users"),
+        api("/api/admin/senders"),
+        api("/api/admin/audit-logs?limit=100"),
+      ]);
       setUsers(userData.users || []);
       setSenders(senderData.senders || []);
+      setAuditLogs(auditData.logs || []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -211,6 +217,13 @@ function AdminConsole() {
           <h3>发件账号池</h3>
           <SenderTable senders={senders} onUpdate={updateSender} />
         </section>
+        <section className="admin-card audit-card">
+          <div className="card-title-row">
+            <h3>最近操作记录</h3>
+            <button type="button" onClick={loadAdminData}>刷新日志</button>
+          </div>
+          <AuditLogTable logs={auditLogs} />
+        </section>
       </div>
     </>
   );
@@ -347,4 +360,96 @@ function SenderTable({ senders, onUpdate }) {
       </table>
     </div>
   );
+}
+
+function AuditLogTable({ logs }) {
+  if (!logs.length) return <div className="empty-state">暂无操作记录。上线后会记录登录、导入、获客、富化、发信和客户推进。</div>;
+
+  return (
+    <div className="admin-table">
+      <table className="mini-table admin-data-table audit-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>操作人</th>
+            <th>动作</th>
+            <th>对象</th>
+            <th>结果</th>
+            <th>摘要</th>
+            <th>IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {logs.map((log) => (
+            <tr key={log.id}>
+              <td>{formatDate(log.created_at)}</td>
+              <td>
+                <div className="admin-identity compact">
+                  <strong>{log.display_name || log.username || "系统"}</strong>
+                  <span>{log.username || "-"} · {log.role || "-"}</span>
+                </div>
+              </td>
+              <td><span className="audit-action">{auditActionLabel(log.action)}</span></td>
+              <td>{[log.target_type, log.target_id].filter(Boolean).join(" #") || "-"}</td>
+              <td><span className={`status-pill ${log.success ? "is-active" : "is-paused"}`}>{log.success ? "成功" : "失败"}</span></td>
+              <td>
+                <div className="audit-summary-cell">
+                  <strong>{log.summary || "-"}</strong>
+                  {log.error && <span>{log.error}</span>}
+                </div>
+              </td>
+              <td>{log.ip_address || "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function auditActionLabel(action) {
+  const labels = {
+    login: "登录",
+    change_password: "改密码",
+    create_contact: "新增客户",
+    import_csv: "CSV 导入",
+    import_company_seeds: "种子导入",
+    source: "自动获客",
+    linkedin_public_search: "LinkedIn 搜索",
+    promote_search_result: "候选入库",
+    adopt_email_candidate: "采用邮箱",
+    claim_public_contact: "领取客户",
+    return_contact_to_public: "退回客户",
+    auto_assign_public_pool: "自动分配",
+    recycle_stale_private_pool: "回收客户",
+    enrich: "富化邮箱",
+    enrich_one: "单个富化",
+    social_enrich: "富化社媒",
+    social_enrich_one: "单个社媒",
+    queue: "加入队列",
+    queue_one: "单个入队",
+    send: "批量发信",
+    send_one: "单封发信",
+    send_custom: "自定义发信",
+    mark_contact: "改状态",
+    update_lifecycle: "生命周期",
+    add_lifecycle_activity: "跟进记录",
+    profile_agent: "客户画像",
+    stage_agent: "AI 分析",
+    email_draft: "邮件草稿",
+    admin_create_user: "创建账号",
+    admin_update_user: "更新账号",
+    admin_update_sender: "更新发件",
+    blacklist: "黑名单",
+    migrate: "数据库迁移",
+    scheduler: "调度",
+  };
+  return labels[action] || action || "-";
 }

@@ -182,6 +182,14 @@ def make_handler(config, repo: Repository):
                     return {"senders": repo.list_sender_accounts()}
                 self._json(senders)
                 return
+            if parsed.path == "/api/admin/audit-logs":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                qs = parse_qs(parsed.query)
+                limit = int(qs.get("limit", ["100"])[0])
+                self._json(lambda: {"logs": repo.list_audit_logs(limit=limit)})
+                return
             if parsed.path == "/api/contact-detail":
                 qs = parse_qs(parsed.query)
                 contact_id = int(qs.get("contact_id", ["0"])[0])
@@ -209,6 +217,7 @@ def make_handler(config, repo: Repository):
                     self._send_json({"ok": False, "error": "用户名或密码错误"}, status=401)
                     return
                 token = repo.create_session(int(user["id"]))
+                self._audit("login", user=user, summary="账号密码登录成功", metadata={"method": "password"})
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
                 self._send_json(
                     {"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
@@ -248,6 +257,7 @@ def make_handler(config, repo: Repository):
                     self._send_json({"ok": False, "error": message}, status=status)
                     return
                 token = repo.create_session(int(user["id"]))
+                self._audit("login", user=user, summary="Odoo/VPS 单点登录成功", metadata={"method": "vps_sso", "odoo_user_id": profile.odoo_user_id, "barcode": profile.barcode})
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
                 self._send_json(
                     {"ok": True, "data": {"next": "/", "user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
@@ -262,7 +272,7 @@ def make_handler(config, repo: Repository):
                 admin = self._require_admin()
                 if not admin:
                     return
-                self._json(lambda: {"applied": repo.db.migrate()})
+                self._json_audit("migrate", lambda: {"applied": repo.db.migrate()}, summary="管理员执行数据库迁移")
                 return
             if parsed.path == "/api/change-password":
                 def change_password() -> dict[str, Any]:
@@ -275,7 +285,7 @@ def make_handler(config, repo: Repository):
                         payload.get("new_password") or "",
                     )
                     return {"user": public_user(updated)}
-                self._json(change_password)
+                self._json_audit("change_password", change_password, summary="用户修改登录密码")
                 return
             if parsed.path == "/api/contacts":
                 def create_contact() -> dict[str, Any]:
@@ -283,7 +293,12 @@ def make_handler(config, repo: Repository):
                     payload.setdefault("owner", user.get("display_name") or user.get("username"))
                     inserted, skipped = repo.upsert_contacts([payload], owner_user_id=int(user["id"]))
                     return {"inserted": inserted, "skipped": skipped}
-                self._json(create_contact)
+                self._json_audit(
+                    "create_contact",
+                    create_contact,
+                    summary="手动新增客户",
+                    metadata=lambda data: {"inserted": data.get("inserted"), "skipped": data.get("skipped")},
+                )
                 return
             if parsed.path == "/api/import/csv":
                 def import_csv() -> dict[str, Any]:
@@ -293,7 +308,12 @@ def make_handler(config, repo: Repository):
                         contact.setdefault("owner", user.get("display_name") or user.get("username"))
                     inserted, skipped = repo.upsert_contacts(contacts, owner_user_id=int(user["id"]))
                     return {"parsed": len(contacts), "inserted": inserted, "skipped": skipped}
-                self._json(import_csv)
+                self._json_audit(
+                    "import_csv",
+                    import_csv,
+                    summary="导入 CSV 客户",
+                    metadata=lambda data: {"parsed": data.get("parsed"), "inserted": data.get("inserted"), "skipped": data.get("skipped")},
+                )
                 return
             if parsed.path == "/api/import/company-seeds":
                 def import_company_seeds() -> dict[str, Any]:
@@ -337,7 +357,18 @@ def make_handler(config, repo: Repository):
                             sent = OutreachService(config, repo).send_due(send_limit, user=user)
                             quota_result = QuotaService(config, repo).consume(user, "send", sent)
                     return {"parsed": len(seeds), "result": {**result, "queued": queued, "sent": sent}, "batch_report": batch_report, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(import_company_seeds)
+                self._json_audit(
+                    "import_company_seeds",
+                    import_company_seeds,
+                    summary="导入公司种子并获客",
+                    metadata=lambda data: {
+                        "parsed": data.get("parsed"),
+                        "results": data.get("result", {}).get("results"),
+                        "promoted": data.get("result", {}).get("promoted"),
+                        "queued": data.get("result", {}).get("queued"),
+                        "sent": data.get("result", {}).get("sent"),
+                    },
+                )
                 return
             if parsed.path == "/api/source":
                 criteria = {
@@ -362,7 +393,12 @@ def make_handler(config, repo: Repository):
                     )
                     quota_result = QuotaService(config, repo).consume(user, "source", limit)
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(source_with_quota)
+                self._json_audit(
+                    "source",
+                    source_with_quota,
+                    summary="自动获客",
+                    metadata=lambda data: {"requested": payload.get("limit"), "result": data.get("result")},
+                )
                 return
             if parsed.path == "/api/source/linkedin-public-search":
                 criteria = {
@@ -386,53 +422,127 @@ def make_handler(config, repo: Repository):
                     result = LinkedInPublicSearchService(config, repo).run(criteria, limit, user=user)
                     quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("results") or 0))
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(linkedin_source_with_quota)
+                self._json_audit(
+                    "linkedin_public_search",
+                    linkedin_source_with_quota,
+                    summary="LinkedIn 公网搜索获客",
+                    metadata=lambda data: {"requested": payload.get("limit"), "result": data.get("result")},
+                )
                 return
             if parsed.path == "/api/search-results/promote":
-                self._json(lambda: LinkedInPublicSearchService(config, repo).promote_result(int(payload["result_id"]), user=self._current_user()))
+                self._json_audit(
+                    "promote_search_result",
+                    lambda: LinkedInPublicSearchService(config, repo).promote_result(int(payload["result_id"]), user=self._current_user()),
+                    target_type="lead_search_result",
+                    target_id=payload.get("result_id"),
+                    summary="搜索候选入库",
+                )
                 return
             if parsed.path == "/api/email-candidates/adopt":
-                self._json(lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()))
+                self._json_audit(
+                    "adopt_email_candidate",
+                    lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()),
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="采用邮箱候选",
+                    metadata={"email": payload.get("email") or ""},
+                )
                 return
             if parsed.path == "/api/customer-pool/claim":
-                self._json(lambda: {"contact": repo.claim_public_contact(int(payload["contact_id"]), self._current_user())})
+                self._json_audit(
+                    "claim_public_contact",
+                    lambda: {"contact": repo.claim_public_contact(int(payload["contact_id"]), self._current_user())},
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="领取公共池客户",
+                )
                 return
             if parsed.path == "/api/customer-pool/return":
-                self._json(lambda: {"contact": repo.return_contact_to_public(int(payload["contact_id"]), self._current_user(), reason=payload.get("reason") or "manual_return")})
+                self._json_audit(
+                    "return_contact_to_public",
+                    lambda: {"contact": repo.return_contact_to_public(int(payload["contact_id"]), self._current_user(), reason=payload.get("reason") or "manual_return")},
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="客户退回公共池",
+                    metadata={"reason": payload.get("reason") or "manual_return"},
+                )
                 return
             if parsed.path == "/api/customer-pool/auto-assign":
                 admin = self._require_admin()
                 if not admin:
                     return
-                self._json(lambda: repo.auto_assign_public_pool(limit=int(payload.get("limit") or 100)))
+                self._json_audit(
+                    "auto_assign_public_pool",
+                    lambda: repo.auto_assign_public_pool(limit=int(payload.get("limit") or 100)),
+                    summary="管理员按地区分配公共池",
+                    metadata={"limit": int(payload.get("limit") or 100)},
+                )
                 return
             if parsed.path == "/api/customer-pool/recycle-stale":
                 admin = self._require_admin()
                 if not admin:
                     return
-                self._json(lambda: {"recycled": repo.recycle_stale_private_pool(limit=int(payload.get("limit") or 100))})
+                self._json_audit(
+                    "recycle_stale_private_pool",
+                    lambda: {"recycled": repo.recycle_stale_private_pool(limit=int(payload.get("limit") or 100))},
+                    summary="管理员回收停滞客户",
+                    metadata={"limit": int(payload.get("limit") or 100)},
+                )
                 return
             if parsed.path == "/api/enrich":
-                self._json(lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
+                self._json_audit(
+                    "enrich",
+                    lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
+                    summary="批量富化邮箱",
+                    metadata=lambda data: {"enriched": data.get("enriched"), "limit": int(payload.get("limit", 25))},
+                )
                 return
             if parsed.path == "/api/enrich-one":
                 if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
-                self._json(lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
+                self._json_audit(
+                    "enrich_one",
+                    lambda: EnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])),
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="单客户富化邮箱",
+                )
                 return
             if parsed.path == "/api/social-enrich":
-                self._json(lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())))
+                self._json_audit(
+                    "social_enrich",
+                    lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
+                    summary="批量富化社媒",
+                    metadata=lambda data: {"social_enriched": data.get("social_enriched"), "limit": int(payload.get("limit", 25))},
+                )
                 return
             if parsed.path == "/api/social-enrich-one":
                 if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
-                self._json(lambda: SocialEnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])))
+                self._json_audit(
+                    "social_enrich_one",
+                    lambda: SocialEnrichmentService(config, repo).enrich_contact(int(payload["contact_id"])),
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="单客户富化社媒",
+                )
                 return
             if parsed.path == "/api/queue":
-                self._json(lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)), user=self._current_user())})
+                self._json_audit(
+                    "queue",
+                    lambda: {"queued": QueueService(repo).queue(int(payload.get("limit", 25)), user=self._current_user())},
+                    summary="批量加入发送队列",
+                    metadata=lambda data: {"queued": data.get("queued"), "limit": int(payload.get("limit", 25))},
+                )
                 return
             if parsed.path == "/api/queue-one":
-                self._json(lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]), user=self._current_user())})
+                self._json_audit(
+                    "queue_one",
+                    lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]), user=self._current_user())},
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="单客户加入发送队列",
+                )
                 return
             if parsed.path == "/api/send":
                 def send_with_quota() -> dict[str, Any]:
@@ -446,7 +556,12 @@ def make_handler(config, repo: Repository):
                     sent = OutreachService(config, repo).send_due(limit, user=user)
                     quota_result = QuotaService(config, repo).consume(user, "send", sent)
                     return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(send_with_quota)
+                self._json_audit(
+                    "send",
+                    send_with_quota,
+                    summary="批量发送邮件",
+                    metadata=lambda data: {"sent": data.get("sent"), "requested": payload.get("limit")},
+                )
                 return
             if parsed.path == "/api/send-one":
                 def send_one_with_quota() -> dict[str, Any]:
@@ -457,7 +572,14 @@ def make_handler(config, repo: Repository):
                     sent = OutreachService(config, repo).send_contact(int(payload["contact_id"]), user=user)
                     quota_result = QuotaService(config, repo).consume(user, "send", 1 if sent else 0)
                     return {"sent": sent, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(send_one_with_quota)
+                self._json_audit(
+                    "send_one",
+                    send_one_with_quota,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="单客户发送邮件",
+                    metadata=lambda data: {"sent": data.get("sent")},
+                )
                 return
             if parsed.path == "/api/scheduler":
                 admin = self._require_admin()
@@ -470,7 +592,7 @@ def make_handler(config, repo: Repository):
                         int(payload.get("send_limit", 25)),
                     )
                     return {"status": "ok"}
-                self._json(run_scheduler)
+                self._json_audit("scheduler", run_scheduler, summary="管理员手动运行调度")
                 return
             if parsed.path == "/api/mark":
                 def mark() -> dict[str, Any]:
@@ -478,7 +600,14 @@ def make_handler(config, repo: Repository):
                         raise RuntimeError("Contact not found")
                     repo.mark_status(int(payload["contact_id"]), payload["status"], notes=payload.get("notes"))
                     return {"ok": True}
-                self._json(mark)
+                self._json_audit(
+                    "mark_contact",
+                    mark,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="修改客户状态",
+                    metadata={"status": payload.get("status")},
+                )
                 return
             if parsed.path == "/api/lifecycle":
                 def lifecycle() -> dict[str, Any]:
@@ -494,12 +623,29 @@ def make_handler(config, repo: Repository):
                         owner=payload.get("owner"),
                         sabcd_stage=payload.get("sabcd_stage"),
                     )
-                self._json(lifecycle)
+                self._json_audit(
+                    "update_lifecycle",
+                    lifecycle,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="推进客户生命周期",
+                    metadata={
+                        "lifecycle_stage": payload.get("lifecycle_stage"),
+                        "sabcd_stage": payload.get("sabcd_stage"),
+                        "disposition": payload.get("disposition"),
+                    },
+                )
                 return
             if parsed.path == "/api/profile-agent":
                 if not self._require_contact_access(int(payload["contact_id"])):
                     return
-                self._json(lambda: {"insights": ProfileAgentService(config, repo).summarize(int(payload["contact_id"]))})
+                self._json_audit(
+                    "profile_agent",
+                    lambda: {"insights": ProfileAgentService(config, repo).summarize(int(payload["contact_id"]))},
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="生成客户画像",
+                )
                 return
             if parsed.path == "/api/lifecycle-activity":
                 def activity() -> dict[str, Any]:
@@ -513,7 +659,14 @@ def make_handler(config, repo: Repository):
                         content=payload.get("content") or "",
                         created_by=payload.get("created_by") or "dashboard",
                     )
-                self._json(activity)
+                self._json_audit(
+                    "add_lifecycle_activity",
+                    activity,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="新增跟进记录",
+                    metadata={"activity_type": payload.get("activity_type"), "lifecycle_stage": payload.get("lifecycle_stage")},
+                )
                 return
             if parsed.path == "/api/stage-agent":
                 def stage_agent() -> dict[str, Any]:
@@ -528,18 +681,24 @@ def make_handler(config, repo: Repository):
                             activity_type=payload.get("activity_type"),
                         )
                     }
-                self._json(stage_agent)
+                self._json_audit(
+                    "stage_agent",
+                    stage_agent,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="AI 分析阶段记录",
+                )
                 return
             if parsed.path == "/api/email-draft":
                 if not self._require_contact_access(int(payload["contact_id"])):
                     return
-                self._json(lambda: PersonalizedEmailService(config, repo).draft(
+                self._json_audit("email_draft", lambda: PersonalizedEmailService(config, repo).draft(
                     int(payload["contact_id"]),
                     mode=payload.get("mode") or "ai",
                     custom_subject=payload.get("subject"),
                     custom_body=payload.get("body"),
                     user=self._current_user(),
-                ))
+                ), target_type="contact", target_id=payload.get("contact_id"), summary="生成邮件草稿", metadata={"mode": payload.get("mode") or "ai"})
                 return
             if parsed.path == "/api/send-custom":
                 def send_custom() -> dict[str, Any]:
@@ -558,7 +717,14 @@ def make_handler(config, repo: Repository):
                     )
                     quota_result = QuotaService(config, repo).consume(user, "send", 1 if result.get("sent") else 0)
                     return {**result, "usage": quota_result["user_usage"], "quotas": quota_result}
-                self._json(send_custom)
+                self._json_audit(
+                    "send_custom",
+                    send_custom,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="发送自定义邮件",
+                    metadata=lambda data: {"sent": data.get("sent"), "mode": payload.get("mode") or "custom"},
+                )
                 return
             if parsed.path == "/api/admin/users":
                 admin = self._require_admin()
@@ -575,7 +741,13 @@ def make_handler(config, repo: Repository):
                         reply_to_email=payload.get("reply_to_email"),
                         must_change_password=True,
                     )
-                self._json(add_user)
+                self._json_audit(
+                    "admin_create_user",
+                    add_user,
+                    target_type="sales_user",
+                    summary="管理员创建销售账号",
+                    metadata=lambda data: {"user_id": data.get("id"), "username": data.get("username"), "role": data.get("role")},
+                )
                 return
             if parsed.path == "/api/admin/user":
                 admin = self._require_admin()
@@ -594,7 +766,16 @@ def make_handler(config, repo: Repository):
                         reply_to_email=payload.get("reply_to_email"),
                         active=payload.get("active"),
                     )
-                self._json(update_user)
+                self._json_audit(
+                    "admin_update_user",
+                    update_user,
+                    target_type="sales_user",
+                    target_id=payload.get("user_id"),
+                    summary="管理员更新销售账号",
+                    metadata={
+                        "fields": [key for key in ("password", "display_name", "role", "daily_source_limit", "daily_send_limit", "reply_to_email", "active") if payload.get(key) is not None],
+                    },
+                )
                 return
             if parsed.path == "/api/admin/sender":
                 admin = self._require_admin()
@@ -610,13 +791,22 @@ def make_handler(config, repo: Repository):
                         warmup_stage=payload.get("warmup_stage"),
                         active=payload.get("active"),
                     )
-                self._json(update_sender)
+                self._json_audit(
+                    "admin_update_sender",
+                    update_sender,
+                    target_type="sender_account",
+                    target_id=payload.get("sender_id"),
+                    summary="管理员更新发件账号",
+                    metadata={
+                        "fields": [key for key in ("name", "email", "provider", "daily_limit", "warmup_stage", "active") if payload.get(key) is not None],
+                    },
+                )
                 return
             if parsed.path == "/api/blacklist":
                 def blacklist() -> dict[str, Any]:
                     repo.add_blacklist(email=payload.get("email"), domain=payload.get("domain"), reason=payload.get("reason"))
                     return {"ok": True}
-                self._json(blacklist)
+                self._json_audit("blacklist", blacklist, summary="加入黑名单", metadata={"email": payload.get("email"), "domain": payload.get("domain")})
                 return
             if parsed.path == "/api/webhook":
                 def webhook() -> dict[str, Any]:
@@ -667,6 +857,53 @@ def make_handler(config, repo: Repository):
                 self._send_json({"ok": True, "data": fn()})
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
+
+        def _json_audit(
+            self,
+            action: str,
+            fn,
+            *,
+            summary: str | None = None,
+            target_type: str | None = None,
+            target_id: str | int | None = None,
+            metadata=None,
+        ) -> None:
+            try:
+                data = fn()
+                audit_metadata = metadata(data) if callable(metadata) else (metadata or {})
+                self._audit(action, target_type=target_type, target_id=target_id, summary=summary, metadata=audit_metadata)
+                self._send_json({"ok": True, "data": data})
+            except Exception as exc:
+                self._audit(action, target_type=target_type, target_id=target_id, summary=summary, success=False, error=str(exc))
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+
+        def _audit(
+            self,
+            action: str,
+            *,
+            user: dict[str, Any] | None = None,
+            target_type: str | None = None,
+            target_id: str | int | None = None,
+            summary: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            success: bool = True,
+            error: str | None = None,
+        ) -> None:
+            try:
+                repo.record_audit_log(
+                    user=user or self._current_user(),
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    summary=summary,
+                    metadata=metadata or {},
+                    ip_address=self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip() or self.client_address[0],
+                    user_agent=self.headers.get("User-Agent", ""),
+                    success=success,
+                    error=error,
+                )
+            except Exception:
+                pass
 
         def _current_user(self) -> dict[str, Any] | None:
             token = parse_session_cookie(self.headers.get("Cookie"))

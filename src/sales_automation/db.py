@@ -344,6 +344,60 @@ class Repository:
         with self.db.connect() as conn:
             conn.execute("DELETE FROM user_sessions WHERE token = %s", (token,))
 
+    def record_audit_log(
+        self,
+        *,
+        user: dict[str, Any] | None,
+        action: str,
+        target_type: str | None = None,
+        target_id: str | int | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        success: bool = True,
+        error: str | None = None,
+    ) -> None:
+        safe_metadata = metadata or {}
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_logs(
+                  user_id, username, display_name, role, action, target_type, target_id,
+                  summary, metadata, ip_address, user_agent, success, error
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                """,
+                (
+                    user.get("id") if user else None,
+                    user.get("username") if user else None,
+                    user.get("display_name") if user else None,
+                    user.get("role") if user else None,
+                    action,
+                    target_type,
+                    str(target_id) if target_id is not None else None,
+                    summary,
+                    json.dumps(safe_metadata, ensure_ascii=False, default=str),
+                    ip_address,
+                    user_agent,
+                    success,
+                    error,
+                ),
+            )
+
+    def list_audit_logs(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, user_id, username, display_name, role, action, target_type, target_id,
+                       summary, metadata, ip_address, success, error, created_at
+                FROM audit_logs
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (max(1, min(int(limit or 100), 500)),),
+            ).fetchall()
+
     def usage_for_user(self, user_id: int) -> dict[str, Any]:
         with self.db.connect() as conn:
             row = conn.execute(

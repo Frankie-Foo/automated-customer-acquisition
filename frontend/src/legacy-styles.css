@@ -615,6 +615,22 @@ select:focus {
   grid-column: span 2;
 }
 
+.admin-card.audit-card {
+  grid-column: span 2;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.card-title-row h3 {
+  margin: 0;
+}
+
 .admin-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(130px, 1fr));
@@ -689,6 +705,44 @@ select:focus {
 
 .admin-identity span {
   color: var(--muted);
+  font-size: 11px;
+}
+
+.admin-identity.compact {
+  min-width: 120px;
+}
+
+.audit-table th:first-child,
+.audit-table td:first-child {
+  white-space: nowrap;
+}
+
+.audit-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #eef4ff;
+  color: #1f4f91;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.audit-summary-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+}
+
+.audit-summary-cell strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.audit-summary-cell span {
+  color: var(--danger);
   font-size: 11px;
 }
 
