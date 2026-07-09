@@ -21,6 +21,7 @@ from .linkedin_public_search import LinkedInPublicSearchService
 from .quotas import QuotaService
 from .sender_pool import SenderPoolManager
 from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .vps_sso import VpsSsoError, VpsSsoService
 
 
 def normalize_company_website(value: str | None) -> str:
@@ -29,6 +30,11 @@ def normalize_company_website(value: str | None) -> str:
     from .clients import _domain_from_website
 
     return _domain_from_website(value) or ""
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 MAX_JSON_BODY_BYTES = 5 * 1024 * 1024
@@ -66,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 def make_handler(config, repo: Repository):
     public_base_url = str(config.raw.get("app", {}).get("public_base_url") or "")
     secure_cookie = public_base_url.startswith("https://")
+    sso_cookie_same_site = "None" if secure_cookie and _truthy(config.raw.get("sso", {}).get("iframe_cookie")) else "Lax"
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -101,7 +108,7 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/logout":
                 token = parse_session_cookie(self.headers.get("Cookie"))
                 repo.delete_session(token)
-                self._send_json({"ok": True, "data": {"ok": True}}, headers={"Set-Cookie": clear_session_cookie(secure=secure_cookie)})
+                self._send_json({"ok": True, "data": {"ok": True}}, headers={"Set-Cookie": clear_session_cookie(secure=secure_cookie, same_site=sso_cookie_same_site)})
                 return
             if parsed.path.startswith("/api/") and not self._require_user():
                 return
@@ -205,7 +212,46 @@ def make_handler(config, repo: Repository):
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
                 self._send_json(
                     {"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
-                    headers={"Set-Cookie": session_cookie(token, secure=secure_cookie)},
+                    headers={"Set-Cookie": session_cookie(token, secure=secure_cookie, same_site=sso_cookie_same_site)},
+                )
+                return
+            if parsed.path == "/api/auth/vps-login":
+                if not self._require_database():
+                    return
+                try:
+                    user_id = int(payload.get("userId") or payload.get("user_id") or 0)
+                except Exception:
+                    self._send_json({"ok": False, "error": "缺少 sessionID 或 userId"}, status=400)
+                    return
+                session_id = str(payload.get("sessionID") or payload.get("session_id") or "").strip()
+                try:
+                    profile = VpsSsoService(config).verify(session_id=session_id, user_id=user_id)
+                    sso = config.raw.get("sso", {})
+                    user = repo.vps_login_user(
+                        odoo_user_id=profile.odoo_user_id,
+                        username=profile.login,
+                        display_name=profile.name,
+                        email=profile.email,
+                        vps_barcode=profile.barcode,
+                        department=profile.department,
+                        role=str(sso.get("default_role") or "sales"),
+                        daily_source_limit=int(config.raw.get("quotas", {}).get("default_user_daily_source") or 100),
+                        daily_send_limit=int(config.raw.get("quotas", {}).get("default_user_daily_send") or 200),
+                        auto_create=_truthy(sso.get("auto_create_users", True)),
+                    )
+                except VpsSsoError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=exc.status)
+                    return
+                except RuntimeError as exc:
+                    status = 403 if str(exc) in {"vps_user_disabled", "vps_user_not_mapped"} else 500
+                    message = "账号已被禁用" if str(exc) == "vps_user_disabled" else "未映射本地账号，请联系管理员"
+                    self._send_json({"ok": False, "error": message}, status=status)
+                    return
+                token = repo.create_session(int(user["id"]))
+                quota_snapshot = QuotaService(config, repo).snapshot(user)
+                self._send_json(
+                    {"ok": True, "data": {"next": "/", "user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
+                    headers={"Set-Cookie": session_cookie(token, secure=secure_cookie, same_site=sso_cookie_same_site)},
                 )
                 return
             if parsed.path.startswith("/webhooks/"):

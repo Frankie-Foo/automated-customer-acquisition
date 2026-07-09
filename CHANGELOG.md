@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-09
+
+- Added Odoo / VPS SSO support:
+  - frontend detects `session_id` + `user_id` from VPS/Odoo entry URLs and exchanges them for the local session;
+  - backend verifies the Odoo session via `/web/session/get_session_info` and rejects uid mismatches;
+  - sales users can be matched or auto-created by Odoo user id, employee barcode, or reply-to email;
+  - iframe cookie mode supports `SameSite=None; Secure` in HTTPS production.
+
 ## 2026-07-08
 
 - Upgraded the customer-insight workflow from generic profiling to pain-led outreach:

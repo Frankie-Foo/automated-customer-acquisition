@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import secrets
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
@@ -134,6 +135,102 @@ class Repository:
                     _clean_optional_email(reply_to_email),
                     must_change_password,
                     must_change_password,
+                ),
+            ).fetchone()
+
+    def vps_login_user(
+        self,
+        *,
+        odoo_user_id: int,
+        username: str,
+        display_name: str,
+        email: str | None = None,
+        vps_barcode: str | None = None,
+        department: str | None = None,
+        role: str = "sales",
+        daily_source_limit: int = 100,
+        daily_send_limit: int = 200,
+        auto_create: bool = True,
+    ) -> dict[str, Any]:
+        login_name = _vps_username(username, odoo_user_id)
+        with self.db.connect() as conn:
+            user = conn.execute(
+                """
+                SELECT *
+                FROM sales_users
+                WHERE odoo_user_id = %s
+                   OR (%s IS NOT NULL AND vps_barcode = %s)
+                   OR (%s IS NOT NULL AND LOWER(reply_to_email) = LOWER(%s))
+                   OR LOWER(username) = LOWER(%s)
+                ORDER BY
+                  CASE
+                    WHEN odoo_user_id = %s THEN 0
+                    WHEN %s IS NOT NULL AND vps_barcode = %s THEN 1
+                    WHEN %s IS NOT NULL AND LOWER(reply_to_email) = LOWER(%s) THEN 2
+                    ELSE 3
+                  END,
+                  id
+                LIMIT 1
+                """,
+                (
+                    odoo_user_id,
+                    _blank_to_none(vps_barcode),
+                    _blank_to_none(vps_barcode),
+                    _blank_to_none(email),
+                    _blank_to_none(email),
+                    login_name,
+                    odoo_user_id,
+                    _blank_to_none(vps_barcode),
+                    _blank_to_none(vps_barcode),
+                    _blank_to_none(email),
+                    _blank_to_none(email),
+                ),
+            ).fetchone()
+            if user and not user["active"]:
+                raise RuntimeError("vps_user_disabled")
+            if user:
+                return conn.execute(
+                    """
+                    UPDATE sales_users
+                    SET odoo_user_id = COALESCE(odoo_user_id, %s),
+                        vps_barcode = COALESCE(vps_barcode, %s),
+                        department = COALESCE(%s, department),
+                        reply_to_email = COALESCE(reply_to_email, %s),
+                        auth_provider = 'vps'
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (
+                        odoo_user_id,
+                        _blank_to_none(vps_barcode),
+                        _blank_to_none(department),
+                        _clean_optional_email(email),
+                        user["id"],
+                    ),
+                ).fetchone()
+            if not auto_create:
+                raise RuntimeError("vps_user_not_mapped")
+            return conn.execute(
+                """
+                INSERT INTO sales_users(
+                    username, password_hash, display_name, role, daily_source_limit, daily_send_limit,
+                    reply_to_email, must_change_password, password_changed_at,
+                    odoo_user_id, vps_barcode, department, auth_provider
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE, NOW(), %s, %s, %s, 'vps')
+                RETURNING *
+                """,
+                (
+                    login_name,
+                    hash_password(secrets.token_urlsafe(32)),
+                    display_name or login_name,
+                    role,
+                    daily_source_limit,
+                    daily_send_limit,
+                    _clean_optional_email(email),
+                    odoo_user_id,
+                    _blank_to_none(vps_barcode),
+                    _blank_to_none(department),
                 ),
             ).fetchone()
 
@@ -2354,3 +2451,15 @@ def _clean_optional_email(value: str | None) -> str | None:
     if "@" not in email or " " in email:
         raise ValueError("invalid_reply_to_email")
     return email
+
+
+def _blank_to_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _vps_username(username: str, odoo_user_id: int) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_.@-]", "_", str(username or "").strip().lower())
+    if normalized:
+        return normalized[:80]
+    return f"odoo_{odoo_user_id}"

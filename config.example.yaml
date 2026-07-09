@@ -9,6 +9,13 @@ database:
 app:
   public_base_url: ${PUBLIC_BASE_URL}
 
+sso:
+  vps_enabled: ${VPS_SSO_ENABLED}
+  odoo_base_url: ${ODOO_BASE_URL}
+  auto_create_users: ${VPS_SSO_AUTO_CREATE_USERS}
+  default_role: sales
+  iframe_cookie: ${VPS_SSO_IFRAME_COOKIE}
+
 apis:
   ninjapear_key: ${NINJAPEAR_API_KEY}
   prospeo_key: ${PROSPEO_API_KEY}

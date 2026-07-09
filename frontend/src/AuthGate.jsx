@@ -31,20 +31,30 @@ function AuthGate() {
   }, [mode]);
 
   useEffect(() => {
-    api("/api/me")
-      .then((session) => {
+    const vpsParams = readVpsParams();
+    async function boot() {
+      try {
+        const session = vpsParams
+          ? await api("/api/auth/vps-login", {
+              method: "POST",
+              body: JSON.stringify({ sessionID: vpsParams.sessionId, userId: vpsParams.userId }),
+            })
+          : await api("/api/me");
         setUser(session.user);
         setUsage(session.usage);
         publishSession(session.user, session.usage);
+        if (vpsParams) cleanVpsParams(session.next || "/");
         setMode(session.user.must_change_password ? "change-password" : "authenticated");
         if (!session.user.must_change_password) {
           window.dispatchEvent(new CustomEvent("salesbot:refresh"));
         }
-      })
-      .catch(() => {
+      } catch (err) {
         publishSession(null, null);
+        if (vpsParams) setError(err.message);
         setMode("login");
-      });
+      }
+    }
+    boot();
   }, []);
 
   useEffect(() => {
@@ -163,4 +173,27 @@ function AuthGate() {
 
 function publishSession(user, usage) {
   window.dispatchEvent(new CustomEvent("salesbot:session", { detail: { user, usage } }));
+}
+
+function readVpsParams() {
+  const direct = new URLSearchParams(window.location.search);
+  const sessionId = direct.get("session_id");
+  const userId = direct.get("user_id");
+  if (sessionId && userId) return { sessionId, userId };
+  const next = direct.get("next");
+  if (!next) return null;
+  try {
+    const nested = new URLSearchParams(new URL(next, window.location.origin).search);
+    const nestedSessionId = nested.get("session_id");
+    const nestedUserId = nested.get("user_id");
+    if (nestedSessionId && nestedUserId) return { sessionId: nestedSessionId, userId: nestedUserId };
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function cleanVpsParams(next) {
+  const target = new URL(next || "/", window.location.origin);
+  window.history.replaceState(null, "", `${target.pathname}${target.search}${window.location.hash || "#dashboard"}`);
 }
