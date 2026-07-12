@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import secrets
@@ -112,6 +113,7 @@ class Repository:
         daily_source_limit: int = 100,
         daily_send_limit: int = 200,
         reply_to_email: str | None = None,
+        sender_alias_localpart: str | None = None,
         must_change_password: bool = True,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -119,11 +121,11 @@ class Repository:
                 """
                 INSERT INTO sales_users(
                     username, password_hash, display_name, role, daily_source_limit, daily_send_limit,
-                    reply_to_email, must_change_password, password_changed_at
+                    reply_to_email, sender_alias_localpart, must_change_password, password_changed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          reply_to_email, active, must_change_password, created_at
+                          reply_to_email, sender_alias_localpart, active, must_change_password, created_at
                 """,
                 (
                     username,
@@ -133,6 +135,7 @@ class Repository:
                     daily_source_limit,
                     daily_send_limit,
                     _clean_optional_email(reply_to_email),
+                    _clean_optional_alias(sender_alias_localpart),
                     must_change_password,
                     must_change_password,
                 ),
@@ -239,7 +242,7 @@ class Repository:
             return conn.execute(
                 """
                 SELECT u.id, u.username, u.display_name, u.role, u.daily_source_limit, u.daily_send_limit,
-                       u.reply_to_email,
+                       u.reply_to_email, u.sender_alias_localpart,
                        u.active, u.must_change_password, u.created_at,
                        COALESCE(usage.source_count, 0) AS source_count_today,
                        COALESCE(usage.send_count, 0) AS send_count_today
@@ -259,6 +262,7 @@ class Repository:
         daily_source_limit: int | None = None,
         daily_send_limit: int | None = None,
         reply_to_email: str | None = None,
+        sender_alias_localpart: str | None = None,
         active: bool | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -270,17 +274,27 @@ class Repository:
                     daily_source_limit = COALESCE(%s, daily_source_limit),
                     daily_send_limit = COALESCE(%s, daily_send_limit),
                     reply_to_email = COALESCE(%s, reply_to_email),
+                    sender_alias_localpart = COALESCE(%s, sender_alias_localpart),
                     active = COALESCE(%s, active)
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
-                          reply_to_email, active, must_change_password, created_at
+                          reply_to_email, sender_alias_localpart, active, must_change_password, created_at
                 """,
-                (display_name, role, daily_source_limit, daily_send_limit, _clean_optional_email(reply_to_email), active, user_id),
+                (
+                    display_name,
+                    role,
+                    daily_source_limit,
+                    daily_send_limit,
+                    _clean_optional_email(reply_to_email),
+                    _clean_optional_alias(sender_alias_localpart),
+                    active,
+                    user_id,
+                ),
             ).fetchone()
 
     def reset_user_password(self, user_id: int, password: str) -> dict[str, Any]:
         with self.db.connect() as conn:
-            return conn.execute(
+            user = conn.execute(
                 """
                 UPDATE sales_users
                 SET password_hash = %s,
@@ -292,6 +306,9 @@ class Repository:
                 """,
                 (hash_password(password), user_id),
             ).fetchone()
+            if user:
+                conn.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+            return user
 
     def change_own_password(self, user_id: int, current_password: str, new_password: str) -> dict[str, Any]:
         if len(new_password or "") < 12:
@@ -552,20 +569,46 @@ class Repository:
 
     def ensure_sender_account(self, account: dict[str, Any]) -> dict[str, Any]:
         with self.db.connect() as conn:
+            name = account.get("name") or account.get("email")
+            email = account.get("email")
+            by_email = conn.execute("SELECT id FROM sender_accounts WHERE email = %s", (email,)).fetchone()
+            by_name = conn.execute("SELECT id FROM sender_accounts WHERE name = %s", (name,)).fetchone()
+            existing = by_email or by_name
+            if existing:
+                # Older deployments may already contain the same logical sender under
+                # its display name but with a previous address. Update that row instead
+                # of relying on a single unique constraint as the conflict target.
+                safe_name = name if not by_name or int(by_name["id"]) == int(existing["id"]) else None
+                safe_email = email if not by_email or int(by_email["id"]) == int(existing["id"]) else None
+                return conn.execute(
+                    """
+                    UPDATE sender_accounts
+                    SET name = COALESCE(%s, name),
+                        email = COALESCE(%s, email),
+                        provider = %s,
+                        daily_limit = %s,
+                        warmup_stage = %s
+                    WHERE id = %s
+                    RETURNING id, name, email, provider, daily_limit, warmup_stage, active, created_at
+                    """,
+                    (
+                        safe_name,
+                        safe_email,
+                        account.get("provider", "resend"),
+                        int(account.get("daily_limit") or 100),
+                        account.get("warmup_stage", "production"),
+                        int(existing["id"]),
+                    ),
+                ).fetchone()
             return conn.execute(
                 """
                 INSERT INTO sender_accounts(name, email, provider, daily_limit, warmup_stage, active)
                 VALUES (%s, %s, %s, %s, %s, TRUE)
-                ON CONFLICT (email) DO UPDATE
-                SET name = EXCLUDED.name,
-                    provider = EXCLUDED.provider,
-                    daily_limit = EXCLUDED.daily_limit,
-                    warmup_stage = EXCLUDED.warmup_stage
                 RETURNING id, name, email, provider, daily_limit, warmup_stage, active, created_at
                 """,
                 (
-                    account.get("name") or account.get("email"),
-                    account.get("email"),
+                    name,
+                    email,
                     account.get("provider", "resend"),
                     int(account.get("daily_limit") or 100),
                     account.get("warmup_stage", "production"),
@@ -656,12 +699,14 @@ class Repository:
           linkedin_url, first_name, last_name, email, email_status, job_title, company_name,
           company_domain, industry, location, company_size, status, source_person_id, source, owner_user_id, owner,
           email_candidates, lead_score, search_task_id, phone, phone_candidates, source_context,
+          identity_confidence, identity_status, identity_evidence,
           pool_type, assignment_source, assigned_at, pool_expires_at, last_stage_changed_at
         ) VALUES (
           %(linkedin_url)s, %(first_name)s, %(last_name)s, %(email)s, %(email_status)s, %(job_title)s, %(company_name)s,
           %(company_domain)s, %(industry)s, %(location)s, %(company_size)s, %(status)s, %(source_person_id)s, %(source)s,
           %(owner_user_id)s, %(owner)s, %(email_candidates)s::jsonb, %(lead_score)s, %(search_task_id)s,
           %(phone)s, %(phone_candidates)s::jsonb, %(source_context)s::jsonb,
+          %(identity_confidence)s, %(identity_status)s, %(identity_evidence)s::jsonb,
           %(pool_type)s, %(assignment_source)s,
           CASE WHEN %(owner_user_id)s::bigint IS NULL THEN NULL ELSE NOW() END,
           CASE WHEN %(owner_user_id)s::bigint IS NULL THEN NULL ELSE NOW() + INTERVAL '60 days' END,
@@ -676,6 +721,12 @@ class Repository:
                 ELSE COALESCE(contacts.pool_type, EXCLUDED.pool_type)
             END,
             lead_score = COALESCE(EXCLUDED.lead_score, contacts.lead_score),
+            identity_confidence = COALESCE(EXCLUDED.identity_confidence, contacts.identity_confidence),
+            identity_status = COALESCE(EXCLUDED.identity_status, contacts.identity_status),
+            identity_evidence = CASE
+                WHEN EXCLUDED.identity_evidence <> '[]'::jsonb THEN EXCLUDED.identity_evidence
+                ELSE contacts.identity_evidence
+            END,
             search_task_id = COALESCE(EXCLUDED.search_task_id, contacts.search_task_id),
             email_candidates = CASE
                 WHEN EXCLUDED.email_candidates <> '[]'::jsonb THEN EXCLUDED.email_candidates
@@ -731,6 +782,9 @@ class Repository:
                 defaults["source_context"] = json.dumps(contact.get("source_context") or {}, ensure_ascii=False)
                 defaults["lead_score"] = contact.get("lead_score")
                 defaults["search_task_id"] = contact.get("search_task_id")
+                defaults["identity_confidence"] = contact.get("identity_confidence")
+                defaults["identity_status"] = contact.get("identity_status")
+                defaults["identity_evidence"] = json.dumps(contact.get("identity_evidence") or [])
                 row = conn.execute(sql, defaults).fetchone()
                 if row and row["inserted"]:
                     inserted += 1
@@ -1069,7 +1123,7 @@ class Repository:
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(limit)
         with self.db.connect() as conn:
-            return conn.execute(
+            rows = conn.execute(
                 f"""
                 SELECT c.id, c.linkedin_url, c.first_name, c.last_name, c.email, c.email_status, c.job_title,
                        c.company_name, c.company_domain, c.industry, c.location, c.status::text,
@@ -1082,8 +1136,16 @@ class Repository:
                        c.sabcd_stage,
                        c.pool_type, c.assignment_source, c.assigned_at, c.pool_expires_at,
                        c.last_stage_changed_at, c.returned_to_public_at, c.claim_count,
+                       c.reply_assignment_pending, c.last_reply_at,
                        c.owner, c.owner_user_id, c.lost_reason, c.profile_summary, c.profile_insights, c.profile_updated_at,
                        c.lead_score, c.search_task_id,
+                       c.identity_confidence, c.identity_status, c.identity_evidence,
+                       draft.id AS draft_id,
+                       draft.status AS draft_status,
+                       draft.subject AS draft_subject,
+                       draft.sequence_step AS draft_sequence_step,
+                       draft.created_at AS draft_created_at,
+                       draft.approved_at AS draft_approved_at,
                        COALESCE(ev.sent_count, 0) AS sent_count,
                        COALESCE(ev.delivered_count, 0) AS delivered_count,
                        COALESCE(ev.opened_count, 0) AS opened_count,
@@ -1094,6 +1156,14 @@ class Repository:
                        ev.last_event_at,
                        ev.last_event_type
                 FROM contacts c
+                LEFT JOIN LATERAL (
+                    SELECT d.id, d.status, d.subject, d.sequence_step, d.created_at, d.approved_at
+                    FROM email_drafts d
+                    WHERE d.contact_id = c.id
+                      AND d.user_id = c.owner_user_id
+                    ORDER BY d.created_at DESC, d.id DESC
+                    LIMIT 1
+                ) draft ON TRUE
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) FILTER (WHERE event_type = 'sent') AS sent_count,
@@ -1114,7 +1184,7 @@ class Repository:
                 """,
                 tuple(params),
             ).fetchall()
-            return [_with_customer_intelligence(row) for row in rows]
+        return [_with_customer_intelligence(row) for row in rows]
 
     def _owner_filter(self, alias: str, user: dict[str, Any] | None = None, *, prefix: str = "WHERE") -> tuple[str, list[Any]]:
         if user and user.get("role") != "admin":
@@ -1134,8 +1204,12 @@ class Repository:
             "my_private_pool": "c.pool_type = 'private' AND c.owner_user_id IS NOT NULL",
             "pool_expiring": "c.pool_type = 'private' AND c.sabcd_stage <> 'S' AND c.pool_expires_at <= NOW() + INTERVAL '14 days'",
             "returned_pool": "c.pool_type = 'public' AND c.returned_to_public_at IS NOT NULL",
+            "unassigned_replies": "c.pool_type = 'public' AND c.reply_assignment_pending = TRUE",
             "needs_enrichment": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
             "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched' AND c.email IS NOT NULL AND lower(split_part(c.email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team') AND COALESCE(c.lead_score, 60) >= 50 AND COALESCE(c.job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'",
+            "missing_draft": "c.pool_type = 'private' AND c.email_status = 'valid' AND c.email IS NOT NULL AND draft.id IS NULL",
+            "draft_pending": "c.pool_type = 'private' AND draft.status = 'draft'",
+            "draft_approved": "c.pool_type = 'private' AND draft.status = 'approved'",
             "opened_no_reply": "COALESCE(ev.opened_count, 0) > 0 AND c.status NOT IN ('replied', 'bounced', 'unsubscribed')",
             "replied": "(c.status = 'replied' OR COALESCE(ev.replied_count, 0) > 0)",
             "bounced": "(c.status = 'bounced' OR COALESCE(ev.bounced_count, 0) > 0)",
@@ -1143,11 +1217,11 @@ class Repository:
             "third_touch_due": "c.status = 'sent_2'",
             "waiting_pool": "c.lifecycle_stage = 'waiting_pool'",
             "abandoned": "(c.lifecycle_stage = 'abandoned' OR c.disposition = 'abandoned')",
-            "sabcd_d": "c.sabcd_stage = 'D'",
-            "sabcd_c": "c.sabcd_stage = 'C'",
-            "sabcd_b": "c.sabcd_stage = 'B'",
-            "sabcd_a": "c.sabcd_stage = 'A'",
-            "sabcd_s": "c.sabcd_stage = 'S'",
+            "sabcd_d": "c.pool_type = 'private' AND c.sabcd_stage = 'D'",
+            "sabcd_c": "c.pool_type = 'private' AND c.sabcd_stage = 'C'",
+            "sabcd_b": "c.pool_type = 'private' AND c.sabcd_stage = 'B'",
+            "sabcd_a": "c.pool_type = 'private' AND c.sabcd_stage = 'A'",
+            "sabcd_s": "c.pool_type = 'private' AND c.sabcd_stage = 'S'",
         }
         clause = filters.get(filter_key)
         if clause:
@@ -1311,12 +1385,78 @@ class Repository:
                 """,
                 tuple(owner_params + owner_params),
             ).fetchall()
+            funnel = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS leads,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'public') AS public_pool,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private') AS private_pool,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.email_status = 'valid' AND c.email IS NOT NULL) AS valid_email,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.profile_insights <> '{{}}'::jsonb) AS profiled,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND draft.id IS NOT NULL) AS drafted,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND draft.status IN ('approved', 'sent')) AS approved,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND ev.sent > 0) AS sent,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND ev.opened > 0) AS opened,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND ev.replied > 0) AS replied,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.sabcd_stage IN ('B', 'A', 'S')) AS qualified,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.sabcd_stage = 'S') AS signed
+                FROM contacts c
+                LEFT JOIN LATERAL (
+                  SELECT id, status FROM email_drafts d
+                  WHERE d.contact_id = c.id
+                    AND d.user_id = c.owner_user_id
+                  ORDER BY d.created_at DESC, d.id DESC
+                  LIMIT 1
+                ) draft ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT
+                    COUNT(*) FILTER (WHERE e.event_type = 'sent') AS sent,
+                    COUNT(*) FILTER (WHERE e.event_type = 'opened') AS opened,
+                    COUNT(*) FILTER (WHERE e.event_type = 'replied') AS replied
+                  FROM email_events e WHERE e.contact_id = c.id
+                ) ev ON TRUE
+                WHERE TRUE {owner_filter}
+                """,
+                tuple(owner_params),
+            ).fetchone()
+            blockers = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) FILTER (WHERE c.pool_type = 'public') AS public_unassigned,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND (c.email_status <> 'valid' OR c.email IS NULL)) AS missing_email,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.profile_insights = '{{}}'::jsonb) AS missing_profile,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.email_status = 'valid' AND draft.id IS NULL) AS missing_draft,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND draft.status = 'draft') AS awaiting_approval,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND draft.status = 'approved' AND ev.sent = 0) AS approved_not_sent,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND ev.opened > 0 AND ev.replied = 0 AND c.status NOT IN ('bounced', 'unsubscribed')) AS opened_no_reply,
+                  COUNT(*) FILTER (WHERE c.pool_type = 'private' AND c.status = 'bounced') AS bounced
+                FROM contacts c
+                LEFT JOIN LATERAL (
+                  SELECT id, status FROM email_drafts d
+                  WHERE d.contact_id = c.id
+                    AND d.user_id = c.owner_user_id
+                  ORDER BY d.created_at DESC, d.id DESC
+                  LIMIT 1
+                ) draft ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT
+                    COUNT(*) FILTER (WHERE e.event_type = 'sent') AS sent,
+                    COUNT(*) FILTER (WHERE e.event_type = 'opened') AS opened,
+                    COUNT(*) FILTER (WHERE e.event_type = 'replied') AS replied
+                  FROM email_events e WHERE e.contact_id = c.id
+                ) ev ON TRUE
+                WHERE TRUE {owner_filter}
+                """,
+                tuple(owner_params),
+            ).fetchone()
         return {
             "totals": {key: int(value or 0) for key, value in dict(totals).items()},
             "events": {key: int(value or 0) for key, value in dict(events).items()},
             "by_user": by_user,
             "provider_stats": provider_stats,
             "failures": failures,
+            "funnel": {key: int(value or 0) for key, value in dict(funnel).items()},
+            "blockers": {key: int(value or 0) for key, value in dict(blockers).items()},
             "scope": "team" if is_admin else "self",
         }
 
@@ -1425,17 +1565,186 @@ class Repository:
                 tuple(params),
             ).fetchall()
 
+    def get_active_user(self, user_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute("SELECT * FROM sales_users WHERE id = %s AND active = TRUE", (user_id,)).fetchone()
+
+    def create_automation_run(
+        self,
+        *,
+        run_type: str,
+        input_payload: dict[str, Any],
+        progress_total: int,
+        user: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO automation_runs(
+                    run_type, input_payload, progress_total, created_by_user_id,
+                    owner_user_id, idempotency_key
+                )
+                VALUES (%s, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT(owner_user_id, idempotency_key) DO UPDATE
+                SET updated_at = automation_runs.updated_at
+                RETURNING *
+                """,
+                (
+                    run_type,
+                    json.dumps(input_payload, ensure_ascii=False),
+                    progress_total,
+                    user["id"],
+                    user["id"],
+                    idempotency_key,
+                ),
+            ).fetchone()
+
+    def list_automation_runs(self, *, user: dict[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+        where = "" if user.get("role") == "admin" else "WHERE r.owner_user_id = %s"
+        params: list[Any] = [] if user.get("role") == "admin" else [user["id"]]
+        params.append(limit)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT r.*, u.username, u.display_name
+                FROM automation_runs r
+                LEFT JOIN sales_users u ON u.id = r.owner_user_id
+                {where}
+                ORDER BY r.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def get_automation_run(self, run_id: int, *, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        clauses = ["r.id = %s"]
+        params: list[Any] = [run_id]
+        if user and user.get("role") != "admin":
+            clauses.append("r.owner_user_id = %s")
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"SELECT r.* FROM automation_runs r WHERE {' AND '.join(clauses)}",
+                tuple(params),
+            ).fetchone()
+
+    def claim_automation_run(self, run_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE automation_runs
+                SET status = 'running', pause_requested = FALSE,
+                    started_at = COALESCE(started_at, NOW()), updated_at = NOW(), error = NULL
+                WHERE id = %s AND status IN ('queued', 'retrying')
+                RETURNING *
+                """,
+                (run_id,),
+            ).fetchone()
+
+    def update_automation_run_progress(
+        self,
+        run_id: int,
+        *,
+        progress_current: int,
+        result: dict[str, Any],
+        stage: str = "sourcing",
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE automation_runs
+                SET progress_current = %s, result = %s::jsonb, stage = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (progress_current, json.dumps(result, ensure_ascii=False), stage, run_id),
+            )
+
+    def finish_automation_run(self, run_id: int, *, status: str, result: dict[str, Any] | None = None, error: str | None = None) -> None:
+        completed = status in {"awaiting_approval", "completed", "failed", "cancelled"}
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE automation_runs
+                SET status = %s,
+                    stage = CASE WHEN %s = 'awaiting_approval' THEN 'review' ELSE stage END,
+                    result = COALESCE(%s::jsonb, result), error = %s,
+                    pause_requested = FALSE, updated_at = NOW(),
+                    completed_at = CASE WHEN %s THEN NOW() ELSE completed_at END
+                WHERE id = %s
+                """,
+                (status, status, json.dumps(result, ensure_ascii=False) if result is not None else None, error, completed, run_id),
+            )
+
+    def request_automation_pause(self, run_id: int, *, user: dict[str, Any]) -> dict[str, Any] | None:
+        owner_clause = "" if user.get("role") == "admin" else "AND owner_user_id = %s"
+        params: list[Any] = [run_id]
+        if owner_clause:
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                UPDATE automation_runs
+                SET pause_requested = TRUE,
+                    status = CASE WHEN status = 'queued' THEN 'paused' ELSE status END,
+                    updated_at = NOW()
+                WHERE id = %s {owner_clause} AND status IN ('queued', 'running')
+                RETURNING *
+                """,
+                tuple(params),
+            ).fetchone()
+
+    def resume_automation_run(self, run_id: int, *, user: dict[str, Any]) -> dict[str, Any] | None:
+        owner_clause = "" if user.get("role") == "admin" else "AND owner_user_id = %s"
+        params: list[Any] = [run_id]
+        if owner_clause:
+            params.append(user["id"])
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                UPDATE automation_runs
+                SET status = 'queued', pause_requested = FALSE, error = NULL,
+                    completed_at = NULL, updated_at = NOW()
+                WHERE id = %s {owner_clause} AND status IN ('paused', 'failed')
+                RETURNING *
+                """,
+                tuple(params),
+            ).fetchone()
+
+    def recover_automation_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Requeue work interrupted by a process restart and return runnable jobs."""
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE automation_runs
+                SET status = 'queued', updated_at = NOW(),
+                    error = COALESCE(error, 'worker_restarted')
+                WHERE status = 'running'
+                """
+            )
+            return conn.execute(
+                """
+                SELECT * FROM automation_runs
+                WHERE status = 'queued'
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+
     def create_lead_search_result(self, task_id: int, parsed: dict[str, Any], *, status: str) -> dict[str, Any]:
         with self.db.connect() as conn:
             return conn.execute(
                 """
                 INSERT INTO lead_search_results(
                     task_id, raw_title, raw_snippet, raw_url, linkedin_url, first_name, last_name,
-                    job_title, company_name, company_domain, location, lead_score, email_candidates, status, failure_reason
+                    job_title, company_name, company_domain, location, lead_score, email_candidates,
+                    match_confidence, match_status, match_evidence, status, failure_reason
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s)
                 RETURNING id, task_id, raw_title, raw_snippet, raw_url, linkedin_url, first_name, last_name,
                           job_title, company_name, company_domain, location, lead_score, email_candidates,
+                          match_confidence, match_status, match_evidence,
                           promoted_contact_id, status, failure_reason, created_at
                 """,
                 (
@@ -1452,6 +1761,9 @@ class Repository:
                     parsed.get("location"),
                     int(parsed.get("lead_score") or 0),
                     json.dumps(parsed.get("email_candidates") or []),
+                    int(parsed.get("match_confidence") or parsed.get("lead_score") or 0),
+                    parsed.get("match_status") or "review",
+                    json.dumps(parsed.get("match_evidence") or []),
                     status,
                     parsed.get("failure_reason"),
                 ),
@@ -1464,6 +1776,7 @@ class Repository:
                 SELECT r.id, r.task_id, r.raw_title, r.raw_snippet, r.raw_url, r.linkedin_url,
                        r.first_name, r.last_name, r.job_title, r.company_name, r.company_domain,
                        r.location, r.lead_score, r.email_candidates, r.promoted_contact_id,
+                       r.match_confidence, r.match_status, r.match_evidence,
                        r.status, r.failure_reason, r.created_at
                 FROM lead_search_results r
                 JOIN lead_search_tasks t ON t.id = r.task_id
@@ -1744,8 +2057,9 @@ class Repository:
                             %s,
                             CASE
                                 WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
-                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
-                                WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN CASE WHEN sabcd_stage = 'S' THEN 'S' ELSE 'A' END
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('conversation', 'meeting') THEN CASE WHEN sabcd_stage IN ('D', 'C') THEN 'B' ELSE sabcd_stage END
+                                WHEN COALESCE(%s, lifecycle_stage) = 'replied' THEN CASE WHEN sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END
                                 ELSE sabcd_stage
                             END
                         ) IS DISTINCT FROM sabcd_stage THEN NOW()
@@ -1757,8 +2071,9 @@ class Repository:
                             %s,
                             CASE
                                 WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
-                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
-                                WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN CASE WHEN sabcd_stage = 'S' THEN 'S' ELSE 'A' END
+                                WHEN COALESCE(%s, lifecycle_stage) IN ('conversation', 'meeting') THEN CASE WHEN sabcd_stage IN ('D', 'C') THEN 'B' ELSE sabcd_stage END
+                                WHEN COALESCE(%s, lifecycle_stage) = 'replied' THEN CASE WHEN sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END
                                 ELSE sabcd_stage
                             END
                          ) IS DISTINCT FROM sabcd_stage THEN NOW() + (%s::text || ' days')::interval
@@ -1774,8 +2089,9 @@ class Repository:
                         %s,
                         CASE
                             WHEN COALESCE(%s, lifecycle_stage) IN ('signed', 'maintenance') OR COALESCE(%s, disposition) = 'won' THEN 'S'
-                            WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
-                            WHEN COALESCE(%s, lifecycle_stage) IN ('replied', 'conversation', 'meeting') THEN 'B'
+                            WHEN COALESCE(%s, lifecycle_stage) IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN CASE WHEN sabcd_stage = 'S' THEN 'S' ELSE 'A' END
+                            WHEN COALESCE(%s, lifecycle_stage) IN ('conversation', 'meeting') THEN CASE WHEN sabcd_stage IN ('D', 'C') THEN 'B' ELSE sabcd_stage END
+                            WHEN COALESCE(%s, lifecycle_stage) = 'replied' THEN CASE WHEN sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END
                             ELSE sabcd_stage
                         END
                     )
@@ -1787,9 +2103,11 @@ class Repository:
                     disposition,
                     lifecycle_stage,
                     lifecycle_stage,
+                    lifecycle_stage,
                     sabcd_stage,
                     lifecycle_stage,
                     disposition,
+                    lifecycle_stage,
                     lifecycle_stage,
                     lifecycle_stage,
                     private_days,
@@ -1802,6 +2120,7 @@ class Repository:
                     sabcd_stage,
                     lifecycle_stage,
                     disposition,
+                    lifecycle_stage,
                     lifecycle_stage,
                     lifecycle_stage,
                     contact_id,
@@ -1893,8 +2212,75 @@ class Repository:
             ).fetchall()
             return len(rows)
 
-    def auto_assign_public_pool(self, *, limit: int = 100) -> dict[str, Any]:
-        rules = _region_assignment_rules(self.db.config.raw)
+    def close_expired_outreach_sequences(self, *, wait_days: int = 14, limit: int = 100) -> dict[str, int]:
+        """Close three-touch sequences after a cooling period based on observed engagement."""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH candidates AS (
+                    SELECT c.id,
+                           EXISTS (
+                               SELECT 1 FROM email_events e
+                               WHERE e.contact_id = c.id AND e.event_type IN ('opened', 'clicked')
+                           ) AS engaged
+                    FROM contacts c
+                    WHERE c.status = 'sent_3'
+                      AND c.sequence_step >= 3
+                      AND c.last_contacted_at <= NOW() - (%s::text || ' days')::interval
+                      AND c.replied_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM email_events e
+                          WHERE e.contact_id = c.id AND e.event_type = 'replied'
+                      )
+                    ORDER BY c.last_contacted_at
+                    LIMIT %s
+                )
+                UPDATE contacts c
+                SET lifecycle_stage = CASE WHEN candidates.engaged THEN 'waiting_pool' ELSE 'abandoned' END,
+                    disposition = CASE WHEN candidates.engaged THEN 'waiting' ELSE 'abandoned' END,
+                    next_action_at = CASE WHEN candidates.engaged THEN NOW() + INTERVAL '30 days' ELSE NULL END,
+                    last_stage_changed_at = NOW(),
+                    notes = COALESCE(c.notes, CASE WHEN candidates.engaged
+                        THEN 'Three-touch sequence completed; engaged without reply.'
+                        ELSE 'Three-touch sequence completed without engagement.' END)
+                FROM candidates
+                WHERE c.id = candidates.id
+                RETURNING candidates.engaged
+                """,
+                (max(1, wait_days), limit),
+            ).fetchall()
+        waiting = sum(1 for row in rows if row.get("engaged"))
+        return {"waiting": waiting, "abandoned": len(rows) - waiting}
+
+    def get_app_setting(self, key: str, default: Any = None) -> Any:
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT setting_value FROM app_settings WHERE setting_key = %s", (key,)).fetchone()
+        return row["setting_value"] if row else default
+
+    def set_app_setting(self, key: str, value: Any, *, user_id: int | None = None) -> Any:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO app_settings(setting_key, setting_value, updated_by_user_id, updated_at)
+                VALUES (%s, %s::jsonb, %s, NOW())
+                ON CONFLICT(setting_key) DO UPDATE
+                SET setting_value = EXCLUDED.setting_value,
+                    updated_by_user_id = EXCLUDED.updated_by_user_id,
+                    updated_at = NOW()
+                RETURNING setting_value
+                """,
+                (key, json.dumps(value, ensure_ascii=False), user_id),
+            ).fetchone()
+        return row["setting_value"]
+
+    def region_assignment_rules(self) -> list[dict[str, Any]]:
+        stored = self.get_app_setting("customer_pool.region_assignments", [])
+        if isinstance(stored, list) and stored:
+            return stored
+        return _region_assignment_rules(self.db.config.raw)
+
+    def auto_assign_public_pool(self, *, limit: int = 100, contact_ids: list[int] | None = None) -> dict[str, Any]:
+        rules = self.region_assignment_rules()
         if not rules:
             return {"assigned": 0, "skipped": 0, "missing_rules": True}
         users = {str(row["username"]).lower(): row for row in self.list_users() if row.get("active")}
@@ -1902,16 +2288,23 @@ class Repository:
         private_days = _private_pool_days(self.db.config.raw)
         assigned = skipped = 0
         with self.db.connect() as conn:
+            id_clause = ""
+            params: list[Any] = []
+            if contact_ids:
+                id_clause = "AND id = ANY(%s)"
+                params.append(contact_ids)
+            params.append(limit)
             contacts = conn.execute(
-                """
+                f"""
                 SELECT id, location, company_name, source_context
                 FROM contacts
                 WHERE pool_type = 'public'
                   AND sabcd_stage <> 'S'
+                  {id_clause}
                 ORDER BY created_at
                 LIMIT %s
                 """,
-                (limit,),
+                tuple(params),
             ).fetchall()
             for contact in contacts:
                 owner = _match_region_owner(contact, rules, users)
@@ -1937,6 +2330,21 @@ class Repository:
                 assigned += 1 if row else 0
                 skipped += 0 if row else 1
         return {"assigned": assigned, "skipped": skipped, "missing_rules": False}
+
+    def list_contacts_for_search_tasks(self, task_ids: list[int]) -> list[dict[str, Any]]:
+        if not task_ids:
+            return []
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.*
+                FROM contacts c
+                WHERE c.search_task_id = ANY(%s)
+                ORDER BY c.id
+                """,
+                (task_ids,),
+            ).fetchall()
+        return [_with_customer_intelligence(row) for row in rows]
 
     def refresh_customer_profile_snapshot(self, contact_id: int) -> None:
         contact = self.get_contact(contact_id)
@@ -1970,7 +2378,168 @@ class Repository:
         contact = self.get_contact_for_user(contact_id, user) if user else self.get_contact(contact_id)
         if not contact:
             return None
-        return {"contact": contact, "activities": self.list_lifecycle_activities(contact_id)}
+        return {
+            "contact": contact,
+            "activities": self.list_lifecycle_activities(contact_id),
+            "research": self.get_contact_research(contact_id),
+            "draft": self.get_latest_email_draft(contact_id, user_id=int(user["id"]) if user else None),
+            "feedback": self.contact_feedback_summary(contact_id),
+        }
+
+    def get_contact_research(self, contact_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT contact_id, summary, company_signals, person_signals, news_signals,
+                       sources, provider, researched_at, expires_at
+                FROM contact_research
+                WHERE contact_id = %s
+                """,
+                (contact_id,),
+            ).fetchone()
+
+    def upsert_contact_research(
+        self,
+        contact_id: int,
+        *,
+        summary: str,
+        company_signals: list[dict[str, Any]],
+        person_signals: list[dict[str, Any]],
+        news_signals: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        provider: str,
+        expires_at: Any,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO contact_research(
+                    contact_id, summary, company_signals, person_signals, news_signals,
+                    sources, provider, researched_at, expires_at
+                )
+                VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, NOW(), %s)
+                ON CONFLICT (contact_id) DO UPDATE
+                SET summary = EXCLUDED.summary,
+                    company_signals = EXCLUDED.company_signals,
+                    person_signals = EXCLUDED.person_signals,
+                    news_signals = EXCLUDED.news_signals,
+                    sources = EXCLUDED.sources,
+                    provider = EXCLUDED.provider,
+                    researched_at = NOW(),
+                    expires_at = EXCLUDED.expires_at
+                RETURNING contact_id, summary, company_signals, person_signals, news_signals,
+                          sources, provider, researched_at, expires_at
+                """,
+                (
+                    contact_id,
+                    summary,
+                    json.dumps(company_signals, ensure_ascii=False),
+                    json.dumps(person_signals, ensure_ascii=False),
+                    json.dumps(news_signals, ensure_ascii=False),
+                    json.dumps(sources, ensure_ascii=False),
+                    provider,
+                    expires_at,
+                ),
+            ).fetchone()
+
+    def save_email_draft(
+        self,
+        contact_id: int,
+        *,
+        user_id: int | None,
+        sequence_step: int,
+        mode: str,
+        subject: str,
+        body: str,
+        research_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO email_drafts(contact_id, user_id, sequence_step, mode, subject, body, research_snapshot)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id, contact_id, user_id, sequence_step, mode, subject, body,
+                          research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                """,
+                (contact_id, user_id, sequence_step, mode, subject, body, json.dumps(research_snapshot or {}, ensure_ascii=False)),
+            ).fetchone()
+
+    def get_latest_email_draft(self, contact_id: int, *, user_id: int | None = None) -> dict[str, Any] | None:
+        clauses = ["contact_id = %s"]
+        params: list[Any] = [contact_id]
+        if user_id is not None:
+            clauses.append("(user_id = %s OR user_id IS NULL)")
+            params.append(user_id)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, contact_id, user_id, sequence_step, mode, subject, body,
+                       research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                FROM email_drafts
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+
+    def approve_latest_email_draft(self, contact_id: int, *, user_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE email_drafts
+                SET status = 'approved', approved_at = NOW(), approved_by_user_id = %s
+                WHERE id = (
+                    SELECT id FROM email_drafts
+                    WHERE contact_id = %s AND user_id = %s AND status IN ('draft', 'approved')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                )
+                RETURNING id, contact_id, user_id, sequence_step, mode, subject, body,
+                          research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                """,
+                (user_id, contact_id, user_id),
+            ).fetchone()
+
+    def mark_latest_email_draft_sent(self, contact_id: int, *, user_id: int | None = None) -> None:
+        clauses = ["contact_id = %s", "status = 'approved'"]
+        params: list[Any] = [contact_id]
+        if user_id is not None:
+            clauses.append("user_id = %s")
+            params.append(user_id)
+        with self.db.connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE email_drafts
+                SET status = 'sent', sent_at = NOW()
+                WHERE id = (
+                    SELECT id FROM email_drafts
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                )
+                """,
+                tuple(params),
+            )
+
+    def contact_feedback_summary(self, contact_id: int) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FILTER (WHERE event_type = 'sent') AS sent,
+                       COUNT(*) FILTER (WHERE event_type = 'delivered') AS delivered,
+                       COUNT(*) FILTER (WHERE event_type = 'opened') AS opened,
+                       COUNT(*) FILTER (WHERE event_type = 'clicked') AS clicked,
+                       COUNT(*) FILTER (WHERE event_type = 'replied') AS replied,
+                       COUNT(*) FILTER (WHERE event_type = 'bounced') AS bounced,
+                       MAX(occurred_at) AS last_event_at,
+                       (ARRAY_AGG(event_type::text ORDER BY occurred_at DESC))[1] AS last_event_type
+                FROM email_events
+                WHERE contact_id = %s
+                """,
+                (contact_id,),
+            ).fetchone()
+            return row or {}
 
     def list_lifecycle_activities(self, contact_id: int, limit: int = 50) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
@@ -2016,13 +2585,14 @@ class Repository:
                     notes = COALESCE(%s, notes),
                     sabcd_stage = CASE
                         WHEN %s IN ('signed', 'maintenance') THEN 'S'
-                        WHEN %s IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') THEN 'A'
-                        WHEN %s IN ('replied', 'conversation', 'meeting') THEN 'B'
+                        WHEN %s IN ('business_plan', 'trial_order', 'agency_agreement', 'store_creation', 'store_visit', 'hq_visit') AND sabcd_stage <> 'S' THEN 'A'
+                        WHEN %s IN ('conversation', 'meeting') AND sabcd_stage IN ('D', 'C') THEN 'B'
+                        WHEN %s = 'replied' AND sabcd_stage = 'D' THEN 'C'
                         ELSE sabcd_stage
                     END
                 WHERE id = %s
                 """,
-                (lifecycle_stage, content[:500], lifecycle_stage, lifecycle_stage, lifecycle_stage, contact_id),
+                (lifecycle_stage, content[:500], lifecycle_stage, lifecycle_stage, lifecycle_stage, lifecycle_stage, contact_id),
             )
             return row
 
@@ -2155,6 +2725,52 @@ class Repository:
             ).fetchone()
             return int(row["count"])
 
+    def reserve_send_attempt(
+        self,
+        contact_id: int,
+        step: int,
+        *,
+        user_id: int | None,
+        provider: str,
+        sender_email: str | None,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO outbound_send_attempts(
+                    contact_id, sequence_step, user_id, provider, sender_email, idempotency_key, status
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'sending')
+                ON CONFLICT (contact_id, sequence_step) DO NOTHING
+                RETURNING id, contact_id, sequence_step, status, idempotency_key
+                """,
+                (contact_id, step, user_id, provider, sender_email, idempotency_key),
+            ).fetchone()
+            if row:
+                return {**row, "reserved": True}
+            existing = conn.execute(
+                """
+                SELECT id, contact_id, sequence_step, status, idempotency_key, message_id, error
+                FROM outbound_send_attempts
+                WHERE contact_id = %s AND sequence_step = %s
+                """,
+                (contact_id, step),
+            ).fetchone()
+            return {**existing, "reserved": False} if existing else None
+
+    def finish_send_attempt(self, contact_id: int, step: int, *, message_id: str | None = None, error: str | None = None) -> None:
+        status = "sent" if not error else "failed"
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE outbound_send_attempts
+                SET status = %s, message_id = COALESCE(%s, message_id), error = %s, updated_at = NOW()
+                WHERE contact_id = %s AND sequence_step = %s
+                """,
+                (status, message_id, error, contact_id, step),
+            )
+
     def record_sent(self, contact_id: int, step: int, subject: str, message_id: str | None, metadata: dict[str, Any]) -> bool:
         private_days = _private_pool_days(self.db.config.raw)
         with self.db.connect() as conn:
@@ -2240,6 +2856,78 @@ class Repository:
             ).fetchone()
             return int(row["id"]) if row else None
 
+    def route_inbound_reply(self, contact_id: int, routed_user_id: int | None) -> dict[str, Any]:
+        """Keep a reply with the current owner, or restore it to the signed sending user."""
+
+        private_days = _private_pool_days(self.db.config.raw)
+        with self.db.connect() as conn:
+            contact = conn.execute(
+                "SELECT owner_user_id, pool_type FROM contacts WHERE id = %s FOR UPDATE",
+                (contact_id,),
+            ).fetchone()
+            if not contact:
+                raise RuntimeError("inbound_contact_not_found")
+            current_owner_id = contact.get("owner_user_id")
+            valid_routed_user_id: int | None = None
+            if routed_user_id:
+                routed_user = conn.execute(
+                    "SELECT id FROM sales_users WHERE id = %s AND active = TRUE",
+                    (routed_user_id,),
+                ).fetchone()
+                if routed_user:
+                    valid_routed_user_id = int(routed_user["id"])
+            owner_user_id = int(current_owner_id) if current_owner_id else valid_routed_user_id
+            if owner_user_id:
+                result = conn.execute(
+                    """
+                    UPDATE contacts
+                    SET owner_user_id = %s,
+                        owner = COALESCE((SELECT display_name FROM sales_users WHERE id = %s), owner),
+                        pool_type = 'private',
+                        assignment_source = CASE WHEN owner_user_id IS NULL THEN 'inbound_reply' ELSE assignment_source END,
+                        assigned_at = COALESCE(assigned_at, NOW()),
+                        pool_expires_at = NOW() + (%s::text || ' days')::interval,
+                        reply_assignment_pending = FALSE,
+                        last_reply_at = NOW()
+                    WHERE id = %s
+                    RETURNING owner_user_id, pool_type, reply_assignment_pending, last_reply_at
+                    """,
+                    (owner_user_id, owner_user_id, private_days, contact_id),
+                ).fetchone()
+            else:
+                result = conn.execute(
+                    """
+                    UPDATE contacts
+                    SET pool_type = 'public',
+                        reply_assignment_pending = TRUE,
+                        last_reply_at = NOW()
+                    WHERE id = %s
+                    RETURNING owner_user_id, pool_type, reply_assignment_pending, last_reply_at
+                    """,
+                    (contact_id,),
+                ).fetchone()
+            return dict(result)
+
+    def allow_legacy_tracking(self, contact_id: int, step: int | None = None) -> bool:
+        """Keep links from pre-signature emails functional after migration 022."""
+
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM email_events e
+                JOIN schema_migrations m
+                  ON m.version = '022_identity_research_pipeline.sql'
+                WHERE e.contact_id = %s
+                  AND e.event_type = 'sent'
+                  AND e.occurred_at < m.applied_at
+                  AND (%s::integer IS NULL OR e.sequence_step = %s)
+                LIMIT 1
+                """,
+                (contact_id, step, step),
+            ).fetchone()
+            return bool(row)
+
     def mark_status(self, contact_id: int, status: str, *, notes: str | None = None) -> None:
         validate_status(status)
         private_days = _private_pool_days(self.db.config.raw)
@@ -2249,9 +2937,9 @@ class Repository:
                 UPDATE contacts
                 SET status = %s,
                     replied_at = CASE WHEN %s = 'replied' THEN NOW() ELSE replied_at END,
-                    last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage <> 'B' THEN NOW() ELSE last_stage_changed_at END,
-                    pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage <> 'B' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
-                    sabcd_stage = CASE WHEN %s = 'replied' THEN 'B' ELSE sabcd_stage END,
+                    last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
+                    pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                    sabcd_stage = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END,
                     notes = COALESCE(%s, notes)
                 WHERE id = %s
                 """,
@@ -2287,9 +2975,9 @@ class Repository:
                     """
                     UPDATE contacts
                     SET status = %s,
-                        last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage <> 'B' THEN NOW() ELSE last_stage_changed_at END,
-                        pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage <> 'B' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
-                        sabcd_stage = CASE WHEN %s = 'replied' THEN 'B' ELSE sabcd_stage END,
+                        last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
+                        pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                        sabcd_stage = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END,
                         enrich_error = CASE
                             WHEN %s IN ('bounced', 'unsubscribed') THEN COALESCE(%s, enrich_error)
                             ELSE enrich_error
@@ -2395,7 +3083,7 @@ class Repository:
 
 def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
     return {
-        "linkedin_url": contact["linkedin_url"],
+        "linkedin_url": _contact_identity_url(contact),
         "first_name": contact.get("first_name"),
         "last_name": contact.get("last_name"),
         "email": contact.get("email"),
@@ -2412,7 +3100,22 @@ def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:
         "phone": contact.get("phone"),
         "phone_candidates": contact.get("phone_candidates") or [],
         "source_context": contact.get("source_context") or {},
+        "identity_confidence": contact.get("identity_confidence"),
+        "identity_status": contact.get("identity_status"),
+        "identity_evidence": contact.get("identity_evidence") or [],
     }
+
+
+def _contact_identity_url(contact: dict[str, Any]) -> str:
+    linkedin_url = str(contact.get("linkedin_url") or "").strip()
+    if linkedin_url:
+        return linkedin_url
+    identity = "|".join(
+        str(contact.get(field) or "").strip().lower()
+        for field in ("email", "first_name", "last_name", "company_domain", "company_name", "source_person_id")
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return f"urn:contact:{digest}"
 
 
 def _with_customer_intelligence(contact: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2505,6 +3208,15 @@ def _clean_optional_email(value: str | None) -> str | None:
     if "@" not in email or " " in email:
         raise ValueError("invalid_reply_to_email")
     return email
+
+
+def _clean_optional_alias(value: str | None) -> str | None:
+    alias = str(value or "").strip().lower()
+    if not alias:
+        return None
+    if len(alias) > 48 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?", alias):
+        raise ValueError("invalid_sender_alias_localpart")
+    return alias
 
 
 def _blank_to_none(value: Any) -> str | None:

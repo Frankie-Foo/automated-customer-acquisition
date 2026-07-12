@@ -13,6 +13,8 @@ SABCD_LABELS = {
     "S": "签约建店",
 }
 
+_SABCD_RANK = {stage: index for index, stage in enumerate(SABCD_STAGES)}
+
 
 def validate_sabcd_stage(stage: str) -> str:
     normalized = str(stage or "").strip().upper()
@@ -33,7 +35,7 @@ def derive_sabcd_stage(
 
     D: not contacted yet.
     C: contacted/touched.
-    B: replied or active communication.
+    B: active multi-round communication.
     A: business plan, trial order, agreement, or store setup discussion.
     S: signed/maintenance.
     """
@@ -47,19 +49,31 @@ def derive_sabcd_stage(
     except Exception:
         sequence_step_value = 0
 
+    candidate = "D"
     if lifecycle_stage in {"signed", "maintenance"} or disposition == "won":
-        return "S"
-    if lifecycle_stage in {"business_plan", "trial_order", "agency_agreement", "store_creation", "store_visit", "hq_visit"}:
-        return "A"
-    if lifecycle_stage in {"replied", "conversation", "meeting"} or status == "replied":
-        return "B"
-    if status in {"sent_1", "sent_2", "sent_3"} or sequence_step_value > 0:
-        return "C"
-    if status in {"queued"}:
-        return "D"
-    if current in SABCD_STAGES:
-        return current
-    return "D"
+        candidate = "S"
+    elif lifecycle_stage in {"business_plan", "trial_order", "agency_agreement", "store_creation", "store_visit", "hq_visit"}:
+        candidate = "A"
+    elif lifecycle_stage in {"conversation", "meeting"}:
+        candidate = "B"
+    elif lifecycle_stage == "replied" or status == "replied":
+        candidate = "C"
+    elif status in {"sent_1", "sent_2", "sent_3"} or sequence_step_value > 0:
+        candidate = "C"
+
+    return advance_sabcd_stage(current or "D", candidate)
+
+
+def advance_sabcd_stage(current: str | None, candidate: str | None) -> str:
+    """Advance an automated funnel stage without allowing a downgrade."""
+
+    current_stage = str(current or "D").strip().upper()
+    candidate_stage = str(candidate or current_stage).strip().upper()
+    if current_stage not in SABCD_STAGES:
+        current_stage = "D"
+    if candidate_stage not in SABCD_STAGES:
+        return current_stage
+    return candidate_stage if _SABCD_RANK[candidate_stage] > _SABCD_RANK[current_stage] else current_stage
 
 
 def stage_from_payload(value: Any) -> str | None:

@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
 
-const tabs = [
-  ["source", "自动获客"],
-  ["company-seeds", "公司种子导入"],
-  ["linkedin", "LinkedIn 公网搜索"],
+const primaryTabs = [
+  ["company-seeds", "批量导入"],
+  ["linkedin", "精确找人"],
+  ["source", "条件搜索"],
   ["csv", "CSV 导入"],
-  ["manual", "手动新增"],
+  ["manual", "单个录入"],
+];
+
+const advancedTabs = [
   ["runbook", "批量处理"],
   ["status", "状态管理"],
 ];
@@ -28,16 +31,13 @@ export default function WorkbenchPortal() {
 }
 
 function Workbench() {
-  const [activeTab, setActiveTab] = useState("source");
+  const [activeTab, setActiveTab] = useState("company-seeds");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const isAdmin = user?.role === "admin";
 
   useEffect(() => {
-    api("/api/me")
-      .then((session) => setUser(session.user || null))
-      .catch(() => setUser(null));
     const handleSession = (event) => setUser(event.detail?.user || null);
     window.addEventListener("salesbot:session", handleSession);
     return () => window.removeEventListener("salesbot:session", handleSession);
@@ -61,12 +61,20 @@ function Workbench() {
 
   return (
     <>
-      <div className="tabs" role="tablist">
-        {tabs.map(([id, label]) => (
-          <button key={id} type="button" className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>
-            {label}
-          </button>
-        ))}
+      <div className="workbench-nav">
+        <div className="tabs" role="tablist">
+          {primaryTabs.map(([id, label]) => (
+            <button key={id} type="button" className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <details className="advanced-tools">
+          <summary>更多工具</summary>
+          <div className="advanced-menu">
+            {advancedTabs.map(([id, label]) => <button key={id} type="button" className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>{label}</button>)}
+          </div>
+        </details>
       </div>
       {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`}>{error || message}</div>}
       {activeTab === "source" && <SourcePanel guarded={guarded} notify={notify} />}
@@ -107,68 +115,32 @@ function SourcePanel({ guarded, notify }) {
   );
 }
 
-function CompanySeedPanel({ guarded, notify }) {
-  const [file, setFile] = useState(null);
-  const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_queue: false, auto_send: false });
-  return (
-    <div className="tab-panel active">
-      <div className="helper">
-        <strong>导入公司/店铺种子表，自动找 LinkedIn 联系人</strong>
-        <p>适合公司/店铺名称、类别、背调理由、官网/联系链接、职位这种表。系统会按公司和职位搜索公开 LinkedIn 主页，生成邮箱候选；只有 valid 工作邮箱才会入队或发送。</p>
-      </div>
-      <div className="helper subtle">
-        <strong>推荐模板列</strong>
-        <p>company_name, category, reason, website, job_titles, industry, location, phone, email。中文列名也支持：公司/店铺名称、类别、简短背调、官网/联系链接、职位、电话、邮箱。</p>
-      </div>
-      <div className="form-grid">
-        <label>选择 CSV 文件<input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
-        <Field label="默认地区" value={form.default_location} onChange={(v) => setForm({ ...form, default_location: v })} placeholder="India / United States，可选" />
-        <Field label="默认行业" value={form.default_industry} onChange={(v) => setForm({ ...form, default_industry: v })} placeholder="luxury / resale，可选" />
-        <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
-      </div>
-      <div className="option-row">
-        <Check label="找到 valid 邮箱后自动加入队列" checked={form.auto_queue} onChange={(v) => setForm({ ...form, auto_queue: v, auto_send: v ? form.auto_send : false })} />
-        <Check label="入队后自动发送邮件" checked={form.auto_send} onChange={(v) => setForm({ ...form, auto_send: v, auto_queue: v ? true : form.auto_queue })} />
-      </div>
-      <div className="panel-actions">
-        <button className="primary" type="button" onClick={() => guarded(async () => {
-          if (!file) throw new Error("请选择公司种子 CSV 文件");
-          const csv = await file.text();
-          notify("正在导入公司种子，并通过 LinkedIn 公网搜索找联系人...");
-          const response = await api("/api/import/company-seeds", {
-            method: "POST",
-            body: JSON.stringify({
-              csv,
-              default_location: form.default_location,
-              default_industry: form.default_industry,
-              per_company_limit: Number(form.per_company_limit || 5),
-              auto_queue: form.auto_queue,
-              auto_send: form.auto_send,
-            }),
-          });
-          if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
-          const result = response.result || {};
-          notify(`公司种子导入完成：公司 ${response.parsed} 个，LinkedIn 结果 ${result.results || 0} 条，入库 ${result.promoted || 0} 条，电话挂载 ${result.phone_attached || 0} 条，入队 ${result.queued || 0} 条，发送 ${result.sent || 0} 封`);
-          refreshAll();
-        })}>导入并获客</button>
-      </div>
-    </div>
-  );
-}
-
 function CompanySeedPanelV2({ guarded, notify }) {
   const [file, setFile] = useState(null);
-  const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_queue: false, auto_send: false });
-  const [batch, setBatch] = useState(null);
+  const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_prepare_drafts: true });
+  const [runs, setRuns] = useState([]);
   const [working, setWorking] = useState(false);
+
+  const loadRuns = useCallback(async () => {
+    const response = await api("/api/automation-runs");
+    setRuns(response.runs || []);
+  }, []);
+
+  useEffect(() => {
+    loadRuns().catch(() => {});
+    const timer = window.setInterval(() => {
+      if (runs.some((run) => ["queued", "running"].includes(run.status))) loadRuns().catch(() => {});
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [loadRuns, runs]);
 
   async function submitImport() {
     if (!file) throw new Error("请选择 Excel 或 CSV 文件");
     setWorking(true);
     try {
-      notify("正在解析文件并获客，页面会在完成后显示去重可发送清单...");
+      notify("正在创建后台获客任务，上传完成后可以离开页面...");
       const fileBase64 = await readFileBase64(file);
-      const response = await api("/api/import/company-seeds", {
+      const response = await api("/api/automation-runs/company-seeds", {
         method: "POST",
         body: JSON.stringify({
           filename: file.name,
@@ -176,15 +148,13 @@ function CompanySeedPanelV2({ guarded, notify }) {
           default_location: form.default_location,
           default_industry: form.default_industry,
           per_company_limit: Number(form.per_company_limit || 5),
-          auto_queue: form.auto_queue,
-          auto_send: form.auto_send,
+          auto_send: false,
+          auto_prepare_drafts: form.auto_prepare_drafts,
+          idempotency_key: window.crypto?.randomUUID?.() || `upload-${Date.now()}`,
         }),
       });
-      if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
-      setBatch(response);
-      const result = response.result || {};
-      const report = response.batch_report?.summary || {};
-      notify(`处理完成：公司 ${response.parsed || 0} 个，入库 ${result.promoted || 0} 人，去重可发送 ${report.sendable || 0} 个，需复核 ${report.review || 0} 个`);
+      notify(`任务 #${response.run?.id} 已创建，共 ${response.parsed || 0} 家公司。系统会在后台逐家处理。`);
+      await loadRuns();
       refreshAll();
     } finally {
       setWorking(false);
@@ -211,8 +181,8 @@ function CompanySeedPanelV2({ guarded, notify }) {
         <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
       </div>
       <div className="option-row">
-        <Check label="找到 valid 邮箱后自动加入队列" checked={form.auto_queue} onChange={(v) => setForm({ ...form, auto_queue: v, auto_send: v ? form.auto_send : false })} />
-        <Check label="入队后自动发邮件" checked={form.auto_send} onChange={(v) => setForm({ ...form, auto_send: v, auto_queue: v ? true : form.auto_queue })} />
+        <Check label="分配后自动准备客户画像和待审核邮件草稿" checked={form.auto_prepare_drafts} onChange={(v) => setForm({ ...form, auto_prepare_drafts: v })} />
+        <span className="safe-flow-note">导入不会自动发信。请到“核验客户”检查结果，再到“邮件触达”确认内容。</span>
       </div>
       <div className="panel-actions">
         <button className="primary" type="button" disabled={working} onClick={() => guarded(submitImport)}>
@@ -220,9 +190,60 @@ function CompanySeedPanelV2({ guarded, notify }) {
         </button>
         <button type="button" onClick={() => downloadCompanySeedTemplate()}>下载导入模板</button>
       </div>
-      <BatchImportResult batch={batch} />
+      <AutomationRuns runs={runs} guarded={guarded} notify={notify} reload={loadRuns} />
     </div>
   );
+}
+
+function AutomationRuns({ runs, guarded, notify, reload }) {
+  if (!runs.length) return null;
+
+  async function act(run, action) {
+    await api("/api/automation-runs/action", {
+      method: "POST",
+      body: JSON.stringify({ run_id: run.id, action }),
+    });
+    notify(action === "pause" ? `任务 #${run.id} 正在暂停` : `任务 #${run.id} 已继续`);
+    await reload();
+  }
+
+  return (
+    <section className="automation-runs">
+      <header><div><span className="eyebrow">Background tasks</span><h3>批量获客任务</h3></div><button type="button" onClick={() => guarded(reload)}>刷新</button></header>
+      <div className="automation-run-list">
+        {runs.slice(0, 8).map((run) => {
+          const current = Number(run.progress_current || 0);
+          const total = Number(run.progress_total || 0);
+          const percent = total ? Math.round((current / total) * 100) : 0;
+          const result = run.result || {};
+          return (
+            <article key={run.id} className={`automation-run ${run.status}`}>
+              <div className="automation-run-title"><strong>#{run.id} 公司批量获客</strong><span>{automationStatus(run.status)}</span></div>
+              <div className="automation-progress"><span style={{ width: `${percent}%` }} /></div>
+              <div className="automation-run-stats"><span>{current}/{total} 家</span><span>入库 {result.promoted || 0}</span><span>画像 {result.profiled || 0}</span><span>草稿 {result.drafted || 0}</span><span>{percent}%</span></div>
+              {run.error && <p className="error-text">{run.error}</p>}
+              <footer>
+                {run.status === "running" && <button type="button" onClick={() => guarded(() => act(run, "pause"))}>暂停</button>}
+                {["paused", "failed"].includes(run.status) && <button type="button" className="primary soft" onClick={() => guarded(() => act(run, run.status === "failed" ? "retry" : "resume"))}>{run.status === "failed" ? "重试" : "继续"}</button>}
+                {run.status === "awaiting_approval" && <><a href="#research">去核验结果</a>{Number(result.drafted || 0) > 0 && <a className="primary-link" href="#outreach">去审核邮件</a>}</>}
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function automationStatus(status) {
+  return {
+    queued: "排队中",
+    running: "处理中",
+    paused: "已暂停",
+    failed: "失败",
+    awaiting_approval: "等待核验",
+    completed: "已完成",
+  }[status] || status;
 }
 
 function BatchImportResult({ batch }) {
@@ -307,7 +328,7 @@ function formatResultCell(value) {
   return String(value);
 }
 function LinkedInSearchPanel({ guarded, notify }) {
-  const [form, setForm] = useState({ role: "", industry: "", location: "", company_keyword: "", limit: 10, auto_domain_lookup: true, auto_generate_email_candidates: true, high_confidence_verify: true });
+  const [form, setForm] = useState({ full_name: "", company_website: "", role: "", industry: "", location: "", company_keyword: "", limit: 10, auto_domain_lookup: true, auto_generate_email_candidates: true, high_confidence_verify: true });
   const [tasks, setTasks] = useState([]);
   const [taskId, setTaskId] = useState(null);
   const [results, setResults] = useState([]);
@@ -330,8 +351,10 @@ function LinkedInSearchPanel({ guarded, notify }) {
 
   return (
     <div className="tab-panel active">
-      <div className="helper"><strong>从 Google 公开索引找 LinkedIn 个人主页</strong><p>不登录 LinkedIn，不抓后台页面；只解析公开搜索结果。第一版只入候选池和客户列表，不自动发信。</p></div>
+      <div className="helper"><strong>按姓名和公司精确匹配 LinkedIn 个人主页</strong><p>姓名和公司官网用于身份核验；系统同时比较职位、国家和行业，并展示每项匹配证据。低分候选不会自动进入正式客户。</p></div>
       <div className="form-grid">
+        <Field label="联系人姓名" value={form.full_name} onChange={(v) => setForm({ ...form, full_name: v })} placeholder="例如 Carlos Rodriguez" />
+        <Field label="公司官网" value={form.company_website} onChange={(v) => setForm({ ...form, company_website: v })} placeholder="example.com" />
         <Field label="目标职位" value={form.role} onChange={(v) => setForm({ ...form, role: v })} placeholder="Brand Manager / Distributor / Founder" />
         <Field label="行业关键词" value={form.industry} onChange={(v) => setForm({ ...form, industry: v })} placeholder="luxury / watch / consumer electronics" />
         <Field label="地区" value={form.location} onChange={(v) => setForm({ ...form, location: v })} placeholder="United States / UAE / Singapore" />
@@ -345,7 +368,8 @@ function LinkedInSearchPanel({ guarded, notify }) {
       </div>
       <div className="panel-actions">
         <button className="primary" type="button" onClick={() => guarded(async () => {
-          if (!form.role && !form.industry && !form.company_keyword) throw new Error("至少填写职位、行业或公司关键词");
+          if (!form.full_name && !form.role && !form.industry && !form.company_keyword) throw new Error("至少填写姓名、职位、行业或公司关键词");
+          if (form.full_name && !form.company_website && !form.company_keyword) throw new Error("精确找人时请填写公司官网或公司名称");
           notify("正在通过 Google 公开索引搜索 LinkedIn 个人主页...");
           const response = await api("/api/source/linkedin-public-search", { method: "POST", body: JSON.stringify({ ...form, limit: Number(form.limit || 10) }) });
           if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
@@ -388,15 +412,25 @@ function SearchResults({ tasks, taskId, results, setTaskId, setResults, notify, 
 }
 
 function SearchResult({ row, onPromote }) {
+  const evidence = Array.isArray(row.match_evidence) ? row.match_evidence : [];
   return (
     <article className={`linkedin-result ${row.status || ""}`}>
-      <header><div><strong>{fullName(row) || row.raw_title || "未解析姓名"}</strong><span>{row.job_title || "职位待确认"} · {row.company_name || "公司待确认"}</span></div><b>{Number(row.lead_score || 0)}</b></header>
+      <header><div><strong>{fullName(row) || row.raw_title || "未解析姓名"}</strong><span>{row.job_title || "职位待确认"} · {row.company_name || "公司待确认"}</span></div><div className="identity-score"><b>{Number(row.match_confidence ?? row.lead_score ?? 0)}</b><span>{identityStatusLabel(row.match_status)}</span></div></header>
       <p>{row.raw_snippet || ""}</p>
+      {!!evidence.length && <div className="match-evidence">{evidence.map((item) => <span key={item.field} className={item.matched ? "matched" : "missed"}>{matchFieldLabel(item.field)} {item.matched ? "匹配" : "未匹配"}</span>)}</div>}
       <div className="result-meta"><span>{row.company_domain || "域名待补"}</span><span>{row.location || "地区待确认"}</span><span>{searchResultStatus(row.status)}</span>{row.failure_reason && <span className="danger-text">{row.failure_reason}</span>}</div>
       <div className="result-candidates">{renderInlineEmailCandidates(row.email_candidates || [])}</div>
       <footer><a href={row.linkedin_url || row.raw_url || "#"} target="_blank" rel="noreferrer">打开 LinkedIn</a>{row.promoted_contact_id ? <span>已入库 #{row.promoted_contact_id}</span> : <button type="button" onClick={onPromote}>入库</button>}</footer>
     </article>
   );
+}
+
+function identityStatusLabel(value) {
+  return { confirmed: "已确认", likely: "较可能", review: "需复核", mismatch: "不匹配" }[value] || "需复核";
+}
+
+function matchFieldLabel(value) {
+  return { name: "姓名", company: "公司", company_domain: "官网", title: "职位", location: "国家", industry: "行业" }[value] || value;
 }
 
 function CsvPanel({ guarded, notify }) {
@@ -405,8 +439,8 @@ function CsvPanel({ guarded, notify }) {
 }
 
 function ManualPanel({ guarded, notify }) {
-  const [form, setForm] = useState({ linkedin_url: "", first_name: "", last_name: "", email: "", job_title: "", company_name: "", company_domain: "" });
-  return <div className="tab-panel active"><div className="helper"><strong>临时新增一个客户</strong><p>适合测试流程，或把销售刚找到的单个客户快速录入系统。</p></div><div className="form-grid"><Field label="LinkedIn URL" value={form.linkedin_url} onChange={(v) => setForm({ ...form, linkedin_url: v })} placeholder="https://linkedin.com/in/..." /><Field label="名" value={form.first_name} onChange={(v) => setForm({ ...form, first_name: v })} placeholder="Ada" /><Field label="姓" value={form.last_name} onChange={(v) => setForm({ ...form, last_name: v })} placeholder="Lovelace" /><Field label="邮箱" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="ada@example.com" /><Field label="职位" value={form.job_title} onChange={(v) => setForm({ ...form, job_title: v })} placeholder="Founder" /><Field label="公司" value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} placeholder="Example Inc" /><Field label="公司域名" value={form.company_domain} onChange={(v) => setForm({ ...form, company_domain: v })} placeholder="example.com" /></div><div className="panel-actions"><button className="primary" type="button" onClick={() => guarded(async () => { if (!form.linkedin_url) throw new Error("LinkedIn URL 必填"); const payload = { ...form, email: form.email || null, email_status: form.email ? "valid" : "unknown", status: form.email ? "enriched" : "new", source: "manual_dashboard" }; const result = await api("/api/contacts", { method: "POST", body: JSON.stringify(payload) }); notify(`新增完成：${JSON.stringify(result)}`); refreshAll(); })}>新增联系人</button></div></div>;
+  const [form, setForm] = useState({ linkedin_url: "", first_name: "", last_name: "", email: "", job_title: "", company_name: "", company_domain: "", location: "", industry: "" });
+  return <div className="tab-panel active"><div className="helper"><strong>临时新增一个客户</strong><p>LinkedIn URL 不是必填。至少提供邮箱，或提供姓名加公司信息，后续再补 LinkedIn 和邮箱。</p></div><div className="form-grid"><Field label="LinkedIn URL（可选）" value={form.linkedin_url} onChange={(v) => setForm({ ...form, linkedin_url: v })} placeholder="https://linkedin.com/in/..." /><Field label="名" value={form.first_name} onChange={(v) => setForm({ ...form, first_name: v })} placeholder="Ada" /><Field label="姓" value={form.last_name} onChange={(v) => setForm({ ...form, last_name: v })} placeholder="Lovelace" /><Field label="邮箱" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="ada@example.com" /><Field label="职位" value={form.job_title} onChange={(v) => setForm({ ...form, job_title: v })} placeholder="Founder" /><Field label="公司" value={form.company_name} onChange={(v) => setForm({ ...form, company_name: v })} placeholder="Example Inc" /><Field label="公司官网" value={form.company_domain} onChange={(v) => setForm({ ...form, company_domain: v })} placeholder="example.com" /><Field label="国家/地区" value={form.location} onChange={(v) => setForm({ ...form, location: v })} placeholder="United Arab Emirates" /><Field label="行业" value={form.industry} onChange={(v) => setForm({ ...form, industry: v })} placeholder="Luxury retail" /></div><div className="panel-actions"><button className="primary" type="button" onClick={() => guarded(async () => { const hasCompanyIdentity = form.first_name.trim() && (form.company_name.trim() || form.company_domain.trim()); if (!form.linkedin_url.trim() && !form.email.trim() && !hasCompanyIdentity) throw new Error("请填写邮箱，或填写姓名加公司信息"); const payload = { ...form, linkedin_url: form.linkedin_url || null, email: form.email || null, email_status: form.email ? "valid" : "unknown", status: form.email ? "enriched" : "new", source: "manual_dashboard" }; const result = await api("/api/contacts", { method: "POST", body: JSON.stringify(payload) }); notify(`新增完成：${JSON.stringify(result)}`); refreshAll(); })}>新增联系人</button></div></div>;
 }
 
 function RunbookPanel({ guarded, notify, isAdmin }) {
@@ -415,10 +449,10 @@ function RunbookPanel({ guarded, notify, isAdmin }) {
     ["enrich", "富化邮箱（最多 100 条）"],
     ["social-enrich", "富化社媒（最多 100 条）"],
     ["queue", "加入队列（最多 100 条）"],
-    ["send", "发送/演练（最多 100 封）"],
+    ["send", "发送/演练（最多 100 封）", true],
     ["scheduler", "跑一轮调度", true],
   ].filter(([, , adminOnly]) => !adminOnly || isAdmin);
-  return <div className="tab-panel active"><div className="helper"><strong>按顺序跑批量流程</strong><p>一般顺序是：富化 -&gt; 加入队列 -&gt; 发送演练/真实发送。也可以点“跑一轮调度”自动执行一遍。</p></div><div className="action-grid">{actions.map(([action, label]) => <button key={action} type="button" className={action === "scheduler" ? "primary" : ""} onClick={() => guarded(async () => { const data = await api(`/api/${action}`, { method: "POST", body: JSON.stringify({ limit: 100 }) }); if (data.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: data.usage } })); notify(`${label} 完成：${JSON.stringify(data)}`); refreshAll(); })}>{label}</button>)}</div></div>;
+  return <div className="tab-panel active"><div className="helper"><strong>按顺序跑批量流程</strong><p>一般顺序是：富化 -&gt; 加入队列 -&gt; 发送演练/真实发送。批量发送前必须再次确认。</p></div><div className="action-grid">{actions.map(([action, label]) => <button key={action} type="button" className={action === "scheduler" ? "primary" : ""} onClick={() => guarded(async () => { if ((action === "send" || action === "scheduler") && !window.confirm(`${label} 可能触发真实邮件，确认继续？`)) return; const data = await api(`/api/${action}`, { method: "POST", body: JSON.stringify({ limit: 100 }) }); if (data.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: data.usage } })); notify(`${label} 完成：${JSON.stringify(data)}`); refreshAll(); })}>{label}</button>)}</div></div>;
 }
 
 function StatusPanel({ guarded, notify }) {
@@ -464,11 +498,13 @@ function csvEscape(value) {
 }
 
 function Field({ label, value, onChange, type = "text", placeholder = "" }) {
-  return <label>{label}<input type={type} value={value} min={type === "number" ? "1" : undefined} max={type === "number" ? "100" : undefined} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
+  const id = useId();
+  return <label htmlFor={id}>{label}<input id={id} name={id} type={type} value={value} min={type === "number" ? "1" : undefined} max={type === "number" ? "100" : undefined} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
 }
 
 function Check({ label, checked, onChange }) {
-  return <label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /> {label}</label>;
+  const id = useId();
+  return <label htmlFor={id}><input id={id} name={id} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /> {label}</label>;
 }
 
 function refreshAll() {

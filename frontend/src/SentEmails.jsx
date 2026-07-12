@@ -14,10 +14,27 @@ export default function SentEmailsPortal() {
 }
 
 function SentEmails() {
+  const [active, setActive] = useState(() => !document.querySelector("#sent-emails")?.classList.contains("hidden"));
   const [emails, setEmails] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => window.innerWidth <= 720 ? 10 : 20);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const pageCount = Math.max(1, Math.ceil(emails.length / pageSize));
+  const visibleEmails = emails.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => {
+    const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : 20);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+
+  useEffect(() => setPage(1), [search, pageSize]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -35,6 +52,13 @@ function SentEmails() {
   }, [search]);
 
   useEffect(() => {
+    const handleView = (event) => setActive(event.detail?.view === "history");
+    window.addEventListener("salesbot:outreach-view", handleView);
+    return () => window.removeEventListener("salesbot:outreach-view", handleView);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return undefined;
     load().catch(() => {});
     window.addEventListener("salesbot:contacts-refresh", load);
     window.addEventListener("salesbot:refresh-related", load);
@@ -42,7 +66,7 @@ function SentEmails() {
       window.removeEventListener("salesbot:contacts-refresh", load);
       window.removeEventListener("salesbot:refresh-related", load);
     };
-  }, [load]);
+  }, [active, load]);
 
   return (
     <>
@@ -53,17 +77,21 @@ function SentEmails() {
           <p>查看每封邮件从哪个邮箱发出、发给谁、标题是什么，以及后续送达、打开、回复和退信反馈。</p>
         </div>
         <div className="toolbar sent-toolbar">
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索收件人、公司、标题、发件邮箱" />
+          <input id="sent-email-search" name="sent_email_search" aria-label="搜索已发送邮件" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索收件人、公司、标题、发件邮箱" />
           <button type="button" onClick={load}>刷新</button>
         </div>
       </div>
       {error && <div className="admin-alert is-error">{error}</div>}
-      <div className="email-log-guide">
-        <span><b>送达</b> 表示 Resend 已投递到对方邮箱服务商。</span>
-        <span><b>打开</b> 表示追踪像素被加载，不等于客户已回复。</span>
-        <span><b>回复</b> 会回到“回复至”邮箱，同时需要 Webhook 回流才能自动计数。</span>
-        <span><b>退信/退订</b> 客户不会继续显示发送按钮。</span>
-      </div>
+      <details className="email-log-guide">
+        <summary>邮件状态说明</summary>
+        <div>
+          <span><b>已发送</b> 表示 SMTP/邮件服务商已接受发送请求。</span>
+          <span><b>送达</b> 仅在系统收到服务商投递回执后显示。</span>
+          <span><b>打开</b> 表示追踪像素被加载，不等于客户已回复。</span>
+          <span><b>回复</b> 会进入“回复至”地址，并通过收件 Webhook 关联客户。</span>
+          <span><b>退信/退订</b> 客户不会继续显示发送按钮。</span>
+        </div>
+      </details>
       <div className="table-shell">
         <table className="sent-email-table">
           <thead>
@@ -82,14 +110,15 @@ function SentEmails() {
           <tbody>
             {loading && !emails.length ? (
               <tr><td colSpan="9"><div className="empty-state">正在加载已发送邮件...</div></td></tr>
-            ) : emails.length ? (
-              emails.map((email) => <SentEmailRow key={email.id} email={email} />)
+            ) : visibleEmails.length ? (
+              visibleEmails.map((email) => <SentEmailRow key={email.id} email={email} />)
             ) : (
-              <tr><td colSpan="9"><div className="empty-state"><strong>暂无已发送邮件</strong><div>发送邮件后会自动出现在这里。</div></div></td></tr>
+              <tr><td colSpan="9"><div className="empty-state"><strong>暂无已发送邮件</strong><div>先到客户页领取并核验客户，再打开详情生成邮件。</div><a className="empty-state-action" href="#research">去核验客户</a></div></td></tr>
             )}
           </tbody>
         </table>
       </div>
+      {emails.length > pageSize && <div className="table-pagination"><span>共 {emails.length} 封，每页 {pageSize} 封</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
   );
 }

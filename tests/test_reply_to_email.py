@@ -13,6 +13,31 @@ class RecordingHttp:
         return {"id": "email_123"}
 
 
+class RecordingSmtp:
+    def __init__(self):
+        self.login_args = None
+        self.sent = None
+        self.starttls_called = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def ehlo(self):
+        return None
+
+    def starttls(self, context=None):
+        self.starttls_called = True
+
+    def login(self, username, password):
+        self.login_args = (username, password)
+
+    def send_message(self, message, *, from_addr, to_addrs):
+        self.sent = {"message": message, "from_addr": from_addr, "to_addrs": to_addrs}
+
+
 def test_resend_mail_client_sets_reply_to():
     http = RecordingHttp()
     sender = {"name": "vertuMay", "email": "vertuMay@mail.frelys.xyz", "dry_run": False}
@@ -22,6 +47,70 @@ def test_resend_mail_client_sets_reply_to():
 
     assert message_id == "email_123"
     assert http.calls[0]["json_body"]["reply_to"] == ["sales@vertu.cn"]
+
+
+def test_resend_mail_client_sets_idempotency_key():
+    http = RecordingHttp()
+    sender = {"name": "vertuMay", "email": "vertuMay@mail.frelys.xyz", "dry_run": False}
+    client = MailClient("resend", "key", sender, http=http)
+
+    client.send("lead@example.com", "Subject", "<p>Hello</p>", "Hello", idempotency_key="contact-42-step-1")
+
+    assert http.calls[0]["headers"]["Idempotency-Key"] == "contact-42-step-1"
+
+
+def test_smtp_mail_client_sends_multipart_with_signed_reply_to():
+    smtp = RecordingSmtp()
+    sender = {"name": "Viki", "email": "partnerships@outreach.vertu.test", "dry_run": False}
+    client = MailClient(
+        "smtp",
+        "",
+        sender,
+        smtp_config={
+            "host": "smtp.example.test",
+            "port": 465,
+            "username": "smtp-user@example.test",
+            "password": "client-password",
+            "security": "ssl",
+            "envelope_from": "smtp-user@example.test",
+        },
+        smtp_factory=lambda: smtp,
+    )
+
+    message_id = client.send(
+        "lead@example.com",
+        "Subject",
+        "<p>Hello</p>",
+        "Hello",
+        metadata={"contact_id": 42, "unknown": "ignored"},
+        reply_to="reply+signed@reply.example.test",
+    )
+
+    message = smtp.sent["message"]
+    assert message_id == message["Message-ID"]
+    assert message["From"] == "Viki <partnerships@outreach.vertu.test>"
+    assert message["Reply-To"] == "reply+signed@reply.example.test"
+    assert message["X-Salesbot-Contact-ID"] == "42"
+    assert message["X-Salesbot-Unknown"] is None
+    assert message.is_multipart()
+    assert smtp.login_args == ("smtp-user@example.test", "client-password")
+    assert smtp.sent["from_addr"] == "smtp-user@example.test"
+    assert smtp.sent["to_addrs"] == ["lead@example.com"]
+
+
+def test_smtp_mail_client_supports_starttls():
+    smtp = RecordingSmtp()
+    client = MailClient(
+        "smtp",
+        "",
+        {"name": "Sales", "email": "sales@example.test", "dry_run": False},
+        smtp_config={"host": "smtp.example.test", "port": 587, "username": "sales@example.test", "password": "pw", "security": "starttls"},
+        smtp_factory=lambda: smtp,
+    )
+
+    client.send("lead@example.com", "Subject", "<p>Hello</p>", "Hello")
+
+    assert smtp.starttls_called is True
 
 
 def test_reply_to_email_rejects_missing_or_malformed_user_value():

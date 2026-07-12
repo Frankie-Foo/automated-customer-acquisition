@@ -26,25 +26,15 @@ const sabcdStages = [
   ["S", "S 签约建店", "已签约或建店，进入持续维护和画像沉淀"],
 ];
 
-const agentSteps = [
-  ["市场情报员", "产品、国家、客户类型", "市场方向、关键词、渠道"],
-  ["客户搜索员", "关键词、渠道、公司种子", "公司名单、联系人、官网来源"],
-  ["公司背调员", "官网、产品页、社媒资料", "客户画像、匹配度、风险点"],
-  ["开发信助理", "客户画像、产品卖点", "首封开发信、跟进邮件"],
-  ["跟进提醒员", "客户阶段、邮件反馈", "跟进时间、下一步动作"],
-  ["主管周报员", "客户表、跟进表、邮件回流", "周报、重点客户提醒"],
-];
-
-export default function DashboardViewsPortal() {
+export default function DashboardViewsPortal({ activePage = "dashboard" }) {
   const [targets, setTargets] = useState({});
   const [readinessTarget, setReadinessTarget] = useState(null);
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => window.SALESBOT_SESSION?.user || null);
 
   useEffect(() => {
     document.body.classList.add("react-dashboard-enabled");
     setTargets({
       dashboard: document.querySelector("#react-dashboard-root"),
-      agentMap: document.querySelector("#react-agent-map-root"),
       quickstart: document.querySelector("#react-quickstart-root"),
       ops: document.querySelector("#react-ops-root"),
       followups: document.querySelector("#react-followups-root"),
@@ -57,38 +47,49 @@ export default function DashboardViewsPortal() {
   useEffect(() => {
     const handleSession = (event) => setUser(event.detail?.user || null);
     window.addEventListener("salesbot:session", handleSession);
-    api("/api/me").then((session) => setUser(session.user)).catch(() => setUser(null));
     return () => window.removeEventListener("salesbot:session", handleSession);
   }, []);
 
   return (
     <>
-      <DashboardViews targets={targets} />
+      <DashboardViews targets={targets} activePage={activePage} />
       {readinessTarget && user?.role === "admin" && createPortal(<ReadinessPanel />, readinessTarget)}
     </>
   );
 }
 
-function DashboardViews({ targets }) {
-  const [user, setUser] = useState(null);
+function DashboardViews({ targets, activePage }) {
+  const [user, setUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const [summary, setSummary] = useState(null);
   const [ops, setOps] = useState(null);
   const [lifecycle, setLifecycle] = useState(null);
   const [contacts, setContacts] = useState([]);
+  const [publicContacts, setPublicContacts] = useState([]);
 
   const load = useCallback(async () => {
     if (!user) return;
-    const [summaryData, opsData, lifecycleData, contactsData] = await Promise.all([
-      api("/api/summary"),
-      api("/api/ops-report"),
-      api("/api/lifecycle"),
-      api("/api/contacts?limit=100"),
-    ]);
-    setSummary(summaryData);
-    setOps(opsData);
-    setLifecycle(lifecycleData);
-    setContacts(contactsData.contacts || []);
-  }, [user]);
+    if (activePage === "dashboard") {
+      const [summaryData, contactsData, publicData] = await Promise.all([
+        api("/api/summary"),
+        api(user.role === "admin" ? "/api/contacts?limit=100" : "/api/contacts?limit=100&filter=private_pool"),
+        user.role === "admin" ? Promise.resolve({ contacts: [] }) : api("/api/contacts?limit=100&filter=public_pool"),
+      ]);
+      setSummary(summaryData);
+      setContacts(contactsData.contacts || []);
+      setPublicContacts(publicData.contacts || []);
+      return;
+    }
+    if (activePage === "followup") {
+      const [lifecycleData, contactsData] = await Promise.all([
+        api("/api/lifecycle"),
+        api(user.role === "admin" ? "/api/contacts?limit=100" : "/api/contacts?limit=100&filter=private_pool"),
+      ]);
+      setLifecycle(lifecycleData);
+      setContacts(contactsData.contacts || []);
+      return;
+    }
+    if (activePage === "report") setOps(await api("/api/ops-report"));
+  }, [activePage, user]);
 
   useEffect(() => {
     const session = (event) => setUser(event.detail?.user || null);
@@ -104,10 +105,6 @@ function DashboardViews({ targets }) {
   }, [load]);
 
   useEffect(() => {
-    api("/api/me").then((session) => setUser(session.user)).catch(() => setUser(null));
-  }, []);
-
-  useEffect(() => {
     load().catch(() => {});
   }, [load]);
 
@@ -115,12 +112,11 @@ function DashboardViews({ targets }) {
 
   return (
     <>
-      {targets.dashboard && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
-      {targets.agentMap && createPortal(<AgentMap />, targets.agentMap)}
-      {targets.quickstart && createPortal(<><QuickStart user={user} /><TrainingGuide user={user} /></>, targets.quickstart)}
-      {targets.ops && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
-      {targets.followups && createPortal(<Followups contacts={contacts} />, targets.followups)}
-      {targets.lifecycle && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
+      {targets.dashboard && activePage === "dashboard" && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
+      {targets.quickstart && activePage === "dashboard" && createPortal(<QuickStart user={user} contacts={contacts} publicContacts={publicContacts} />, targets.quickstart)}
+      {targets.ops && activePage === "report" && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
+      {targets.followups && activePage === "followup" && createPortal(<Followups contacts={contacts} />, targets.followups)}
+      {targets.lifecycle && activePage === "followup" && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
     </>
   );
 }
@@ -149,61 +145,34 @@ function Metrics({ summary }) {
   );
 }
 
-function AgentMap() {
-  return (
-    <section className="agent-map">
-      <div className="followup-head">
-        <div>
-          <span className="eyebrow">AI workforce</span>
-          <h2>6 个 AI 员工协同获客</h2>
-        </div>
-        <p>每个模块只负责一件事，销售按页面顺序推进，管理员看结果、成本和风险。</p>
-      </div>
-      <div className="agent-grid">
-        {agentSteps.map(([name, input, output], index) => (
-          <article className="agent-card" key={name}>
-            <b>{index + 1}</b>
-            <strong>{name}</strong>
-            <span>输入：{input}</span>
-            <em>输出：{output}</em>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function QuickStart({ user }) {
+function QuickStart({ user, contacts, publicContacts }) {
   const isAdmin = user?.role === "admin";
   const items = isAdmin
     ? [
-        ["先看上线状态", "确认数据库、发信域名、真实发送、Webhook、配额和 API 都正常。", "#admin", "去控制台"],
-        ["看团队数据", "检查每个销售今天导入、找到邮箱、发送和退信情况。", "#report", "看运营周报"],
-        ["检查数据源", "看 Prospeo、Hunter、搜索源的调用、命中、valid 和错误率。", "#report", "看 Provider"],
-        ["放量前抽查", "抽查客户画像、邮件内容和退信风险，再扩大给更多销售。", "#research", "抽查客户"],
+        { title: "系统状态", href: "#admin", hint: "检查生产配置与异常", action: "检查" },
+        { title: "账号与配额", href: "#admin", hint: "管理销售账号和每日额度", action: "管理" },
+        { title: "团队数据", href: "#report", hint: "查看获客、发送和回复表现", action: "查看" },
+        { title: "邮件抽查", href: "#outreach", hint: "抽查发送内容与回流", action: "抽查" },
       ]
-    : [
-        ["看今日待办", "先处理已打开未回复、已回复、退信客户，不要让客户卡住。", "#followup", "去跟进"],
-        ["导入/领取客户", "导入公司表或从公共池领取客户，系统会进入你的私人客户池。", "#source", "去获客"],
-        ["确认邮箱和画像", "只对 valid 工作邮箱发信，发送前先看客户画像和邮件草稿。", "#research", "看客户"],
-        ["更新 SABCD", "每次沟通后推进 D/C/B/A/S，系统会沉淀客户画像和下一步建议。", "#followup", "更新阶段"],
-      ];
+    : salesActions(contacts, publicContacts);
   return (
-    <section className="quickstart">
+    <section className="quickstart action-center">
       <div className="quickstart-head">
         <div>
-          <span className="eyebrow">{isAdmin ? "Admin workflow" : "Daily workflow"}</span>
-          <h2>{isAdmin ? "管理员上线工作台" : "销售今日操作路径"}</h2>
+          <span className="eyebrow">{isAdmin ? "ADMIN" : "TODAY"}</span>
+          <h2>{isAdmin ? "管理入口" : "下一步做什么"}</h2>
+          {!isAdmin && <p>按优先级处理客户。完成当前动作后，系统会自动给出下一步。</p>}
         </div>
-        <p>{isAdmin ? "先保证账号、配额、发件和数据回流可控，再放量给团队使用。" : "照着四步走，从找客户到发邮件再到跟进闭环。"}</p>
       </div>
       <div className="quickstart-grid">
-        {items.map(([title, text, href, cta], index) => (
-          <a className="quickstart-card" href={href} key={title}>
+        {items.map((item, index) => (
+          <a className={`quickstart-card ${item.priority ? "recommended" : ""}`} href={item.href} key={item.title}>
             <b>{index + 1}</b>
-            <strong>{title}</strong>
-            <span>{text}</span>
-            <em>{cta}</em>
+            <span className="quickstart-copy">
+              <strong>{item.title}</strong>
+              <span>{item.hint}</span>
+            </span>
+            <em>{item.count != null ? `${item.count} 个` : item.action}</em>
           </a>
         ))}
       </div>
@@ -211,40 +180,22 @@ function QuickStart({ user }) {
   );
 }
 
-function TrainingGuide({ user }) {
-  const isAdmin = user?.role === "admin";
-  const cards = isAdmin
-    ? [
-        ["账号", "销售账号只看自己的客户、邮件和配额；管理员看团队和生产状态。"],
-        ["配额", "上线默认按人限额，先小批量真实发送，再根据退信率和回复率放量。"],
-        ["回流", "Resend Webhook 开启后，送达、打开、退信、退订会自动回到邮件中心。"],
-        ["质量", "退信或退订客户不再继续发送，优先看 valid 工作邮箱和客户画像。"],
-      ]
-    : [
-        ["1. 看待办", "先处理已打开未回复、已回复、退信需处理，避免客户被漏跟。"],
-        ["2. 找客户", "从公共池领取或导入客户，自动获客来的客户会进入你的私人池。"],
-        ["3. 发邮件", "只给有邮箱且非退信客户发送；发送前看客户画像和邮件正文。"],
-        ["4. 做跟进", "有进展就更新 D/C/B/A/S；没进展按系统提醒进入二次或三次触达。"],
-      ];
-  return (
-    <section className="training-guide">
-      <div className="followup-head">
-        <div>
-          <span className="eyebrow">{isAdmin ? "Launch checklist" : "Sales playbook"}</span>
-          <h2>{isAdmin ? "上线前必须盯住的 4 件事" : "销售新手使用说明"}</h2>
-        </div>
-        <p>{isAdmin ? "先保证权限、配额、回流和数据质量可控。" : "销售每天照这个顺序操作，就能完成获客、触达和跟进闭环。"}</p>
-      </div>
-      <div className="training-grid">
-        {cards.map(([title, text]) => (
-          <article className="training-card" key={title}>
-            <strong>{title}</strong>
-            <span>{text}</span>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
+function salesActions(contacts, publicContacts) {
+  const own = (contacts || []).filter((contact) => contact.pool_type !== "public");
+  const followups = own.filter((contact) => contact.status === "replied"
+    || Number(contact.replied_count || 0) > 0
+    || Number(contact.opened_count || 0) > 0
+    || contact.status === "bounced");
+  const needsEmail = own.filter((contact) => !contact.email || contact.email_status !== "valid");
+  const ready = own.filter((contact) => contact.email_status === "valid"
+    && ["new", "enriched", "queued"].includes(contact.status || "new"));
+  const actions = [
+    { title: "先处理客户反馈", href: "#followup", hint: "回复、已打开未回复和退信", count: followups.length, rank: followups.length ? 0 : 4 },
+    { title: "领取公共客户", href: "#research", hint: "查看资料后领取到私人客户池", count: publicContacts.length, rank: publicContacts.length ? 1 : 5 },
+    { title: "补齐客户资料", href: "#research", hint: "核验身份、邮箱和客户画像", count: needsEmail.length, rank: needsEmail.length ? 2 : 6 },
+    { title: "准备个性化邮件", href: "#research", hint: "选择客户，检查草稿后再发送", count: ready.length, rank: ready.length ? 3 : 7 },
+  ].sort((left, right) => left.rank - right.rank);
+  return actions.map((item, index) => ({ ...item, priority: index === 0 && item.count > 0 }));
 }
 
 function ReadinessPanel() {
@@ -280,6 +231,8 @@ function ReadinessPanel() {
 function OpsReport({ report, user }) {
   const totals = report.totals || {};
   const events = report.events || {};
+  const funnel = report.funnel || {};
+  const blockers = report.blockers || {};
   const isTeam = (report.scope || "") === "team" || user.role === "admin";
   return (
     <section className="ops-report" id="ops-report">
@@ -300,6 +253,8 @@ function OpsReport({ report, user }) {
         <OpsCard label="今日退信" value={(totals.bounced || 0) + (events.bounced_events_today || 0)} />
         <OpsCard label="今日需处理" value={(events.opened_no_reply || 0) + (totals.replied || 0) + (totals.bounced || 0)} />
       </div>
+      <ConversionFunnel funnel={funnel} />
+      <PipelineBlockers blockers={blockers} />
       <div className="ops-grid">
         <section>
           <h3>{isTeam ? "销售配额日报" : "我的配额"}</h3>
@@ -316,6 +271,53 @@ function OpsReport({ report, user }) {
       </div>
     </section>
   );
+}
+
+function ConversionFunnel({ funnel }) {
+  const stages = [
+    ["线索", "leads"],
+    ["已分配", "private_pool"],
+    ["有效邮箱", "valid_email"],
+    ["客户画像", "profiled"],
+    ["邮件草稿", "drafted"],
+    ["已审核", "approved"],
+    ["已发送", "sent"],
+    ["已打开", "opened"],
+    ["已回复", "replied"],
+    ["B/A/S", "qualified"],
+    ["已签约", "signed"],
+  ];
+  const base = Math.max(1, Number(funnel.leads || 0));
+  return <section className="conversion-funnel">
+    <div className="section-title-row"><div><span className="eyebrow">Conversion funnel</span><h3>客户转化漏斗</h3></div><p>从获客到签约的累计客户数</p></div>
+    <div className="funnel-steps">{stages.map(([label, key], index) => {
+      const value = Number(funnel[key] || 0);
+      const previous = index ? Number(funnel[stages[index - 1][1]] || 0) : value;
+      const rate = index && previous > 0 ? Math.round((value / previous) * 100) : null;
+      const rateLabel = !index
+        ? "全部线索"
+        : rate === null
+          ? "暂无上一步基线"
+          : rate > 100
+            ? "历史数据未完整回填"
+            : `上一步转化 ${rate}%`;
+      return <div className="funnel-step" key={key}><div><strong>{label}</strong><b>{value}</b></div><span><i style={{ width: `${Math.max(4, Math.round((value / base) * 100))}%` }} /></span><small>{rateLabel}</small></div>;
+    })}</div>
+  </section>;
+}
+
+function PipelineBlockers({ blockers }) {
+  const items = [
+    ["公共池待分配", "public_unassigned", "#research"],
+    ["私人池缺邮箱", "missing_email", "#research"],
+    ["缺客户画像", "missing_profile", "#research"],
+    ["缺邮件草稿", "missing_draft", "#outreach"],
+    ["草稿待审核", "awaiting_approval", "#outreach"],
+    ["审核后待发送", "approved_not_sent", "#outreach"],
+    ["打开未回复", "opened_no_reply", "#followup"],
+    ["退信", "bounced", "#followup"],
+  ];
+  return <section className="pipeline-blockers"><div><strong>当前阻塞</strong><span>优先处理数量较高的环节</span></div><nav>{items.map(([label, key, href]) => <a href={href} key={key} className={Number(blockers[key] || 0) ? "has-items" : ""}><b>{Number(blockers[key] || 0)}</b><span>{label}</span></a>)}</nav></section>;
 }
 
 function ProviderStats({ rows }) {
@@ -375,11 +377,15 @@ function Followups({ contacts }) {
 }
 
 function FollowupCard({ title, hint, tone, contacts }) {
+  function openContact(contactId) {
+    window.location.hash = "outreach";
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId } })), 0);
+  }
   return (
     <article className={`followup-card ${tone}`}>
       <div className="followup-title"><div><strong>{title}</strong><span>{hint}</span></div><b>{contacts.length}</b></div>
       <ul>
-        {contacts.slice(0, 3).map((contact) => <li key={contact.id}><div><strong>{fullName(contact)}</strong><span>{contact.company_name || contact.company_domain || ""}</span></div><em>{followupMeta(contact)}</em></li>)}
+        {contacts.slice(0, 3).map((contact) => <li key={contact.id}><button type="button" onClick={() => openContact(contact.id)}><div><strong>{fullName(contact)}</strong><span>{contact.company_name || contact.company_domain || ""}</span></div><em>{followupMeta(contact)}</em></button></li>)}
         {!contacts.length && <li className="empty-task">当前没有需要处理的客户</li>}
       </ul>
     </article>
@@ -398,7 +404,7 @@ function Lifecycle({ lifecycle, contacts }) {
       <div className="sabcd-grid">
         {sabcdStages.map(([key, label, hint]) => {
           const examples = contacts.filter((c) => (c.sabcd_stage || "D") === key).slice(0, 2);
-          return <article key={key} className={`sabcd-card sabcd-${key.toLowerCase()}`}><div><strong>{label}</strong><span>{hint}</span></div><b>{sabcd[key] || 0}</b><small>{examples.length ? examples.map((c) => <em key={c.id}>{fullName(c)}</em>) : <em>暂无客户</em>}</small></article>;
+          return <a href="#research" onClick={() => window.dispatchEvent(new CustomEvent("salesbot:contact-filter", { detail: { filter: `sabcd_${key.toLowerCase()}` } }))} key={key} className={`sabcd-card sabcd-${key.toLowerCase()}`}><div><strong>{label}</strong><span>{hint}</span></div><b>{sabcd[key] || 0}</b><small>{examples.length ? examples.map((c) => <em key={c.id}>{fullName(c)}</em>) : <em>暂无客户</em>}</small></a>;
         })}
       </div>
       <div className="lifecycle-grid">
@@ -429,6 +435,7 @@ function eventLabel(type) {
 
 function readinessLabel(name) {
   return {
+    mail_transport: "邮件发送通道",
     database: "数据库连接",
     lead_source: "自动获客 API",
     enrichment: "邮箱富化 API",
@@ -436,6 +443,8 @@ function readinessLabel(name) {
     sender_email: "发件邮箱域名",
     dry_run: "真实发送开关",
     public_url: "公网访问地址",
+    tracking_security: "追踪链接签名",
+    reply_ingestion: "回复收件回流",
     admin_password: "管理员密码",
     social_enrichment: "社媒富化 API",
     llm: "AI 文案模型",

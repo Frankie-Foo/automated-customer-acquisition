@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import mimetypes
 import urllib.parse
@@ -18,9 +19,11 @@ from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
 from .linkedin_public_search import LinkedInPublicSearchService
+from .outbound_identity import parse_signed_reply_route
 from .quotas import QuotaService
+from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
-from .services import EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .services import AccountResearchService, AutomationRunService, EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 from .vps_sso import VpsSsoError, VpsSsoService
 
 
@@ -60,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo.db.migrate()
         repo.ensure_default_admin(*default_admin_credentials())
+        automation = AutomationRunService(config, repo)
+        for run in repo.recover_automation_runs():
+            automation.start(int(run["id"]), user=repo.get_active_user(int(run["owner_user_id"])))
     except Exception as exc:
         print(f"Warning: database initialization skipped: {exc}")
     handler = make_handler(config, repo)
@@ -82,6 +88,11 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/live":
                 self._send_json({"ok": True, "data": {"status": "live"}})
+                return
+            if parsed.path == "/favicon.ico":
+                self.send_response(204)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
                 return
             if parsed.path.startswith("/static/"):
                 try:
@@ -126,17 +137,42 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/unsubscribe":
                 qs = parse_qs(parsed.query)
-                contact_id = int(qs.get("contact_id", ["0"])[0])
-                if contact_id:
-                    repo.record_event(contact_id, "unsubscribed", {"source": "unsubscribe_link"})
+                source = "signed_unsubscribe_link"
+                try:
+                    token = qs.get("token", [""])[0]
+                    if token:
+                        verified = verify_tracking_token(token, "unsubscribe", _tracking_secret(config))
+                        contact_id = int(verified["contact_id"])
+                    else:
+                        contact_id = int(qs.get("contact_id", ["0"])[0])
+                        if not repo.allow_legacy_tracking(contact_id):
+                            raise ValueError("invalid_tracking_token")
+                        source = "legacy_unsubscribe_link"
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=400)
+                    return
+                repo.record_event(contact_id, "unsubscribed", {"source": source})
                 self._send_html("<!doctype html><title>Unsubscribed</title><p>You have been unsubscribed.</p>")
                 return
             if parsed.path == "/track/open":
                 qs = parse_qs(parsed.query)
-                contact_id = int(qs.get("contact_id", ["0"])[0])
-                step = int(qs.get("step", ["0"])[0])
-                if contact_id:
-                    repo.record_event(contact_id, "opened", {"source": "tracking_pixel", "step": step})
+                source = "signed_tracking_pixel"
+                try:
+                    token = qs.get("token", [""])[0]
+                    if token:
+                        verified = verify_tracking_token(token, "open", _tracking_secret(config))
+                        contact_id = int(verified["contact_id"])
+                        step = int(verified.get("step") or 0)
+                    else:
+                        contact_id = int(qs.get("contact_id", ["0"])[0])
+                        step = int(qs.get("step", ["0"])[0])
+                        if not repo.allow_legacy_tracking(contact_id, step):
+                            raise ValueError("invalid_tracking_token")
+                        source = "legacy_tracking_pixel"
+                except ValueError:
+                    self._send_pixel()
+                    return
+                repo.record_event(contact_id, "opened", {"source": source, "step": step})
                 self._send_pixel()
                 return
             if parsed.path == "/api/contacts":
@@ -162,6 +198,9 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/search-tasks":
                 self._json(lambda: {"tasks": repo.list_lead_search_tasks(user=self._current_user())})
                 return
+            if parsed.path == "/api/automation-runs":
+                self._json(lambda: {"runs": repo.list_automation_runs(user=self._current_user())})
+                return
             if parsed.path == "/api/search-results":
                 qs = parse_qs(parsed.query)
                 task_id = int(qs.get("task_id", ["0"])[0])
@@ -181,6 +220,12 @@ def make_handler(config, repo: Repository):
                     SenderPoolManager(config, repo).sync_accounts()
                     return {"senders": repo.list_sender_accounts()}
                 self._json(senders)
+                return
+            if parsed.path == "/api/admin/region-rules":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: {"rules": repo.region_assignment_rules()})
                 return
             if parsed.path == "/api/admin/audit-logs":
                 admin = self._require_admin()
@@ -208,6 +253,14 @@ def make_handler(config, repo: Repository):
                 payload = self._read_json()
             except ValueError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=413 if "too_large" in str(exc) else 400)
+                return
+            if parsed.path == "/api/logout":
+                token = parse_session_cookie(self.headers.get("Cookie"))
+                repo.delete_session(token)
+                self._send_json(
+                    {"ok": True, "data": {"ok": True}},
+                    headers={"Set-Cookie": clear_session_cookie(secure=secure_cookie, same_site=sso_cookie_same_site)},
+                )
                 return
             if parsed.path == "/api/login":
                 if not self._require_database():
@@ -316,6 +369,8 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/import/company-seeds":
+                if payload.get("auto_send") and not self._require_admin():
+                    return
                 def import_company_seeds() -> dict[str, Any]:
                     user = self._current_user()
                     if payload.get("file_base64"):
@@ -370,6 +425,60 @@ def make_handler(config, repo: Repository):
                     },
                 )
                 return
+            if parsed.path == "/api/automation-runs/company-seeds":
+                def create_company_seed_run() -> dict[str, Any]:
+                    user = self._current_user()
+                    if payload.get("file_base64"):
+                        seeds = parse_company_seed_upload(
+                            filename=payload.get("filename") or "upload.xlsx",
+                            content_base64=payload.get("file_base64") or "",
+                            default_location=payload.get("default_location") or "",
+                            default_industry=payload.get("default_industry") or "",
+                        )
+                    else:
+                        seeds = parse_company_seed_csv(
+                            payload.get("csv", ""),
+                            default_location=payload.get("default_location") or "",
+                            default_industry=payload.get("default_industry") or "",
+                        )
+                    key = str(payload.get("idempotency_key") or f"upload-{user['id']}-{datetime.now().timestamp()}")[:200]
+                    run = AutomationRunService(config, repo).create_company_seed_run(
+                        seeds,
+                        per_company_limit=max(1, int(payload.get("per_company_limit") or 5)),
+                        user=user,
+                        idempotency_key=key,
+                        auto_prepare_drafts=bool(payload.get("auto_prepare_drafts", True)),
+                    )
+                    return {"run": run, "parsed": len(seeds)}
+                self._json_audit(
+                    "create_company_seed_automation",
+                    create_company_seed_run,
+                    target_type="automation_run",
+                    target_id=lambda data: data.get("run", {}).get("id"),
+                    summary="创建批量获客任务",
+                    metadata=lambda data: {"parsed": data.get("parsed"), "run_id": data.get("run", {}).get("id")},
+                )
+                return
+            if parsed.path == "/api/automation-runs/action":
+                def automation_action() -> dict[str, Any]:
+                    user = self._current_user()
+                    run_id = int(payload.get("run_id") or 0)
+                    action = str(payload.get("action") or "")
+                    service = AutomationRunService(config, repo)
+                    if action == "pause":
+                        return {"run": service.pause(run_id, user=user)}
+                    if action in {"resume", "retry"}:
+                        return {"run": service.resume(run_id, user=user)}
+                    raise ValueError("Unsupported automation action")
+                self._json_audit(
+                    "automation_run_action",
+                    automation_action,
+                    target_type="automation_run",
+                    target_id=payload.get("run_id"),
+                    summary="暂停或恢复批量获客任务",
+                    metadata={"action": payload.get("action")},
+                )
+                return
             if parsed.path == "/api/source":
                 criteria = {
                     "company_website": normalize_company_website(payload.get("company_website", "")),
@@ -402,6 +511,8 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/source/linkedin-public-search":
                 criteria = {
+                    "full_name": payload.get("full_name", "") or payload.get("person_name", ""),
+                    "company_website": normalize_company_website(payload.get("company_website", "")),
                     "role": payload.get("role", "") or payload.get("title", ""),
                     "title": payload.get("role", "") or payload.get("title", ""),
                     "industry": payload.get("industry", ""),
@@ -545,6 +656,9 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/send":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 def send_with_quota() -> dict[str, Any]:
                     user = self._current_user()
                     requested = int(payload.get("limit", 25))
@@ -564,6 +678,9 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/send-one":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 def send_one_with_quota() -> dict[str, Any]:
                     user = self._current_user()
                     snapshot = QuotaService(config, repo).snapshot(user)
@@ -647,6 +764,22 @@ def make_handler(config, repo: Repository):
                     summary="生成客户画像",
                 )
                 return
+            if parsed.path == "/api/contact-research":
+                user = self._current_user()
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
+                self._json_audit(
+                    "contact_research",
+                    lambda: {"research": AccountResearchService(config, repo).research(
+                        int(payload["contact_id"]),
+                        user=user,
+                        force=_truthy(payload.get("force")),
+                    )},
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="调研客户与实时新闻",
+                )
+                return
             if parsed.path == "/api/lifecycle-activity":
                 def activity() -> dict[str, Any]:
                     if not self._has_private_contact_access(int(payload["contact_id"])):
@@ -700,6 +833,24 @@ def make_handler(config, repo: Repository):
                     user=self._current_user(),
                 ), target_type="contact", target_id=payload.get("contact_id"), summary="生成邮件草稿", metadata={"mode": payload.get("mode") or "ai"})
                 return
+            if parsed.path == "/api/email-draft/approve":
+                def approve_email_draft() -> dict[str, Any]:
+                    user = self._current_user()
+                    contact_id = int(payload["contact_id"])
+                    if not repo.get_private_contact_for_user(contact_id, user):
+                        raise RuntimeError("Contact not found")
+                    draft = repo.approve_latest_email_draft(contact_id, user_id=int(user["id"]))
+                    if not draft:
+                        raise RuntimeError("No draft is available for approval")
+                    return {"draft": draft}
+                self._json_audit(
+                    "approve_email_draft",
+                    approve_email_draft,
+                    target_type="contact",
+                    target_id=payload.get("contact_id"),
+                    summary="审核并锁定邮件草稿",
+                )
+                return
             if parsed.path == "/api/send-custom":
                 def send_custom() -> dict[str, Any]:
                     user = self._current_user()
@@ -739,6 +890,7 @@ def make_handler(config, repo: Repository):
                         daily_source_limit=int(payload.get("daily_source_limit") or 100),
                         daily_send_limit=int(payload.get("daily_send_limit") or 200),
                         reply_to_email=payload.get("reply_to_email"),
+                        sender_alias_localpart=payload.get("sender_alias_localpart"),
                         must_change_password=True,
                     )
                 self._json_audit(
@@ -747,6 +899,29 @@ def make_handler(config, repo: Repository):
                     target_type="sales_user",
                     summary="管理员创建销售账号",
                     metadata=lambda data: {"user_id": data.get("id"), "username": data.get("username"), "role": data.get("role")},
+                )
+                return
+            if parsed.path == "/api/admin/region-rules":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def save_region_rules() -> dict[str, Any]:
+                    raw_rules = payload.get("rules") or []
+                    if not isinstance(raw_rules, list):
+                        raise ValueError("rules must be a list")
+                    rules: list[dict[str, Any]] = []
+                    for item in raw_rules:
+                        owner = str((item or {}).get("owner") or "").strip()
+                        matches = [str(value).strip().lower() for value in ((item or {}).get("match") or []) if str(value).strip()]
+                        if owner and matches:
+                            rules.append({"owner": owner, "match": list(dict.fromkeys(matches))})
+                    saved = repo.set_app_setting("customer_pool.region_assignments", rules, user_id=int(admin["id"]))
+                    return {"rules": saved}
+                self._json_audit(
+                    "update_region_assignment_rules",
+                    save_region_rules,
+                    summary="更新客户地区分配规则",
+                    metadata=lambda data: {"rule_count": len(data.get("rules") or [])},
                 )
                 return
             if parsed.path == "/api/admin/user":
@@ -764,6 +939,7 @@ def make_handler(config, repo: Repository):
                         daily_source_limit=int(payload["daily_source_limit"]) if payload.get("daily_source_limit") is not None else None,
                         daily_send_limit=int(payload["daily_send_limit"]) if payload.get("daily_send_limit") is not None else None,
                         reply_to_email=payload.get("reply_to_email"),
+                        sender_alias_localpart=payload.get("sender_alias_localpart"),
                         active=payload.get("active"),
                     )
                 self._json_audit(
@@ -773,7 +949,7 @@ def make_handler(config, repo: Repository):
                     target_id=payload.get("user_id"),
                     summary="管理员更新销售账号",
                     metadata={
-                        "fields": [key for key in ("password", "display_name", "role", "daily_source_limit", "daily_send_limit", "reply_to_email", "active") if payload.get(key) is not None],
+                        "fields": [key for key in ("password", "display_name", "role", "daily_source_limit", "daily_send_limit", "reply_to_email", "sender_alias_localpart", "active") if payload.get(key) is not None],
                     },
                 )
                 return
@@ -811,12 +987,64 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/webhook":
                 def webhook() -> dict[str, Any]:
                     notifier = SlackClient(config.raw.get("notifications", {}).get("slack_webhook_url"))
-                    event = WebhookService(repo, notifier).process_payload(payload.get("provider", "manual"), payload.get("payload", {}))
+                    event = WebhookService(repo, notifier, config=config).process_payload(payload.get("provider", "manual"), payload.get("payload", {}))
                     return {"event_type": event}
                 self._json(webhook)
                 return
             if parsed.path.startswith("/webhooks/"):
+                if not self._require_database():
+                    return
                 provider = parsed.path.removeprefix("/webhooks/") or payload.get("provider", "resend")
+                if provider == "inbound-email":
+                    try:
+                        self._verify_inbound_email_secret()
+                    except RuntimeError as exc:
+                        self._send_json({"ok": False, "error": str(exc)}, status=401)
+                        return
+                    def inbound_email() -> dict[str, Any]:
+                        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                        route = parse_signed_reply_route(config, [payload.get("to"), data.get("to"), data.get("recipient")])
+                        contact_id = int(route["contact_id"]) if route else None
+                        in_reply_to = data.get("in_reply_to") or payload.get("in_reply_to")
+                        if not contact_id and in_reply_to:
+                            contact_id = repo.find_contact_id_by_message_id(str(in_reply_to))
+                        if not contact_id:
+                            contact_id = repo.find_contact_id_by_email(str(data.get("from") or data.get("sender") or payload.get("from") or payload.get("sender") or ""))
+                        if not contact_id:
+                            raise RuntimeError("inbound_sender_not_matched")
+                        external_id = data.get("message_id") or payload.get("message_id")
+                        if external_id and hasattr(repo, "record_webhook_delivery"):
+                            if not repo.record_webhook_delivery("inbound_email", "replied", payload, str(external_id)):
+                                return {"event_type": "replied", "contact_id": contact_id, "duplicate": True}
+                        route_state = {}
+                        if hasattr(repo, "route_inbound_reply"):
+                            route_state = repo.route_inbound_reply(contact_id, route.get("user_id") if route else None)
+                        event_payload = {
+                            "source": "inbound_email_webhook",
+                            "from": data.get("from") or data.get("sender") or payload.get("from") or payload.get("sender"),
+                            "to": data.get("to") or payload.get("to"),
+                            "subject": data.get("subject") or payload.get("subject"),
+                            "text": str(data.get("text") or data.get("body") or payload.get("text") or payload.get("body") or "")[:10000],
+                            "message_id": external_id,
+                            "in_reply_to": in_reply_to,
+                            "reply_route": route,
+                            "reply_owner_user_id": route_state.get("owner_user_id"),
+                            "reply_assignment_pending": route_state.get("reply_assignment_pending", False),
+                        }
+                        repo.record_event(contact_id, "replied", event_payload)
+                        repo.add_lifecycle_activity(
+                            contact_id,
+                            lifecycle_stage="replied",
+                            activity_type="reply",
+                            title=str(payload.get("subject") or "Email reply")[:300],
+                            content=event_payload["text"] or "Reply received",
+                            created_by="inbound_email",
+                        )
+                        if external_id and hasattr(repo, "mark_webhook_delivery_processed"):
+                            repo.mark_webhook_delivery_processed("inbound_email", str(external_id))
+                        return {"event_type": "replied", "contact_id": contact_id}
+                    self._json(inbound_email)
+                    return
                 def public_webhook() -> dict[str, Any]:
                     verified_payload = payload
                     if provider == "resend":
@@ -826,7 +1054,7 @@ def make_handler(config, repo: Repository):
                     if not repo.record_webhook_delivery(provider, event_type, verified_payload, external_id):
                         return {"event_type": event_type, "duplicate": True}
                     notifier = SlackClient(config.raw.get("notifications", {}).get("slack_webhook_url"))
-                    event = WebhookService(repo, notifier).process_payload(provider, verified_payload)
+                    event = WebhookService(repo, notifier, config=config).process_payload(provider, verified_payload)
                     repo.mark_webhook_delivery_processed(provider, external_id)
                     return {"event_type": event}
                 self._json(public_webhook)
@@ -865,16 +1093,17 @@ def make_handler(config, repo: Repository):
             *,
             summary: str | None = None,
             target_type: str | None = None,
-            target_id: str | int | None = None,
+            target_id=None,
             metadata=None,
         ) -> None:
             try:
                 data = fn()
                 audit_metadata = metadata(data) if callable(metadata) else (metadata or {})
-                self._audit(action, target_type=target_type, target_id=target_id, summary=summary, metadata=audit_metadata)
+                audit_target_id = target_id(data) if callable(target_id) else target_id
+                self._audit(action, target_type=target_type, target_id=audit_target_id, summary=summary, metadata=audit_metadata)
                 self._send_json({"ok": True, "data": data})
             except Exception as exc:
-                self._audit(action, target_type=target_type, target_id=target_id, summary=summary, success=False, error=str(exc))
+                self._audit(action, target_type=target_type, target_id=None if callable(target_id) else target_id, summary=summary, success=False, error=str(exc))
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
 
         def _audit(
@@ -955,15 +1184,18 @@ def make_handler(config, repo: Repository):
             return False
 
         def _send_json(self, data: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
-            body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self._send_security_headers()
-            for key, value in (headers or {}).items():
-                self.send_header(key, value)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self._send_security_headers()
+                for key, value in (headers or {}).items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                self.close_connection = True
 
         def _verify_resend_webhook(self, parsed_payload: dict[str, Any]) -> dict[str, Any]:
             secret = config.raw.get("webhooks", {}).get("resend_secret") or config.raw.get("notifications", {}).get("resend_webhook_secret")
@@ -980,6 +1212,12 @@ def make_handler(config, repo: Repository):
                 return Webhook(secret).verify(self._raw_body.decode("utf-8"), headers)
             except Exception as exc:
                 raise RuntimeError(f"Invalid Resend webhook signature: {exc}") from exc
+
+        def _verify_inbound_email_secret(self) -> None:
+            expected = str(config.raw.get("webhooks", {}).get("inbound_email_secret") or "").strip()
+            supplied = str(self.headers.get("X-Inbound-Secret") or "").strip()
+            if len(expected) < 24 or not hmac.compare_digest(expected, supplied):
+                raise RuntimeError("invalid_inbound_email_secret")
 
         def _send_csv(self, text: str) -> None:
             body = text.encode("utf-8-sig")
@@ -999,6 +1237,10 @@ def make_handler(config, repo: Repository):
             self.send_response(200)
             self.send_header("Content-Type", content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream")
             self._send_security_headers()
+            if path.parent.name == "assets":
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1038,6 +1280,14 @@ def make_handler(config, repo: Repository):
 
 def _result(label: str, value: Any) -> dict[str, Any]:
     return {label: value}
+
+
+def _tracking_secret(config: Any) -> str:
+    return str(
+        config.raw.get("app", {}).get("tracking_signing_secret")
+        or config.raw.get("webhooks", {}).get("resend_secret")
+        or ""
+    ).strip()
 
 
 def _json_default(value: Any) -> str:

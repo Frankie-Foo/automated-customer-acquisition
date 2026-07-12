@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-07-12
+
+- Reduced sales-page startup work by loading sourcing, customer, outreach, reporting, and admin modules only after their first visit; dashboard data now requests only what the active page needs.
+- Shortened the mobile customer review flow from 25 to 10 rows per page, added five direct customer filters, reset scroll position on route changes, and removed the duplicate four-step navigation on narrow screens.
+- Added a direct customer picker to the email workspace and split the administrator console into account, sender, automation, assignment, and audit sections.
+- Added configurable database-backed region assignment rules, post-sourcing fallback profiles, automatic private-pool assignment, and optional preparation of evidence-backed email drafts without automatic sending.
+- Added team conversion-funnel and blocker metrics covering assignment, valid email, profile, draft, approval, send, open, reply, qualification, and signing.
+- Added owner-isolated email work queues for missing drafts, pending approval, and approved sends; background task results now link directly to customer verification and email approval.
+- Split email outreach into a customer workspace and an on-demand paginated send/feedback log, preventing 150 historical emails from loading or rendering during normal drafting.
+- Fixed customer-list enrichment so fallback profile intelligence is applied after database reads, and added an end-to-end mocked send-to-reply lifecycle regression test.
+- Improved administrator and customer-list accessibility with labeled per-user sender fields and larger high-frequency table actions while preserving compact desktop density.
+- Reorganized the sales UI into a guided four-step workflow with prioritized next actions, one primary action per customer, actionable follow-up cards, and private-pool-only lifecycle reporting.
+- Replaced synchronous bulk company imports with durable background automation runs that survive refreshes and process restarts, expose progress, and support pause, resume, and retry.
+- Added mandatory email draft approval: sales users can only send content that exactly matches the latest approved draft; edits revoke the local approval state and direct bulk-send APIs are administrator-only.
+- Added automatic three-touch sequence closure: engaged contacts without replies move to the waiting pool, while contacts with no engagement move to abandoned after the configured cooling period.
+- Fixed manual contact creation without a LinkedIn URL by generating a stable internal contact identity.
+- Added administrator task monitoring and fixed public-pool contacts leaking into personal follow-up and SABCD views.
+- Verified 128 tests, zero Chrome console errors, responsive layouts without page overflow, and 100 Lighthouse scores for accessibility, best practices, SEO, and agentic browsing.
+
+## 2026-07-11
+
+- Added production SMTP transport with SSL/STARTTLS, multipart text/HTML, signed Reply-To, safe envelope sender handling, and no ambiguous automatic retry.
+- Added centralized-mailbox safety: per-user From aliases remain disabled unless the SMTP administrator grants explicit Send As permission.
+- Added SMTP readiness checks, environment templates, regression coverage, and `docs/SMTP_TRANSPORT_SETUP.md`.
+
+## 2026-07-10
+
+- Added centralized outbound identity: each sales user gets a customer-visible alias on one verified sending subdomain without sharing individual SMTP credentials.
+- Added HMAC-signed per-message reply addresses that restore replies to the current or original sales owner and flag truly unassigned replies for review.
+- Added Resend `email.received` content retrieval so lifecycle records store the customer's actual reply text instead of metadata only.
+- Added user-level sender alias administration, reply deduplication, a `unassigned_replies` customer filter, migration `023_centralized_outbound_identity.sql`, and a production runbook.
+- Added evidence-based exact-person matching using name, company website, title, country, and industry.
+- Added persisted company/person/news research with Brave, Tavily, and Google CSE fallback sources.
+- Grounded AI email drafts in saved research evidence and persisted drafts per contact and sales user.
+- Added a six-stage customer workflow showing identity, email, research, draft, send, and feedback status.
+- Added signed tracking and unsubscribe tokens to prevent forged contact events.
+- Added Resend idempotency keys and database send reservations to block duplicate sends.
+- Added secure inbound reply ingestion; matched replies create lifecycle activities and enter SABCD C without downgrading later stages.
+- Preserved pre-migration open and unsubscribe links while requiring signed tokens for all newly generated emails.
+- Made automatic SABCD movement monotonic: first touch/reply C, multi-round communication B, commercial work A, signed customer S.
+- Simplified the sales dashboard to metrics and four direct actions; removed training and AI-workforce marketing content.
+- Mounted protected React modules only after authentication, removing duplicate unauthorized API requests on the login screen.
+- Hid team reports and the administrator console from sales navigation and blocked direct hash navigation to both views.
+- Added static-asset caching, local fonts, accessible form labels, stronger color contrast, and a page description; desktop Lighthouse now passes all audited categories.
+- Administrator password resets now revoke every existing session for the affected user.
+- Reduced the customer table from 16 columns to 7 business-focused columns for production usability.
+- Added migration `022_identity_research_pipeline.sql` and expanded production readiness checks.
+
 ## 2026-07-09
 
 - Added Odoo / VPS SSO support:

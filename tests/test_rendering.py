@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sales_automation.rendering import render_string, render_template
+from sales_automation.rendering import open_pixel_url, render_string, render_template, unsubscribe_url, verify_tracking_token
 from sales_automation.web import static_path
 
 
@@ -37,4 +37,25 @@ def test_static_path_rejects_traversal():
         static_path("../config.yaml")
     with pytest.raises(ValueError):
         static_path("assets/%2e%2e/config.yaml")
+
+
+def test_tracking_links_are_signed_and_action_scoped():
+    secret = "test-secret-with-at-least-24-characters"
+    contact = {"id": 42}
+    unsubscribe = unsubscribe_url(contact, "https://sales.example.test", secret)
+    pixel = open_pixel_url(contact, 2, "https://sales.example.test", secret)
+
+    unsubscribe_token = unsubscribe.split("token=", 1)[1]
+    pixel_token = pixel.split("token=", 1)[1]
+    assert verify_tracking_token(unsubscribe_token, "unsubscribe", secret)["contact_id"] == 42
+    assert verify_tracking_token(pixel_token, "open", secret)["step"] == 2
+    with pytest.raises(ValueError, match="invalid_tracking_action"):
+        verify_tracking_token(pixel_token, "unsubscribe", secret)
+
+
+def test_tracking_link_rejects_tampering_and_expiry():
+    secret = "test-secret-with-at-least-24-characters"
+    token = unsubscribe_url({"id": 7}, "https://sales.example.test", secret).split("token=", 1)[1]
+    with pytest.raises(ValueError, match="invalid_tracking_signature"):
+        verify_tracking_token(token + "x", "unsubscribe", secret)
 

@@ -33,6 +33,12 @@ sourcing:
 
 The Dashboard `Lead Source` form accepts role, optional company website, industry, location, and limit. Prospeo is preferred for initial testing because it has a free plan with limited API access and monthly credits. NinjaPear remains available as an alternate provider when `NINJAPEAR_API_KEY` is configured.
 
+Bulk Excel/CSV company imports run as durable background tasks. The upload request returns immediately; progress is stored in PostgreSQL and can be paused, resumed, or retried from the sourcing page. Completed tasks stop at customer review and never send automatically.
+
+## Safe Email Workflow
+
+Sales users open a private-pool customer, generate or edit a draft, then click `审核并锁定`. The backend only sends when the submitted subject and body exactly match the latest approved draft. Any edit requires approval again. Direct bulk-send endpoints are restricted to administrators.
+
 ## Common Commands
 
 ```powershell
@@ -58,6 +64,8 @@ RESEND_API_KEY=
 DEEPSEEK_API_KEY=
 RESEND_WEBHOOK_SECRET=
 PUBLIC_BASE_URL=https://your-public-domain.example
+TRACKING_SIGNING_SECRET=replace-with-at-least-32-random-characters
+INBOUND_EMAIL_WEBHOOK_SECRET=replace-with-a-different-random-secret
 ```
 
 `config.yaml`:
@@ -84,10 +92,21 @@ https://your-public-domain.example/webhooks/resend
 
 Localhost cannot receive Resend public webhooks. Deploy behind HTTPS, or use a temporary tunnel for testing. If `RESEND_WEBHOOK_SECRET` is set, the app verifies Resend/Svix signatures and deduplicates webhook deliveries with `svix-id`.
 
+Corporate mailbox reply bridge:
+
+```text
+POST https://your-public-domain.example/webhooks/inbound-email
+X-Inbound-Secret: <INBOUND_EMAIL_WEBHOOK_SECRET>
+```
+
+For per-salesperson sender aliases and automatic reply ownership, see [docs/CENTRALIZED_OUTBOUND_IDENTITY.md](docs/CENTRALIZED_OUTBOUND_IDENTITY.md). This mode keeps one verified sending/receiving infrastructure while routing each reply back to the correct private customer pool.
+
+Connect Outlook/Power Automate, Microsoft Graph, or another inbound mailbox bridge using the payload documented in `docs/INBOUND_REPLY_BRIDGE.md`. A matched reply automatically records the email event, advances the contact to SABCD `B`, and creates a lifecycle reply activity.
+
 ## Outreach Flow
 
 ```text
-manual/CSV/API leads -> contacts table -> enrichment -> queued -> sent_1 -> sent_2 -> sent_3 -> replied/bounced/unsubscribed
+name + website + title + country + industry -> LinkedIn identity evidence -> verified email -> current public research -> saved draft -> idempotent send -> delivered/opened/replied -> SABCD lifecycle
 ```
 
 Default `sender.dry_run: true` prevents real email sends. Set it to `false` only after Resend domain verification and sender address setup are complete.

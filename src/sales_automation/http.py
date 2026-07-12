@@ -20,6 +20,7 @@ class HttpClient:
         *,
         headers: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
+        retries: int | None = None,
     ) -> dict[str, Any]:
         body = None if json_body is None else json.dumps(json_body).encode("utf-8")
         req_headers = {
@@ -28,7 +29,8 @@ class HttpClient:
             **(headers or {}),
         }
         last_error: Exception | None = None
-        for attempt in range(1, self.retries + 1):
+        attempt_limit = max(1, int(self.retries if retries is None else retries))
+        for attempt in range(1, attempt_limit + 1):
             try:
                 req = Request(url, data=body, headers=req_headers, method=method.upper())
                 with urlopen(req, timeout=self.timeout) as response:
@@ -42,7 +44,7 @@ class HttpClient:
                     except Exception:
                         detail = str(exc)
                     last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
-                if attempt == self.retries:
+                if attempt == attempt_limit:
                     break
                 time.sleep(2 ** (attempt - 1))
-        raise RuntimeError(f"HTTP request failed after {self.retries} attempts: {last_error}")
+        raise RuntimeError(f"HTTP request failed after {attempt_limit} attempts: {last_error}")

@@ -9,6 +9,7 @@ exports/
 outputs/
 work/
 .pytest_cache/
+.tmp/
 *.egg-info/
 build/
 node_modules/

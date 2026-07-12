@@ -78,6 +78,7 @@ class TavilySearchClient:
                 "title": item.get("title") or item.get("url") or "",
                 "snippet": item.get("content") or item.get("snippet") or "",
                 "link": item.get("url") or item.get("link") or "",
+                "published_at": item.get("published_date") or item.get("published_at") or "",
             }
             for item in results
         ]
@@ -111,6 +112,7 @@ class BraveSearchClient:
                 "title": item.get("title") or item.get("url") or "",
                 "snippet": item.get("description") or item.get("snippet") or "",
                 "link": item.get("url") or "",
+                "published_at": item.get("page_age") or item.get("age") or item.get("published_at") or "",
             }
             for item in results
         ]
@@ -163,25 +165,15 @@ class LinkedInPublicSearchService:
         self.config = config
         self.repo = repo
         self.cfg = config.raw.get("sourcing", {}).get("linkedin_public_search", {})
-        key = config.apis.get("google_cse_key", "")
-        cse_id = config.apis.get("google_cse_id", "")
-        tavily_key = config.apis.get("tavily_key", "")
-        brave_key = config.apis.get("brave_search_key", "")
-        clients: list[tuple[str, SearchClient]] = []
-        if tavily_key:
-            clients.append(("tavily", TavilySearchClient(tavily_key)))
-        if key and cse_id:
-            clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
-        if brave_key:
-            clients.append(("brave_search", BraveSearchClient(brave_key)))
-        self.client = FallbackSearchClient(clients) if clients else None
+        self.client = build_search_client(config)
         self.domain_resolver = CompanyDomainResolver(self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
         if not self.client:
             raise RuntimeError("Missing search API config: set Google CSE or TAVILY_API_KEY")
         max_queries = int(self.cfg.get("max_queries_per_run") or 10)
-        min_score = int(self.cfg.get("min_lead_score") or 50)
+        has_target_name = bool(_target_name(criteria))
+        min_score = int(criteria.get("min_lead_score") or (70 if has_target_name else self.cfg.get("min_lead_score") or 50))
         task = self.repo.create_lead_search_task(
             criteria=criteria,
             provider="linkedin_public_search",
@@ -208,17 +200,19 @@ class LinkedInPublicSearchService:
                     if auto_domain_lookup:
                         parsed["company_domain"] = self.domain_resolver.resolve(
                             parsed.get("company_name"),
-                            parsed.get("company_domain"),
+                            parsed.get("company_domain") or criteria.get("company_website"),
                             location=parsed.get("location") or criteria.get("location"),
                             category=parsed.get("industry") or criteria.get("industry") or criteria.get("seed_category"),
                         )
-                    parsed["lead_score"] = score_lead(parsed, criteria)
+                    parsed["lead_score"], parsed["match_evidence"] = score_lead_details(parsed, criteria)
+                    parsed["match_confidence"] = parsed["lead_score"]
+                    parsed["match_status"] = classify_identity_match(parsed, criteria)
                     if auto_generate_candidates:
                         parsed["email_candidates"] = [asdict(item) for item in generate_public_search_email_candidates(parsed, self.repo)]
-                    status = "candidate" if parsed["lead_score"] >= min_score else "low_score"
+                    status = "candidate" if parsed["lead_score"] >= min_score and parsed["match_status"] != "mismatch" else "low_score"
                     result = self.repo.create_lead_search_result(task["id"], parsed, status=status)
                     all_results.append(result)
-                    if parsed["lead_score"] < min_score:
+                    if parsed["lead_score"] < min_score or parsed["match_status"] == "mismatch":
                         skipped += 1
                         continue
                     contact = _contact_from_search_result(parsed, task["id"])
@@ -352,13 +346,20 @@ class LinkedInPublicSearchService:
 
 
 def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
+    name = _target_name(criteria)
     role = _clean(criteria.get("role") or criteria.get("title"))
     role_keywords = [_clean(item) for item in (criteria.get("role_keywords") or []) if _clean(item)]
     industry = _clean(criteria.get("industry"))
     location = _clean(criteria.get("location"))
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_website"))
-    parts = [part for part in [role, industry, location, company] if part]
+    parts = [part for part in [name, role, industry, location, company] if part]
     queries = []
+    if name and company:
+        queries.append(f'site:linkedin.com/in "{name}" "{company}"')
+    if name and role:
+        queries.append(f'site:linkedin.com/in "{name}" "{role}"')
+    if name and location:
+        queries.append(f'site:linkedin.com/in "{name}" "{location}"')
     if parts:
         queries.append("site:linkedin.com/in " + " ".join(f'"{part}"' for part in parts))
     if role and industry:
@@ -374,6 +375,21 @@ def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
     if not queries and role:
         queries.append(f'site:linkedin.com/in "{role}"')
     return list(dict.fromkeys(queries or ["site:linkedin.com/in"]))
+
+
+def build_search_client(config: AppConfig) -> FallbackSearchClient | None:
+    key = config.apis.get("google_cse_key", "")
+    cse_id = config.apis.get("google_cse_id", "")
+    tavily_key = config.apis.get("tavily_key", "")
+    brave_key = config.apis.get("brave_search_key", "")
+    clients: list[tuple[str, SearchClient]] = []
+    if brave_key:
+        clients.append(("brave_search", BraveSearchClient(brave_key)))
+    if tavily_key:
+        clients.append(("tavily", TavilySearchClient(tavily_key)))
+    if key and cse_id:
+        clients.append(("google_cse", GoogleCSEClient(key, cse_id)))
+    return FallbackSearchClient(clients) if clients else None
 
 
 def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
@@ -428,24 +444,81 @@ def parse_linkedin_search_item(item: dict[str, Any], criteria: dict[str, Any]) -
 
 
 def score_lead(parsed: dict[str, Any], criteria: dict[str, Any]) -> int:
+    return score_lead_details(parsed, criteria)[0]
+
+
+def score_lead_details(parsed: dict[str, Any], criteria: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
     score = 0
+    evidence: list[dict[str, Any]] = []
+    target_name = _target_name(criteria)
     role = _clean(criteria.get("role") or criteria.get("title")).lower()
     industry = _clean(criteria.get("industry")).lower()
     location = _clean(criteria.get("location")).lower()
+    company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_name")).lower()
+    expected_domain = _domain_from_website(criteria.get("company_website") or "")
     haystack = " ".join(str(parsed.get(key) or "") for key in ("raw_title", "raw_snippet", "job_title", "company_name", "location")).lower()
-    if role and role in haystack:
-        score += 30
-    if industry and industry in haystack:
-        score += 20
-    if location and location in haystack:
+    observed_name = " ".join(part for part in [str(parsed.get("first_name") or ""), str(parsed.get("last_name") or "")] if part).strip()
+    if target_name:
+        matched = _names_match(target_name, observed_name)
+        evidence.append(_match_evidence("name", target_name, observed_name, matched, 40))
+        if matched:
+            score += 40
+    company_matched = False
+    observed_domain = _domain_from_website(parsed.get("company_domain") or "")
+    if expected_domain:
+        company_matched = observed_domain == expected_domain
+        evidence.append(_match_evidence("company_domain", expected_domain, observed_domain, company_matched, 25))
+    elif company:
+        observed_company = _clean(parsed.get("company_name")).lower()
+        company_matched = bool(observed_company and (company in observed_company or observed_company in company or company in haystack))
+        evidence.append(_match_evidence("company", company, observed_company, company_matched, 25))
+    elif parsed.get("company_name"):
+        company_matched = True
+    if company_matched:
+        score += 25
+    role_matched = bool(role and role in haystack)
+    if role:
+        evidence.append(_match_evidence("title", role, parsed.get("job_title"), role_matched, 15))
+    if role_matched:
         score += 15
-    if parsed.get("company_name"):
-        score += 15
+    industry_matched = bool(industry and industry in haystack)
+    if industry:
+        evidence.append(_match_evidence("industry", industry, parsed.get("industry") or parsed.get("raw_snippet"), industry_matched, 5))
+    if industry_matched:
+        score += 5
+    location_matched = bool(location and location in haystack)
+    if location:
+        evidence.append(_match_evidence("location", location, parsed.get("location") or parsed.get("raw_snippet"), location_matched, 10))
+    if location_matched:
+        score += 10
     if _normalize_linkedin_url(parsed.get("linkedin_url")):
-        score += 10
-    if parsed.get("first_name") and parsed.get("last_name") and parsed.get("raw_snippet"):
-        score += 10
-    return min(100, score)
+        score += 5
+    if not target_name:
+        if parsed.get("first_name") and parsed.get("last_name"):
+            score += 20
+        if company_matched or parsed.get("company_name"):
+            score += 10
+        if role_matched:
+            score += 15
+        if industry_matched:
+            score += 10
+        if location_matched:
+            score += 5
+    return min(100, score), evidence
+
+
+def classify_identity_match(parsed: dict[str, Any], criteria: dict[str, Any]) -> str:
+    score = int(parsed.get("match_confidence") or parsed.get("lead_score") or 0)
+    evidence = parsed.get("match_evidence") or []
+    name_check = next((item for item in evidence if item.get("field") == "name"), None)
+    company_check = next((item for item in evidence if item.get("field") in {"company", "company_domain"}), None)
+    if name_check and not name_check.get("matched"):
+        return "mismatch"
+    if score >= 85 and (not name_check or name_check.get("matched")) and (not company_check or company_check.get("matched")):
+        return "confirmed"
+    if score >= 70:
+        return "likely"
+    return "review"
 
 
 def generate_public_search_email_candidates(contact: dict[str, Any], repo: Repository | None = None) -> list[EmailCandidate]:
@@ -524,6 +597,9 @@ def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[st
         "location": parsed.get("location"),
         "email_candidates": parsed.get("email_candidates") or [],
         "lead_score": parsed.get("lead_score"),
+        "identity_confidence": parsed.get("match_confidence") or parsed.get("lead_score"),
+        "identity_status": parsed.get("match_status") or "review",
+        "identity_evidence": parsed.get("match_evidence") or [],
         "search_task_id": task_id,
         "source_context": source_context,
         "source": "linkedin_public_search",
@@ -539,8 +615,35 @@ def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, str]:
         "seed_category": criteria.get("seed_category") or criteria.get("industry"),
         "seed_location": criteria.get("location"),
         "target_role": criteria.get("role") or criteria.get("title"),
+        "target_name": _target_name(criteria),
     }
     return {key: _clean(value) for key, value in mapping.items() if _clean(value)}
+
+
+def _target_name(criteria: dict[str, Any]) -> str:
+    return _clean(criteria.get("full_name") or criteria.get("person_name") or criteria.get("name"))
+
+
+def _names_match(expected: str, observed: str) -> bool:
+    expected_tokens = _identity_tokens(expected)
+    observed_tokens = _identity_tokens(observed)
+    if not expected_tokens or not observed_tokens:
+        return False
+    return expected_tokens == observed_tokens or expected_tokens.issubset(observed_tokens) or observed_tokens.issubset(expected_tokens)
+
+
+def _identity_tokens(value: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]+", str(value or "").casefold()) if len(token) > 1}
+
+
+def _match_evidence(field: str, expected: Any, observed: Any, matched: bool, weight: int) -> dict[str, Any]:
+    return {
+        "field": field,
+        "expected": _clean(expected),
+        "observed": _clean(observed),
+        "matched": bool(matched),
+        "weight": int(weight),
+    }
 
 
 def _normalize_linkedin_url(value: str | None) -> str | None:

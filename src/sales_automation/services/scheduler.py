@@ -27,7 +27,10 @@ class SchedulerService:
                 limited_send = min(send_limit, quota.remaining_global("send"))
                 sent = OutreachService(self.config, self.repo).send_due(limited_send)
                 quota.consume_global("send", sent)
-                log("scheduler.completed")
+                wait_days = int(self.config.raw.get("outreach", {}).get("waiting_pool_after_days") or 14)
+                closed = self.repo.close_expired_outreach_sequences(wait_days=wait_days, limit=max(100, send_limit))
+                recycled = self.repo.recycle_stale_private_pool(limit=max(100, queue_limit))
+                log("scheduler.completed", sent=sent, waiting=closed["waiting"], abandoned=closed["abandoned"], recycled=recycled)
             finally:
                 conn.execute("SELECT pg_advisory_unlock(20260603)")
 

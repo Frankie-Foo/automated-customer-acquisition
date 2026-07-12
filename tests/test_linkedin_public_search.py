@@ -10,6 +10,8 @@ from sales_automation.linkedin_public_search import (
     parse_linkedin_search_item,
     pick_public_phone_candidates,
     score_lead,
+    score_lead_details,
+    classify_identity_match,
 )
 from sales_automation.clients import _domain_from_website
 
@@ -26,6 +28,54 @@ def test_build_linkedin_queries_uses_public_profile_site_filter():
     assert all(query.startswith("site:linkedin.com/in") for query in queries)
     assert '"Brand Manager"' in queries[0]
     assert '"luxury"' in queries[0]
+
+
+def test_exact_person_query_and_scoring_require_name_and_company_match():
+    criteria = {
+        "full_name": "Ada Lovelace",
+        "company_website": "example.com",
+        "company_keyword": "Example",
+        "role": "Founder",
+        "location": "United Kingdom",
+    }
+    queries = build_linkedin_queries(criteria)
+    parsed = {
+        "raw_title": "Ada Lovelace - Founder - Example",
+        "raw_snippet": "Founder at Example in United Kingdom",
+        "first_name": "Ada",
+        "last_name": "Lovelace",
+        "job_title": "Founder",
+        "company_name": "Example",
+        "company_domain": "example.com",
+        "location": "United Kingdom",
+        "linkedin_url": "https://www.linkedin.com/in/ada-lovelace",
+    }
+
+    score, evidence = score_lead_details(parsed, criteria)
+    parsed.update(match_confidence=score, match_evidence=evidence)
+
+    assert '"Ada Lovelace"' in queries[0]
+    assert score >= 85
+    assert classify_identity_match(parsed, criteria) == "confirmed"
+    assert {item["field"] for item in evidence} >= {"name", "company_domain", "title", "location"}
+
+
+def test_exact_person_name_mismatch_is_rejected_even_with_matching_company():
+    criteria = {"full_name": "Ada Lovelace", "company_website": "example.com", "role": "Founder"}
+    parsed = {
+        "raw_title": "Grace Hopper - Founder - Example",
+        "raw_snippet": "Founder at Example",
+        "first_name": "Grace",
+        "last_name": "Hopper",
+        "job_title": "Founder",
+        "company_name": "Example",
+        "company_domain": "example.com",
+        "linkedin_url": "https://www.linkedin.com/in/grace-hopper",
+    }
+    score, evidence = score_lead_details(parsed, criteria)
+    parsed.update(match_confidence=score, match_evidence=evidence)
+
+    assert classify_identity_match(parsed, criteria) == "mismatch"
 
 
 def test_company_seed_to_search_criteria_expands_job_titles():
@@ -139,7 +189,7 @@ def test_tavily_search_maps_results_to_google_shape():
 
     items = TavilySearchClient("tvly-test", Http()).search("site:linkedin.com/in Ada", limit=1)
 
-    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada"}]
+    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada", "published_at": ""}]
 
 
 def test_brave_search_maps_results_to_google_shape():
@@ -164,7 +214,7 @@ def test_brave_search_maps_results_to_google_shape():
 
     items = BraveSearchClient("brave-test", Http()).search("site:linkedin.com/in Ada", limit=1)
 
-    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada"}]
+    assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada", "published_at": ""}]
 
 
 def test_fallback_search_uses_second_provider_after_first_fails():
@@ -182,7 +232,7 @@ def test_fallback_search_uses_second_provider_after_first_fails():
     assert client.last_provider == "tavily"
 
 
-def test_linkedin_public_search_prefers_tavily_when_configured():
+def test_linkedin_public_search_uses_configured_fallback_order():
     class Config:
         apis = {"google_cse_key": "expired-google", "google_cse_id": "cx", "tavily_key": "tvly-test"}
         raw = {"sourcing": {"linkedin_public_search": {}}}
@@ -192,14 +242,14 @@ def test_linkedin_public_search_prefers_tavily_when_configured():
     assert [name for name, _client in service.client.clients] == ["tavily", "google_cse"]
 
 
-def test_linkedin_public_search_adds_brave_after_existing_search_sources():
+def test_linkedin_public_search_prefers_brave_when_available():
     class Config:
         apis = {"google_cse_key": "google", "google_cse_id": "cx", "tavily_key": "tvly", "brave_search_key": "brave"}
         raw = {"sourcing": {"linkedin_public_search": {}}}
 
     service = LinkedInPublicSearchService(Config(), repo=None)
 
-    assert [name for name, _client in service.client.clients] == ["tavily", "google_cse", "brave_search"]
+    assert [name for name, _client in service.client.clients] == ["brave_search", "tavily", "google_cse"]
 
 
 def test_candidate_generation_prefers_historical_patterns(monkeypatch):

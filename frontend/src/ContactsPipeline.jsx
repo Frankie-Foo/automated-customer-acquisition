@@ -4,6 +4,7 @@ import { api } from "./api.js";
 
 const statuses = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"];
 const filters = [
+  ["unassigned_replies", "待分配回复"],
   ["", "全部客户"],
   ["public_pool", "公共客户池"],
   ["private_pool", "私人客户池"],
@@ -17,6 +18,9 @@ const filters = [
   ["sabcd_s", "S 签约建店"],
   ["needs_enrichment", "待富化"],
   ["ready_to_send", "有邮箱待发送"],
+  ["missing_draft", "待生成草稿"],
+  ["draft_pending", "草稿待审核"],
+  ["draft_approved", "已审核待发送"],
   ["opened_no_reply", "已打开未回复"],
   ["replied", "已回复"],
   ["bounced", "退信需处理"],
@@ -66,14 +70,23 @@ export default function ContactsPipelinePortal() {
 }
 
 function ContactsPipeline() {
-  const [sessionUser, setSessionUser] = useState(null);
+  const [pageSize, setPageSize] = useState(() => window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
+  const [sessionUser, setSessionUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const [contacts, setContacts] = useState([]);
   const [status, setStatus] = useState("");
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(() => window.SALESBOT_SESSION?.user?.role === "admin" ? "" : "public_pool");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [importReport, setImportReport] = useState(null);
+  const [page, setPage] = useState(1);
+  const [busyContactId, setBusyContactId] = useState(null);
+
+  useEffect(() => {
+    const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: "100" });
@@ -82,6 +95,15 @@ function ContactsPipeline() {
     if (search.trim()) params.set("search", search.trim());
     return params.toString();
   }, [status, filter, search]);
+
+  const pageCount = Math.max(1, Math.ceil(contacts.length / pageSize));
+  const visibleContacts = useMemo(() => contacts.slice((page - 1) * pageSize, page * pageSize), [contacts, page]);
+
+  useEffect(() => setPage(1), [query]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   const loadContacts = useCallback(async () => {
     if (!sessionUser) return;
@@ -107,19 +129,22 @@ function ContactsPipeline() {
   useEffect(() => {
     const handleSession = (event) => setSessionUser(event.detail?.user || null);
     const handleRefresh = () => loadContacts();
+    const handleFilter = (event) => {
+      setStatus("");
+      setSearch("");
+      setFilter(event.detail?.filter || "");
+    };
     window.addEventListener("salesbot:session", handleSession);
     window.addEventListener("salesbot:refresh", handleRefresh);
     window.addEventListener("salesbot:contacts-refresh", handleRefresh);
+    window.addEventListener("salesbot:contact-filter", handleFilter);
     return () => {
       window.removeEventListener("salesbot:session", handleSession);
       window.removeEventListener("salesbot:refresh", handleRefresh);
       window.removeEventListener("salesbot:contacts-refresh", handleRefresh);
+      window.removeEventListener("salesbot:contact-filter", handleFilter);
     };
   }, [loadContacts]);
-
-  useEffect(() => {
-    api("/api/me").then((session) => setSessionUser(session.user)).catch(() => setSessionUser(null));
-  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(loadContacts, 250);
@@ -127,10 +152,19 @@ function ContactsPipeline() {
   }, [loadContacts]);
 
   async function runContactAction(contact, action) {
+    if (busyContactId) return;
+    setBusyContactId(contact.id);
     setError("");
     try {
       if (action === "detail") {
-        window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } }));
+        window.location.hash = "outreach";
+        window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } })), 0);
+        return;
+      }
+      if (action === "claim-open") {
+        await api("/api/customer-pool/claim", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+        window.location.hash = "outreach";
+        window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } })), 50);
         return;
       }
       if (action === "claim") {
@@ -157,6 +191,8 @@ function ContactsPipeline() {
     } catch (err) {
       setError(err.message);
       window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: err.message, type: "error" } }));
+    } finally {
+      setBusyContactId(null);
     }
   }
 
@@ -167,29 +203,40 @@ function ContactsPipeline() {
       <div className="section-head">
         <div>
           <span className="eyebrow">Pipeline</span>
-          <h2>客户列表与邮件反馈</h2>
-          <p>查看客户状态、最近触达、邮件行为和 SABCD 阶段。</p>
+          <h2>{filter === "public_pool" ? "公共客户池" : filter === "mine" || filter === "private_pool" ? "我的客户" : "客户列表"}</h2>
+          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "核对身份和邮箱，打开详情生成画像与邮件，再推进触达。"}</p>
         </div>
         <div className="toolbar">
-          <label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
-          <label>视图<select value={filter} onChange={(event) => setFilter(event.target.value)}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
-          <label>Search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" /></label>
+          <label htmlFor="contact-status-filter">Status<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
+          <label htmlFor="contact-view-filter">视图<select id="contact-view-filter" name="contact_view" value={filter} onChange={(event) => setFilter(event.target.value)}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
+          <label htmlFor="contact-search">Search<input id="contact-search" name="contact_search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" /></label>
         </div>
       </div>
+      <nav className="pipeline-quick-filters" aria-label="客户快捷筛选">
+        {[
+          ["public_pool", "公共池"],
+          ["mine", "我的客户"],
+          ["needs_enrichment", "待补资料"],
+          ["missing_draft", "待写草稿"],
+          ["draft_pending", "待审核"],
+          ["draft_approved", "可发送"],
+        ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
+      </nav>
       <ImportBatchReport report={importReport} />
       {error && <div className="admin-alert is-error">{error}</div>}
       <div className="table-shell">
-        <table>
+        <table className="customer-table">
           <thead>
             <tr>
-              <th>ID</th><th>联系人</th><th>公司</th><th>邮箱</th><th>电话</th><th>状态</th><th>Step</th><th>社媒</th><th>邮件反馈</th><th>SABCD</th><th>客户池</th><th>生命周期</th><th>客户画像</th><th>最近联系</th><th>操作</th><th>错误</th>
+              <th>联系人</th><th>公司与联系方式</th><th>身份与质量</th><th>销售阶段</th><th>邮件反馈</th><th>客户池</th><th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {loading && !contacts.length ? <tr><td colSpan="16"><div className="empty-state">正在加载客户...</div></td></tr> : contacts.length ? contacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} />) : <tr><td colSpan="16"><div className="empty-state"><strong>还没有客户</strong><div>先用上方获客、CSV 导入，或手动新增联系人。</div></div></td></tr>}
+            {loading && !contacts.length ? <tr><td colSpan="7"><div className="empty-state">正在加载客户...</div></td></tr> : visibleContacts.length ? visibleContacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} busy={busyContactId === contact.id} />) : <tr><td colSpan="7"><div className="empty-state"><strong>还没有客户</strong><div>先去“获取线索”搜索、导入或手动新增联系人。</div></div></td></tr>}
           </tbody>
         </table>
       </div>
+      {contacts.length > pageSize && <div className="table-pagination"><span>共 {contacts.length} 条，每页 {pageSize} 条</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
   );
 }
@@ -231,39 +278,63 @@ function MetricChip({ label, value }) {
   return <span className="metric-chip"><b>{Number(value || 0)}</b><em>{label}</em></span>;
 }
 
-function ContactRow({ contact, onAction }) {
-  const insights = contact.profile_insights || {};
-  const score = Number(insights.icp_fit_score ?? 0);
+function ContactRow({ contact, onAction, busy }) {
   return (
     <tr>
-      <td>{contact.id}</td>
-      <td><strong>{fullName(contact)}</strong><div className="muted">{contact.job_title || ""}</div>{isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}</td>
-      <td><strong>{contact.company_name || ""}</strong><div className="muted">{contact.company_domain || ""}</div></td>
-      <td>{displayEmail(contact)}<div className="muted">{emailMeta(contact)}</div></td>
-      <td>{displayPhone(contact)}<div className="muted">{phoneMeta(contact)}</div></td>
-      <td><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span></td>
-      <td>{contact.sequence_step || 0}</td>
-      <td><SocialProfiles contact={contact} /></td>
+      <td><div className="customer-identity"><small>#{contact.id}</small><strong>{fullName(contact)}</strong><div className="muted">{contact.job_title || "职位待确认"}</div><div className="inline-links">{isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}<SocialProfiles contact={contact} /></div></div></td>
+      <td><div className="customer-company"><strong>{contact.company_name || "公司待确认"}</strong><div className="muted">{contact.company_domain || "官网待确认"}</div><div className="contact-line"><span>{displayEmail(contact)}</span><small>{emailMeta(contact)}</small></div><div className="contact-line"><span>{displayPhone(contact)}</span><small>{phoneMeta(contact)}</small></div></div></td>
+      <td><IdentityQuality contact={contact} /></td>
+      <td><div className="pipeline-cell"><div><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span><small>Step {contact.sequence_step || 0}</small></div><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span><div className="lifecycle-cell"><span>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><small>{dispositionLabel(contact.disposition)}</small></div></div></td>
       <td><EmailFeedback contact={contact} /></td>
-      <td><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span></td>
       <td><PoolBadge contact={contact} /></td>
-      <td><div className="lifecycle-cell"><span className="stage-pill">{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><div className="muted">{dispositionLabel(contact.disposition)}</div>{contact.next_action_at && <div className="muted">下次：{formatDate(contact.next_action_at)}</div>}</div></td>
-      <td>{contact.profile_summary || Object.keys(insights).length ? <div className="profile-insights" title={contact.profile_summary || ""}><div className="fit-line"><b>{score || "--"}</b><span>{intentLabel(insights.intent_level)}</span></div><strong>{insights.persona || contact.profile_summary || "客户画像"}</strong><p>{insights.next_action || contact.profile_summary || "暂无下一步建议"}</p></div> : <div className="profile-summary muted">待生成画像</div>}</td>
-      <td>{formatDate(contact.last_contacted_at)}</td>
-      <td><div className="row-actions">{rowActions(contact).map(([action, label]) => <button key={action} type="button" onClick={() => onAction(contact, action)}>{label}</button>)}</div></td>
-      <td className="error-text" title={contact.enrich_error || ""}>{contact.enrich_error || ""}</td>
+      <td><ContactActions contact={contact} onAction={onAction} busy={busy} /></td>
     </tr>
   );
 }
 
+function IdentityQuality({ contact }) {
+  const score = Number(contact.identity_confidence ?? contact.lead_score ?? 0);
+  const status = contact.identity_status || (score >= 70 ? "likely" : "review");
+  return <div className="identity-quality"><div><b>{score || "--"}</b><span>{identityStatusLabel(status)}</span></div><small>{emailQuality(contact)}</small>{contact.enrich_error && <em title={contact.enrich_error}>数据需处理</em>}</div>;
+}
+
+function ContactActions({ contact, onAction, busy }) {
+  const { primary, secondary } = rowActions(contact);
+  return (
+    <div className="row-actions compact-actions">
+      <button type="button" disabled={busy} className="primary soft main-row-action" onClick={() => onAction(contact, primary[0])}>{busy ? "处理中..." : primary[1]}</button>
+      {!!secondary.length && (
+        <details className="row-action-menu">
+          <summary aria-label="更多客户操作" title="更多客户操作">更多</summary>
+          <div>{secondary.map(([action, label]) => <button key={action} disabled={busy} type="button" onClick={() => onAction(contact, action)}>{label}</button>)}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function rowActions(contact) {
-  if (contact.pool_type === "public") return [["claim", "领取"], ["profile", "画像"], ["detail", "详情"]];
+  if (contact.pool_type === "public") {
+    return { primary: ["claim-open", "领取并处理"], secondary: [] };
+  }
   const blocked = ["bounced", "unsubscribed"].includes(contact.status)
     || Number(contact.bounced_count || 0) > 0
     || Number(contact.unsubscribed_count || 0) > 0
     || Number(contact.complained_count || 0) > 0;
-  const sendActions = blocked ? [] : [["queue-one", "入队"], ["send-one", "发送"]];
-  return [["enrich-email", "邮箱"], ["enrich-social", "社媒"], ...sendActions, ["next", "推进"], ["stage-d", "D"], ["stage-c", "C"], ["stage-b", "B"], ["stage-a", "A"], ["stage-s", "S"], ["wait", "等待"], ["abandon", "放弃"], ["profile", "画像"], ["detail", "详情"], ["return-public", "退回公池"]];
+  const hasValidEmail = Boolean(contact.email) && contact.email_status === "valid";
+  const primary = !hasValidEmail
+    ? ["enrich-email", "补齐邮箱"]
+    : blocked || contact.status === "replied" || Number(contact.replied_count || 0) > 0
+      ? ["detail", "查看并跟进"]
+      : contact.draft_status === "draft"
+        ? ["detail", "审核邮件"]
+        : contact.draft_status === "approved"
+          ? ["detail", "发送邮件"]
+          : ["detail", "准备邮件"];
+  const queueAction = blocked || contact.status !== "enriched" ? [] : [["queue-one", "加入发送队列"]];
+  const secondary = [["enrich-social", "补社媒"], ["profile", "生成画像"], ...queueAction, ["next", "推进阶段"], ["wait", "进入等待"], ["return-public", "退回公共池"]]
+    .filter(([action]) => action !== primary[0]);
+  return { primary, secondary };
 }
 
 function PoolBadge({ contact }) {
@@ -281,6 +352,8 @@ function SocialProfiles({ contact }) {
 
 function EmailFeedback({ contact }) {
   const items = [];
+  if (contact.draft_status === "draft") items.push(["draft", "草稿待审核"]);
+  if (contact.draft_status === "approved") items.push(["approved", "已审核待发送"]);
   if (Number(contact.delivered_count || 0) > 0) items.push(["delivered", `已送达 ${contact.delivered_count}`]);
   if (Number(contact.sent_count || 0) > 0) items.push(["sent", `已发送 ${contact.sent_count}`]);
   if (Number(contact.opened_count || 0) > 0) items.push(["opened", `已打开 ${contact.opened_count}`]);
@@ -344,6 +417,10 @@ function phoneMeta(contact) {
 
 function statusLabel(status) {
   return { new: "新线索", enriched: "已富化", queued: "待发送", sent_1: "已发第1封", sent_2: "已发第2封", sent_3: "已发第3封", replied: "已回复", bounced: "已退信", unsubscribed: "已退订" }[status] || status;
+}
+
+function identityStatusLabel(status) {
+  return { confirmed: "身份已确认", likely: "较可能", review: "需复核", mismatch: "不匹配" }[status] || "需复核";
 }
 
 function dispositionLabel(disposition) {

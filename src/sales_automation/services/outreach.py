@@ -11,6 +11,7 @@ from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
 from ..logging_utils import log
+from ..outbound_identity import outbound_sender, signed_reply_address
 from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
@@ -30,11 +31,11 @@ class PersonalizedEmailService:
         custom_body: str | None = None,
         user: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        contact = self.repo.get_contact(contact_id)
+        contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
-            raise ValueError("Contact not found")
+            raise ValueError("Contact not found or not claimed")
         if mode == "custom":
-            return {
+            result = {
                 "subject": custom_subject or f"Quick question about {contact.get('company_name') or 'your business'}",
                 "body": _normalize_sender_signature(
                     custom_body or "",
@@ -45,8 +46,10 @@ class PersonalizedEmailService:
                 if custom_body
                 else "",
             }
+            self._save_draft(contact, result, mode=mode, user=user)
+            return result
         draft = self._ai_draft(contact, user=user)
-        return {
+        result = {
             "subject": draft["subject"],
             "body": _normalize_sender_signature(
                 draft["body"],
@@ -55,26 +58,46 @@ class PersonalizedEmailService:
                 unsubscribe_value="{{unsubscribe_url}}",
             ),
         }
+        self._save_draft(contact, result, mode=mode, user=user)
+        return result
 
     def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom", user: dict[str, Any] | None = None) -> dict[str, Any]:
-        contact = self.repo.get_contact(contact_id)
+        contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
-            raise ValueError("Contact not found")
+            raise ValueError("Contact not found or not claimed")
         readiness = send_readiness(contact)
         if not readiness["ok"]:
             raise ValueError(f"Contact is not ready to send: {', '.join(readiness['reasons'])}")
+        if hasattr(self.repo, "get_latest_email_draft"):
+            approved = self.repo.get_latest_email_draft(contact_id, user_id=int(user["id"]) if user else None)
+            if not approved or approved.get("status") != "approved":
+                raise ValueError("Email draft must be approved before sending")
+            if approved.get("subject") != subject or approved.get("body") != body:
+                raise ValueError("Email content changed after approval; approve the draft again")
         sender_pool = SenderPoolManager(self.config, self.repo)
-        sender = sender_pool.pick_sender()
-        api_key = self.config.apis.get(f"{sender.get('provider', 'resend')}_key", "")
-        mailer = MailClient(sender.get("provider", "resend"), api_key, sender)
-        reply_to = _reply_to_email(user)
+        transport_sender = sender_pool.pick_sender()
+        sender = outbound_sender(self.config, user, transport_sender)
+        api_key = self.config.apis.get(f"{transport_sender.get('provider', 'resend')}_key", "")
+        mailer = MailClient(
+            transport_sender.get("provider", "resend"),
+            api_key,
+            sender,
+            smtp_config=self.config.raw.get("smtp", {}),
+        )
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
+        tracking_secret = _tracking_secret(self.config)
         step = int(contact.get("sequence_step") or 0) + 1
+        reply_to = signed_reply_address(
+            self.config,
+            contact_id=int(contact["id"]),
+            user_id=int(user["id"]) if user else None,
+            sequence_step=step,
+        ) or _reply_to_email(user)
         values = {
             **contact,
             "sender_name": _sender_signature_name(user, sender.get("name", "")),
             "sender_signature": _sender_signature(user, sender.get("name", "")),
-            "unsubscribe_url": unsubscribe_url(contact, base_url),
+            "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
@@ -85,27 +108,72 @@ class PersonalizedEmailService:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
         html_body = "<br>".join(html.escape(line) for line in text.splitlines())
-        html_body += f'<img src="{open_pixel_url(contact, step, base_url)}" width="1" height="1" alt="" />'
-        message_id = mailer.send(
-            contact["email"],
-            subject,
-            html_body,
-            text,
-            metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": user.get("id") if user else None},
-            reply_to=reply_to,
+        html_body += f'<img src="{open_pixel_url(contact, step, base_url, tracking_secret)}" width="1" height="1" alt="" />'
+        idempotency_key = f"contact-{contact['id']}-step-{step}"
+        attempt = self.repo.reserve_send_attempt(
+            int(contact["id"]),
+            step,
+            user_id=int(user["id"]) if user else None,
+            provider=str(transport_sender.get("provider") or "resend"),
+            sender_email=sender.get("email"),
+            idempotency_key=idempotency_key,
         )
+        if not attempt or not attempt.get("reserved"):
+            raise RuntimeError(f"send_step_already_{(attempt or {}).get('status') or 'reserved'}")
+        try:
+            message_id = mailer.send(
+                contact["email"],
+                subject,
+                html_body,
+                text,
+                metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": user.get("id") if user else None},
+                reply_to=reply_to,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
+            raise
         metadata = {
             "dry_run": sender.get("dry_run", True),
             "mode": mode,
-            "sender_id": sender.get("id"),
+            "sender_id": transport_sender.get("id"),
             "sender_email": sender.get("email"),
+            "transport_sender_email": transport_sender.get("email"),
             "reply_to_email": reply_to,
+            "reply_notification_email": _reply_to_email(user),
             "user_id": user.get("id") if user else None,
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
+        self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
+        self.repo.mark_latest_email_draft_sent(int(contact["id"]), user_id=int(user["id"]) if user else None)
         if recorded:
-            sender_pool.record_send(sender)
-        return {"sent": bool(recorded), "contact_id": contact_id, "step": step, "message_id": message_id}
+            sender_pool.record_send(transport_sender)
+        return {
+            "sent": bool(recorded),
+            "contact_id": contact_id,
+            "step": step,
+            "message_id": message_id,
+            "sender_email": sender.get("email"),
+            "reply_to_email": reply_to,
+        }
+
+    def _save_draft(self, contact: dict[str, Any], draft: dict[str, str], *, mode: str, user: dict[str, Any] | None) -> None:
+        if not hasattr(self.repo, "save_email_draft"):
+            return
+        research = self.repo.get_contact_research(int(contact["id"])) or {}
+        self.repo.save_email_draft(
+            int(contact["id"]),
+            user_id=int(user["id"]) if user else None,
+            sequence_step=int(contact.get("sequence_step") or 0) + 1,
+            mode=mode,
+            subject=draft.get("subject") or "",
+            body=draft.get("body") or "",
+            research_snapshot={
+                "summary": research.get("summary"),
+                "sources": (research.get("sources") or [])[:6],
+                "researched_at": str(research.get("researched_at") or ""),
+            },
+        )
 
     def _ai_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
         fallback = self._fallback_draft(contact, user=user)
@@ -124,10 +192,23 @@ class PersonalizedEmailService:
         followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
         activities = self.repo.list_lifecycle_activities(int(contact["id"]), limit=5)
         history = "\n".join(f"- {item.get('content')}" for item in activities if item.get("content"))
+        research = self.repo.get_contact_research(int(contact["id"])) or {}
+        research_sources = [
+            {
+                "index": index + 1,
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "published_at": item.get("published_at"),
+                "url": item.get("url"),
+            }
+            for index, item in enumerate((research.get("sources") or [])[:6])
+        ]
         prompt = (
             "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
             "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
+            "You may use at most one current signal from research_sources, only when its title and snippet directly support the wording. "
+            "Treat undated or ambiguous sources as weak evidence and phrase them as an observation, not a confirmed business fact. "
             "Use this fixed pain-led five-part structure without headings: "
             "1) state the observed account signal or research reason, "
             "2) name the likely business pain as a hypothesis, not a fact, "
@@ -142,6 +223,8 @@ class PersonalizedEmailService:
             f"five-part framework: {json.dumps(framework, ensure_ascii=False)}; "
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
             f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
+            f"research summary: {research.get('summary') or 'No fresh research available'}; "
+            f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
             f"sender: {self.config.sender.get('name')}."
         )
         try:
@@ -261,17 +344,23 @@ class OutreachService:
         if not step_cfg or not self._step_due(contact, step_cfg):
             return False
         sender_pool = SenderPoolManager(self.config, self.repo)
-        sender = sender_pool.pick_sender()
-        api_key = self.config.apis.get(f"{sender.get('provider', 'resend')}_key", "")
-        mailer = MailClient(sender.get("provider", "resend"), api_key, sender)
-        reply_to = _reply_to_email(user)
+        transport_sender = sender_pool.pick_sender()
+        sender = outbound_sender(self.config, user, transport_sender)
+        api_key = self.config.apis.get(f"{transport_sender.get('provider', 'resend')}_key", "")
+        mailer = MailClient(
+            transport_sender.get("provider", "resend"),
+            api_key,
+            sender,
+            smtp_config=self.config.raw.get("smtp", {}),
+        )
         subject = render_string(step_cfg["subject"], contact)
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
+        tracking_secret = _tracking_secret(self.config)
         values = {
             **contact,
             "sender_name": _sender_signature_name(user, sender.get("name", "")),
             "sender_signature": _sender_signature(user, sender.get("name", "")),
-            "unsubscribe_url": unsubscribe_url(contact, base_url),
+            "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
@@ -282,25 +371,52 @@ class OutreachService:
         text = _normalize_sender_signature(text, user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
         html_body = "<br>".join(html.escape(line) for line in text.splitlines())
         validate_email_body(subject, text)
-        html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url)}" width="1" height="1" alt="" />'
-        message_id = mailer.send(
-            contact["email"],
-            subject,
-            html_body,
-            text,
-            metadata={"contact_id": contact["id"], "sequence_step": step_cfg["step"], "user_id": user.get("id") if user else None},
-            reply_to=reply_to,
+        html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url, tracking_secret)}" width="1" height="1" alt="" />'
+        step = int(step_cfg["step"])
+        reply_to = signed_reply_address(
+            self.config,
+            contact_id=int(contact["id"]),
+            user_id=int(user["id"]) if user else None,
+            sequence_step=step,
+        ) or _reply_to_email(user)
+        idempotency_key = f"contact-{contact['id']}-step-{step}"
+        attempt = self.repo.reserve_send_attempt(
+            int(contact["id"]),
+            step,
+            user_id=int(user["id"]) if user else None,
+            provider=str(transport_sender.get("provider") or "resend"),
+            sender_email=sender.get("email"),
+            idempotency_key=idempotency_key,
         )
+        if not attempt or not attempt.get("reserved"):
+            log("send.skipped_duplicate", contact_id=contact.get("id"), step=step, status=(attempt or {}).get("status"))
+            return False
+        try:
+            message_id = mailer.send(
+                contact["email"],
+                subject,
+                html_body,
+                text,
+                metadata={"contact_id": contact["id"], "sequence_step": step, "user_id": user.get("id") if user else None},
+                reply_to=reply_to,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
+            raise
         metadata = {
             "dry_run": sender.get("dry_run", True),
-            "sender_id": sender.get("id"),
+            "sender_id": transport_sender.get("id"),
             "sender_email": sender.get("email"),
+            "transport_sender_email": transport_sender.get("email"),
             "reply_to_email": reply_to,
+            "reply_notification_email": _reply_to_email(user),
             "user_id": user.get("id") if user else None,
         }
-        sent = self.repo.record_sent(contact["id"], int(step_cfg["step"]), subject, message_id, metadata)
+        sent = self.repo.record_sent(contact["id"], step, subject, message_id, metadata)
+        self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
         if sent:
-            sender_pool.record_send(sender)
+            sender_pool.record_send(transport_sender)
             log("send.sent", contact_id=contact["id"], step=step_cfg["step"], dry_run=sender.get("dry_run", True))
         return sent
 
@@ -356,6 +472,15 @@ def _reply_to_email(user: dict[str, Any] | None) -> str | None:
     if "@" not in value or " " in value:
         return None
     return value
+
+
+def _tracking_secret(config: AppConfig) -> str:
+    app_secret = str(config.raw.get("app", {}).get("tracking_signing_secret") or "").strip()
+    webhook_secret = str(config.raw.get("webhooks", {}).get("resend_secret") or "").strip()
+    secret = app_secret or webhook_secret
+    if len(secret) < 24:
+        raise RuntimeError("TRACKING_SIGNING_SECRET must contain at least 24 characters")
+    return secret
 
 
 def _sender_signature_name(user: dict[str, Any] | None, fallback_name: str = "") -> str:

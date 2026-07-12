@@ -15,7 +15,7 @@ class ProfileAgentService:
         self.config = config
         self.repo = repo
 
-    def summarize(self, contact_id: int) -> dict[str, Any]:
+    def summarize(self, contact_id: int, *, use_llm: bool = True) -> dict[str, Any]:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found")
@@ -23,7 +23,7 @@ class ProfileAgentService:
         llm_cfg = self.config.raw.get("llm", {})
         provider = llm_cfg.get("provider", "deepseek")
         api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
-        if not api_key:
+        if not use_llm or not api_key:
             self.repo.update_profile_summary(contact_id, fallback["summary"], fallback)
             return fallback
         prompt = (

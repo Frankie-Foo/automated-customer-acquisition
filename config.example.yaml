@@ -8,6 +8,7 @@ database:
 
 app:
   public_base_url: ${PUBLIC_BASE_URL}
+  tracking_signing_secret: ${TRACKING_SIGNING_SECRET}
 
 sso:
   vps_enabled: ${VPS_SSO_ENABLED}
@@ -40,26 +41,45 @@ llm:
 
 sender:
   name: Your Name
-  email: you@outreach-domain.com
-  provider: resend
+  email: ${MAIL_FROM_EMAIL}
+  provider: ${MAIL_PROVIDER}
   daily_limit: 6000
   dry_run: true
+
+smtp:
+  host: ${SMTP_HOST}
+  port: ${SMTP_PORT}
+  username: ${SMTP_USER}
+  password: ${SMTP_PASSWORD}
+  security: ${SMTP_SECURITY}
+  timeout: 30
+  envelope_from: ${SMTP_ENVELOPE_FROM}
+  allow_from_alias: ${SMTP_ALLOW_FROM_ALIAS}
 
 sender_pool:
   strategy: round_robin
   accounts:
     - name: Your Name
-      email: you@outreach-domain.com
-      provider: resend
+      email: ${MAIL_FROM_EMAIL}
+      provider: ${MAIL_PROVIDER}
       daily_limit: 200
       warmup_stage: production
       dry_run: true
+
+outbound_identity:
+  mode: ${OUTBOUND_IDENTITY_MODE}
+  sending_domain: ${OUTBOUND_SENDING_DOMAIN}
+  reply_domain: ${OUTBOUND_REPLY_DOMAIN}
+  routing_secret: ${REPLY_ROUTING_SECRET}
+  default_localpart: partnerships
+  reply_localpart: reply
 
 notifications:
   slack_webhook_url: ${SLACK_WEBHOOK_URL}
 
 webhooks:
   resend_secret: ${RESEND_WEBHOOK_SECRET}
+  inbound_email_secret: ${INBOUND_EMAIL_WEBHOOK_SECRET}
 
 sourcing:
   provider: prospeo
@@ -89,8 +109,12 @@ queue:
   batch_size: 100
 
 outreach:
+  waiting_pool_after_days: 14
   send_delay_seconds: 10
   send_jitter_seconds: 5
+
+automation:
+  max_auto_prepare_drafts: 20
 
 quotas:
   global_daily_send_limit: 6000

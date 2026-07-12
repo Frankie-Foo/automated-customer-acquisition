@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import smtplib
+import ssl
 import urllib.parse
+from email.message import EmailMessage
+from email.utils import formataddr, make_msgid
 from typing import Any
 
 from .http import HttpClient
@@ -237,11 +241,22 @@ OpenAIClient = LLMClient
 
 
 class MailClient:
-    def __init__(self, provider: str, api_key: str, sender: dict[str, Any], http: HttpClient | None = None):
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        sender: dict[str, Any],
+        http: HttpClient | None = None,
+        *,
+        smtp_config: dict[str, Any] | None = None,
+        smtp_factory: Any = None,
+    ):
         self.provider = provider
         self.api_key = api_key
         self.sender = sender
         self.http = http or HttpClient()
+        self.smtp_config = smtp_config or {}
+        self.smtp_factory = smtp_factory
 
     def send(
         self,
@@ -252,6 +267,7 @@ class MailClient:
         *,
         metadata: dict[str, Any] | None = None,
         reply_to: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str | None:
         if self.sender.get("dry_run", True):
             return f"dry-run:{to_email}:{subject}"
@@ -269,11 +285,15 @@ class MailClient:
             }
             if reply_to:
                 payload["reply_to"] = [reply_to]
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            if idempotency_key:
+                headers["Idempotency-Key"] = idempotency_key[:256]
             data = self.http.request(
                 "POST",
                 "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=headers,
                 json_body=payload,
+                retries=3 if idempotency_key else 1,
             )
             return data.get("id")
         if self.provider == "sendgrid":
@@ -290,9 +310,77 @@ class MailClient:
                 "https://api.sendgrid.com/v3/mail/send",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json_body=payload,
+                retries=1,
             )
             return data.get("id")
+        if self.provider == "smtp":
+            return self._send_smtp(to_email, subject, html, text, metadata=metadata, reply_to=reply_to)
         raise ValueError(f"Unsupported mail provider: {self.provider}")
+
+    def _send_smtp(
+        self,
+        to_email: str,
+        subject: str,
+        html: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None,
+        reply_to: str | None,
+    ) -> str:
+        cfg = self.smtp_config
+        host = str(cfg.get("host") or "").strip()
+        port = int(cfg.get("port") or 465)
+        username = str(cfg.get("username") or "").strip()
+        password = str(cfg.get("password") or "")
+        security = str(cfg.get("security") or "ssl").strip().lower()
+        timeout = int(cfg.get("timeout") or 30)
+        if not host or not username or not password:
+            raise RuntimeError("SMTP_HOST, SMTP_USER, and SMTP_PASSWORD are required")
+        if security not in {"ssl", "starttls", "plain"}:
+            raise RuntimeError("SMTP_SECURITY must be ssl, starttls, or plain")
+
+        sender_email = str(self.sender.get("email") or username).strip()
+        sender_name = str(self.sender.get("name") or "").strip()
+        envelope_from = str(cfg.get("envelope_from") or username).strip()
+        message = EmailMessage()
+        message["From"] = formataddr((sender_name, sender_email))
+        message["To"] = to_email
+        message["Subject"] = subject
+        message["Message-ID"] = make_msgid(domain=sender_email.partition("@")[2] or None)
+        if reply_to:
+            message["Reply-To"] = reply_to
+        for key, value in (metadata or {}).items():
+            header = _smtp_metadata_header(key)
+            if header:
+                message[header] = str(value).replace("\r", " ").replace("\n", " ")[:200]
+        message.set_content(text)
+        message.add_alternative(html, subtype="html")
+
+        factory = self.smtp_factory
+        if factory is None:
+            if security == "ssl":
+                factory = lambda: smtplib.SMTP_SSL(host, port, timeout=timeout, context=ssl.create_default_context())
+            else:
+                factory = lambda: smtplib.SMTP(host, port, timeout=timeout)
+        with factory() as client:
+            if security == "starttls":
+                client.ehlo()
+                client.starttls(context=ssl.create_default_context())
+                client.ehlo()
+            client.login(username, password)
+            client.send_message(message, from_addr=envelope_from, to_addrs=[to_email])
+        return str(message["Message-ID"])
+
+
+def _smtp_metadata_header(key: Any) -> str | None:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    allowed = {
+        "contact_id": "X-Salesbot-Contact-ID",
+        "sequence_step": "X-Salesbot-Sequence-Step",
+        "user_id": "X-Salesbot-User-ID",
+        "mode": "X-Salesbot-Mode",
+    }
+    return allowed.get(normalized)
 
 
 class SlackClient:

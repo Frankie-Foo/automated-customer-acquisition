@@ -18,6 +18,6 @@ def check_readiness(config: Any, repo: Any) -> dict[str, Any]:
     data = readiness(config)
     checks = [
         {"name": "database", "ok": database["ok"], "required": True, "message": database["message"]},
-        *data.get("checks", []),
+        *(item for item in data.get("checks", []) if item.get("name") != "database"),
     ]
     return {"ready": bool(database["ok"] and data.get("ready")), "database": database, "checks": checks}

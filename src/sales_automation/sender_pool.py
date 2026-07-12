@@ -64,7 +64,7 @@ class SenderPoolManager:
             {
                 "name": sender.get("name") or sender.get("email"),
                 "email": sender["email"],
-                "provider": sender.get("provider", "resend"),
+                "provider": sender.get("provider") or "resend",
                 "daily_limit": int(sender.get("daily_limit") or 100),
                 "warmup_stage": "production",
                 "dry_run": sender.get("dry_run", True),
