@@ -7,19 +7,20 @@ This update adds migrations `024_automation_runs.sql`, `025_email_draft_approval
 ```bash
 cd /opt/salesbot
 git pull
-docker compose build --no-cache app
-docker compose run --rm app salesbot migrate --config config.yaml
-docker compose up -d
+COMPOSE="docker compose --env-file deployment/production.env -f deployment/docker-compose.external-db.yml"
+$COMPOSE build --no-cache salesbot
+$COMPOSE run --rm salesbot salesbot migrate --config config.yaml
+$COMPOSE up -d
 ```
 
-If the Compose service is not named `app`, replace `app` with the actual application service name.
+Use `deployment/docker-compose.production.yml` instead when PostgreSQL is managed by this Compose stack.
 
 ## Verify
 
 ```bash
 curl -fsS https://global-autoleads.vertu.cn/api/live
 curl -fsS https://global-autoleads.vertu.cn/api/health
-docker compose logs --tail=200 app
+$COMPOSE logs --tail=200 salesbot
 ```
 
 Then verify in the browser:
