@@ -44,7 +44,7 @@ sender:
   email: ${MAIL_FROM_EMAIL}
   provider: ${MAIL_PROVIDER}
   daily_limit: 6000
-  dry_run: true
+  dry_run: ${MAIL_DRY_RUN}
 
 smtp:
   host: ${SMTP_HOST}
@@ -64,7 +64,7 @@ sender_pool:
       provider: ${MAIL_PROVIDER}
       daily_limit: 200
       warmup_stage: production
-      dry_run: true
+      dry_run: ${MAIL_DRY_RUN}
 
 outbound_identity:
   mode: ${OUTBOUND_IDENTITY_MODE}

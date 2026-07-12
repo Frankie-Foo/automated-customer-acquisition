@@ -2,6 +2,7 @@
 
 ## 2026-07-12
 
+- Made `MAIL_DRY_RUN` production-configurable and coerced exact environment placeholders to booleans, so container deployments can enable real sending without editing image-baked YAML.
 - Reduced sales-page startup work by loading sourcing, customer, outreach, reporting, and admin modules only after their first visit; dashboard data now requests only what the active page needs.
 - Shortened the mobile customer review flow from 25 to 10 rows per page, added five direct customer filters, reset scroll position on route changes, and removed the duplicate four-step navigation on narrow screens.
 - Added a direct customer picker to the email workspace and split the administrator console into account, sender, automation, assignment, and audit sections.

@@ -48,7 +48,10 @@ def load_dotenv(path: Path = Path(".env"), *, override: bool = True) -> None:
 
 def expand_env(value: Any) -> Any:
     if isinstance(value, str):
-        return ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        expanded = ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        if ENV_PATTERN.fullmatch(value):
+            return _coerce(expanded)
+        return expanded
     if isinstance(value, list):
         return [expand_env(item) for item in value]
     if isinstance(value, dict):

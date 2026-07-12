@@ -9,6 +9,11 @@ def test_expand_env(monkeypatch):
     assert expand_env({"host": "${DB_HOST}"}) == {"host": "localhost"}
 
 
+def test_expand_env_coerces_exact_boolean_placeholder(monkeypatch):
+    monkeypatch.setenv("MAIL_DRY_RUN", "false")
+    assert expand_env({"dry_run": "${MAIL_DRY_RUN}"}) == {"dry_run": False}
+
+
 def test_load_config_with_minimal_yaml(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DB_HOST", "localhost")
     cfg = tmp_path / "config.yaml"
