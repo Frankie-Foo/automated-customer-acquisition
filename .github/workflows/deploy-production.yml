@@ -61,10 +61,33 @@ jobs:
           PROD_PATH: ${{ vars.PROD_PATH }}
           COMPOSE_FILE: ${{ vars.PROD_COMPOSE_FILE }}
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          MAILBOX_USER: ${{ secrets.PROD_MAILBOX_USER }}
+          MAILBOX_PASSWORD: ${{ secrets.PROD_MAILBOX_PASSWORD }}
         run: |
           port="${PROD_PORT:-22}"
           path="${PROD_PATH:-/opt/salesbot}"
           compose_file="${COMPOSE_FILE:-deployment/docker-compose.external-db.yml}"
-          ssh -i ~/.ssh/salesbot_deploy -p "$port" "$PROD_USER@$PROD_HOST" \
-            "set -e; cd '$path'; git fetch --prune origin; git switch --detach '$RELEASE_SHA'; PROD_COMPOSE_FILE='$compose_file' bash scripts/deploy-production.sh '$RELEASE_SHA'"
-
+          test -n "$PROD_HOST" && test -n "$PROD_USER"
+          test -n "$MAILBOX_USER" && test -n "$MAILBOX_PASSWORD"
+          mailbox_config=$(cat <<EOF
+          MAIL_PROVIDER=smtp
+          MAIL_FROM_EMAIL=$MAILBOX_USER
+          SMTP_HOST=smtp.exmail.qq.com
+          SMTP_PORT=465
+          SMTP_USER=$MAILBOX_USER
+          SMTP_PASSWORD=$MAILBOX_PASSWORD
+          SMTP_SECURITY=ssl
+          SMTP_ENVELOPE_FROM=$MAILBOX_USER
+          SMTP_ALLOW_FROM_ALIAS=false
+          IMAP_HOST=imap.exmail.qq.com
+          IMAP_PORT=993
+          IMAP_USER=$MAILBOX_USER
+          IMAP_PASSWORD=$MAILBOX_PASSWORD
+          IMAP_FOLDER=INBOX
+          IMAP_LOOKBACK_DAYS=14
+          MAILBOX_POLL_INTERVAL_SECONDS=60
+          OUTBOUND_IDENTITY_MODE=legacy
+          EOF
+          )
+          printf '%s\n' "$mailbox_config" | ssh -i ~/.ssh/salesbot_deploy -p "$port" "$PROD_USER@$PROD_HOST" \
+            "set -e; cd '$path'; git fetch --prune origin; git switch --detach '$RELEASE_SHA'; python3 scripts/update-mailbox-env.py '$path/.env'; PROD_COMPOSE_FILE='$compose_file' bash scripts/deploy-production.sh '$RELEASE_SHA'"

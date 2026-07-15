@@ -2,6 +2,7 @@
 
 ## 2026-07-15
 
+- Added allowlisted atomic production mailbox environment updates from GitHub Secrets, so deployment configures SMTP and IMAP without committing or manually copying credentials.
 - Switched the production mailbox profile to `global@vertu.com` and completed a real SMTP-to-IMAP acceptance test: one reply was matched to the original Message-ID, recorded once, and advanced the contact to replied/C.
 - Added read-only IMAP reply ingestion with thread matching, deduplication, reply event recording, lifecycle progression, and a production mailbox worker.
 - Added a Frank enterprise-mailbox pilot template and clarified the safe migration path from display names to administrator-authorized `global.vertu.com` Send As aliases.

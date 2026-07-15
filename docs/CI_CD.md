@@ -49,6 +49,8 @@ GitHub production Environment 需要以下 Secrets：
 | `PROD_SSH_PORT` | SSH 端口，默认 `22` |
 | `PROD_SSH_PRIVATE_KEY` | 专用部署私钥 |
 | `PROD_SSH_KNOWN_HOSTS` | 预先核验过的服务器 host key |
+| `PROD_MAILBOX_USER` | 生产收发邮箱，例如 `global@vertu.com` |
+| `PROD_MAILBOX_PASSWORD` | 企业邮箱客户端专用密码 |
 
 Environment Variables：
 
