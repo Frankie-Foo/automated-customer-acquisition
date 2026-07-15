@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: salesbot_ci
+      POSTGRES_PASSWORD: salesbot_ci_password
+      POSTGRES_DB: salesbot_ci
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salesbot_ci -d salesbot_ci"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  salesbot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: salesbot_ci
+      DB_PASSWORD: salesbot_ci_password
+      DB_NAME: salesbot_ci
+      DB_CONNECT_TIMEOUT: 5
+      PUBLIC_BASE_URL: http://127.0.0.1:18765
+      SALESBOT_ADMIN_USERNAME: admin
+      SALESBOT_ADMIN_PASSWORD: ci-only-password-change-me
+      SALESBOT_ADMIN_NAME: CI Admin
+      SALESBOT_REQUIRE_PRODUCTION_READY: "false"
+      SALESBOT_DB_WAIT_TIMEOUT: 90
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "18765:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/live', timeout=3).read()"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+

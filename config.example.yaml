@@ -56,6 +56,15 @@ smtp:
   envelope_from: ${SMTP_ENVELOPE_FROM}
   allow_from_alias: ${SMTP_ALLOW_FROM_ALIAS}
 
+imap:
+  host: ${IMAP_HOST}
+  port: ${IMAP_PORT}
+  username: ${IMAP_USER}
+  password: ${IMAP_PASSWORD}
+  folder: ${IMAP_FOLDER}
+  timeout: 20
+  lookback_days: ${IMAP_LOOKBACK_DAYS}
+
 sender_pool:
   strategy: round_robin
   accounts:

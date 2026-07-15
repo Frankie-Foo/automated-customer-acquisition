@@ -16,6 +16,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
     quotas = config.raw.get("quotas", {})
     outbound_identity = config.raw.get("outbound_identity", {})
     smtp = config.raw.get("smtp", {})
+    imap = config.raw.get("imap", {})
     centralized_identity = str(outbound_identity.get("mode") or "").strip().lower() == "centralized_alias"
     checks = [
         _check("database", bool(config.database.get("host") and config.database.get("dbname")), "Database config is present"),
@@ -37,8 +38,8 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("tracking_security", len(str(app.get("tracking_signing_secret") or "")) >= 24, "TRACKING_SIGNING_SECRET must contain at least 24 characters"),
         _check(
             "reply_ingestion",
-            _reply_ingestion_ready(config.raw.get("webhooks", {}), apis, centralized_identity),
-            "Use the verified Resend webhook for centralized receiving, or configure INBOUND_EMAIL_WEBHOOK_SECRET for a mailbox bridge",
+            _reply_ingestion_ready(config.raw.get("webhooks", {}), apis, centralized_identity, imap, smtp),
+            "Use verified Resend Receiving or configure a readable IMAP mailbox",
         ),
         _check(
             "outbound_identity",
@@ -108,7 +109,22 @@ def _outbound_identity_ready(identity: dict[str, Any]) -> bool:
     ) and len(secret) >= 24
 
 
-def _reply_ingestion_ready(webhooks: dict[str, Any], apis: dict[str, Any], centralized_identity: bool) -> bool:
+def _reply_ingestion_ready(
+    webhooks: dict[str, Any],
+    apis: dict[str, Any],
+    centralized_identity: bool,
+    imap: dict[str, Any] | None = None,
+    smtp: dict[str, Any] | None = None,
+) -> bool:
+    imap = imap or {}
+    smtp = smtp or {}
+    mailbox_ready = bool(
+        imap.get("host")
+        and (imap.get("username") or smtp.get("username"))
+        and (imap.get("password") or smtp.get("password"))
+    )
+    if mailbox_ready:
+        return True
     if centralized_identity:
         return bool(apis.get("resend_key")) and len(str(webhooks.get("resend_secret") or "").strip()) >= 24
     return len(str(webhooks.get("inbound_email_secret") or "").strip()) >= 24

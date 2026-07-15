@@ -22,6 +22,7 @@ const workflowLinks = Array.from(document.querySelectorAll("[data-flow-page]"));
 const outreachViewButtons = Array.from(document.querySelectorAll("[data-outreach-view]"));
 const customerWorkspace = document.querySelector("#customer-workspace");
 const sentEmails = document.querySelector("#sent-emails");
+let noticeTimer = null;
 
 const pageMeta = {
   dashboard: ["工作台", "查看今天最需要处理的客户和邮件动作。"],
@@ -81,12 +82,15 @@ function renderAccount() {
 
 function showNotice(message, type = "") {
   if (!notice || !message) return;
+  window.clearTimeout(noticeTimer);
   notice.textContent = message;
   notice.className = `notice ${type}`.trim();
   notice.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  noticeTimer = window.setTimeout(hideNotice, type === "error" ? 10000 : 5000);
 }
 
 function hideNotice() {
+  window.clearTimeout(noticeTimer);
   notice?.classList.add("hidden");
 }
 
@@ -115,6 +119,7 @@ function setPage(page, replaceHash = false) {
   document.body.dataset.activePage = safePage;
 
   if (previousPage && previousPage !== safePage) {
+    hideNotice();
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
   }
@@ -122,6 +127,7 @@ function setPage(page, replaceHash = false) {
   if (replaceHash && window.location.hash !== `#${safePage}`) {
     history.replaceState(null, "", `#${safePage}`);
   }
+  window.dispatchEvent(new CustomEvent("salesbot:page-change", { detail: { page: safePage } }));
 }
 
 function syncPageFromHash() {

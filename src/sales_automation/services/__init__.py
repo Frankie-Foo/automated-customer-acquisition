@@ -4,6 +4,7 @@ from .ai_agents import ProfileAgentService, StageAgentService
 from .automation import AutomationRunService
 from .enrichment import EnrichmentService
 from .lifecycle import LifecycleService
+from .mailbox import MailboxReplyService
 from .outreach import OutreachService, PersonalizedEmailService
 from .queue import QueueService
 from .research import AccountResearchService
@@ -16,6 +17,7 @@ __all__ = [
     "EnrichmentService",
     "AutomationRunService",
     "LifecycleService",
+    "MailboxReplyService",
     "OutreachService",
     "PersonalizedEmailService",
     "ProfileAgentService",

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-15
+
+- Switched the production mailbox profile to `global@vertu.com` and completed a real SMTP-to-IMAP acceptance test: one reply was matched to the original Message-ID, recorded once, and advanced the contact to replied/C.
+- Added read-only IMAP reply ingestion with thread matching, deduplication, reply event recording, lifecycle progression, and a production mailbox worker.
+- Added a Frank enterprise-mailbox pilot template and clarified the safe migration path from display names to administrator-authorized `global.vertu.com` Send As aliases.
+- Standardized production sales aliases on `global.vertu.com` and signed inbound reply routing on `reply.global.vertu.com`, using enterprise SMTP for outbound and Resend only for inbound reply processing.
+- Fixed sent-email history when legacy events contain an empty `dry_run` value, added safe internal test-email copy, and tightened desktop/mobile workflow layouts.
+- Fixed sales users landing on a blank dashboard after an administrator-only hash route and made notices human-readable, temporary, and page-scoped.
+- Verified a real local SMTP send, open tracking, SMTP login, and IMAP login; 132 automated tests pass.
+
 ## 2026-07-12
 
 - Made `MAIL_DRY_RUN` production-configurable and coerced exact environment placeholders to booleans, so container deployments can enable real sending without editing image-baked YAML.
@@ -113,3 +123,9 @@
 - Updated admin and contact pipeline UI build for the latest permissions, customer list, email feedback, and sales account tooling.
 - Added account export and sales training PPT helper scripts under `tools/`.
 - Added tests for webhook fallback matching, reply-to handling, outbound guard logic, and LinkedIn public search behavior.
+# 2026-07-14
+
+- 新增本地 Docker 一键验收，使用隔离 PostgreSQL 验证迁移、首页和存活探针。
+- 新增 GitHub Actions CI，覆盖后端测试、React 构建和完整容器冒烟测试。
+- 新增基于 SSH 的生产 CD，镜像按 commit SHA 标记并在健康检查失败时自动回滚。
+- 生产 Compose 支持通过 `SALESBOT_IMAGE` 发布不可变版本；禁止依赖未加密 Docker 2375 端口。

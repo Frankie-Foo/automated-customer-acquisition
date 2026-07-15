@@ -508,12 +508,28 @@ function formatDate(value) {
 }
 
 function defaultEmailSubject(contact) {
+  if (isInternalTestContact(contact)) return "[Test] Outbound Ops delivery and feedback flow";
   const company = contact?.company_name || "your business";
   return `Possible Vertu channel fit for ${company}`;
 }
 
 function defaultEmailBody(contact) {
   const firstName = contact?.first_name || "there";
+  if (isInternalTestContact(contact)) {
+    return [
+      `Hi ${firstName},`,
+      "",
+      "This is a controlled end-to-end test from Outbound Ops. It is checking email delivery, open tracking, reply routing, and lifecycle updates.",
+      "",
+      "Please open this email and reply with: 回流测试收到",
+      "",
+      "Best regards,",
+      "{{sender_name}} You",
+      "BD Manager Of Media East Region | VERTU",
+      "",
+      "Unsubscribe: {{unsubscribe_url}}",
+    ].join("\n");
+  }
   const company = contact?.company_name || "your company";
   const role = contact?.job_title || "your team";
   const context = contact?.source_context || {};
@@ -539,4 +555,8 @@ function defaultEmailBody(contact) {
     "",
     "Unsubscribe: {{unsubscribe_url}}",
   ].join("\n");
+}
+
+function isInternalTestContact(contact) {
+  return /@vertu\.(?:cn|com)$/i.test(contact?.email || "");
 }

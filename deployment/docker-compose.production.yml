@@ -15,6 +15,7 @@ services:
       retries: 10
 
   salesbot:
+    image: ${SALESBOT_IMAGE:-salesbot:local}
     build:
       context: ..
       dockerfile: Dockerfile
@@ -32,6 +33,29 @@ services:
         condition: service_healthy
     expose:
       - "8765"
+
+  mailbox-worker:
+    image: ${SALESBOT_IMAGE:-salesbot:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      SALESBOT_REQUIRE_PRODUCTION_READY: "true"
+      SALESBOT_DB_WAIT_TIMEOUT: 120
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c 'while true; do
+        salesbot mailbox-poll --config config.yaml --limit 200 || true;
+        sleep "$${MAILBOX_POLL_INTERVAL_SECONDS:-60}";
+      done'
 
   caddy:
     image: caddy:2-alpine

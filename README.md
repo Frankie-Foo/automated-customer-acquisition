@@ -54,6 +54,12 @@ salesbot blacklist --config config.yaml --email bad@example.com
 
 ## Production Config
 
+本地 Docker 验收、GitHub CI、生产审批和自动回滚流程见 [docs/CI_CD.md](docs/CI_CD.md)。开发机发布前先运行：
+
+```powershell
+.\scripts\test-local-docker.ps1
+```
+
 `.env`:
 
 ```env

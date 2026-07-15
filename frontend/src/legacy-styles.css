@@ -4711,3 +4711,81 @@ main,
     min-width: 0;
   }
 }
+
+/* Final interaction polish: keep the workflow compact and task focused. */
+@media (min-width: 761px) and (max-width: 1120px) {
+  .appbar {
+    min-height: 96px;
+    flex-direction: row;
+    align-items: center;
+    padding: 16px 20px;
+  }
+
+  .appbar > div:first-child {
+    min-width: 260px;
+  }
+
+  .top-actions {
+    width: auto;
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+
+  .account-box {
+    min-width: 150px;
+  }
+
+  .section-head {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(500px, 1.5fr);
+    align-items: end;
+    gap: 20px;
+  }
+
+  .section-head .toolbar {
+    display: grid;
+    grid-template-columns: minmax(130px, .8fr) minmax(180px, 1fr) minmax(190px, 1.2fr);
+    gap: 10px;
+  }
+
+  .quickstart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .nav a {
+    min-height: 32px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+
+  .appbar {
+    gap: 10px;
+  }
+
+  .account-box {
+    width: auto;
+    flex: 1 1 140px;
+  }
+
+  .metric {
+    min-height: 92px;
+    padding: 12px;
+  }
+
+  .metric strong {
+    font-size: 22px;
+  }
+
+  .metric small {
+    margin-top: 6px;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 420px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -1,88 +1,94 @@
-# SMTP 发信切换手册
+# SMTP 发信与 IMAP 回复回流
 
-## 推荐架构
+系统支持用同一个企业邮箱完成真实发信和自动收取客户回复：
 
-- 发信：统一企业邮箱通过 SMTP 发送。
-- 发件显示名：使用当前登录销售姓名。
-- From 地址：默认使用 SMTP 登录邮箱，避免未经授权的别名被服务器拒绝。
-- Reply-To：继续使用系统签名回复地址。
-- 收件回流：继续使用 Resend Receiving 和 `/webhooks/resend`，自动匹配客户与销售。
+- SMTP 负责发送。
+- IMAP 只读扫描收件箱，不改变 Foxmail 的已读状态。
+- 系统优先用 `In-Reply-To` / `Message-ID` 匹配原始邮件，找不到时再按客户邮箱匹配。
+- 回复自动写入邮件反馈，并把客户推进到已回复/C 阶段。
 
-这意味着不需要收集十个销售的邮箱密码，只需要一个专门用于获客的企业邮箱客户端专用密码。
+## 当前生产邮箱
 
-## 腾讯企业邮箱参数
-
-腾讯企业邮箱常用配置为：
+使用 [deployment/env.global-vertu.example](../deployment/env.global-vertu.example) 作为模板。核心配置：
 
 ```dotenv
 MAIL_PROVIDER=smtp
+MAIL_FROM_EMAIL=global@vertu.com
 SMTP_HOST=smtp.exmail.qq.com
 SMTP_PORT=465
-SMTP_USER=partnerships@outreach.vertu.cn
+SMTP_USER=global@vertu.com
 SMTP_PASSWORD=客户端专用密码
 SMTP_SECURITY=ssl
-SMTP_ENVELOPE_FROM=partnerships@outreach.vertu.cn
+SMTP_ENVELOPE_FROM=global@vertu.com
 SMTP_ALLOW_FROM_ALIAS=false
+
+IMAP_HOST=imap.exmail.qq.com
+IMAP_PORT=993
+IMAP_USER=global@vertu.com
+IMAP_PASSWORD=同一个客户端专用密码
+IMAP_FOLDER=INBOX
+IMAP_LOOKBACK_DAYS=14
+MAILBOX_POLL_INTERVAL_SECONDS=60
+
+OUTBOUND_IDENTITY_MODE=legacy
 ```
 
-不要填写网页登录密码。启用安全登录后，应在企业邮箱设置中生成客户端专用密码。
+不要填写网页登录密码，应使用企业邮箱生成的客户端专用密码。
 
-## config.yaml
+## 邮箱别名
 
-`sender.email` 必须与 SMTP 登录账号或已授权 Send As 地址一致：
-
-```yaml
-sender:
-  name: VERTU Partnerships
-  email: partnerships@outreach.vertu.cn
-  provider: ${MAIL_PROVIDER}
-  daily_limit: 200
-  dry_run: false
-```
-
-如果使用 `sender_pool.accounts[]`，里面每个启用账号的 `provider` 也必须改成 `smtp`，否则账号级配置会覆盖 `sender.provider`。
-
-## 销售身份
-
-默认 `SMTP_ALLOW_FROM_ALIAS=false`：
+Foxmail 只能修改显示名称，例如：
 
 ```text
-From: Viki <partnerships@outreach.vertu.cn>
-Reply-To: reply+v1.<contact>.<user>.<step>.<signature>@reply.outreach.vertu.cn
+From: May | VERTU <global@vertu.com>
 ```
 
-只有邮箱管理员明确为该 SMTP 账号配置了域内别名或 Send As 权限，才能设为：
+它不能授权一个新的真实发件地址。要发送：
+
+```text
+From: May | VERTU <may@global.vertu.com>
+```
+
+企业邮箱管理员必须先完成：
+
+1. 为邮箱创建 `may@global.vertu.com` 别名，或创建独立邮箱。
+2. 确认该别名的来信会投递到统一收件箱。
+3. 为 SMTP 登录账号授予该地址的 Send As 权限。
+4. 实测服务端不会拒绝或改写 From。
+
+全部通过后才能设置：
 
 ```dotenv
 SMTP_ALLOW_FROM_ALIAS=true
+OUTBOUND_IDENTITY_MODE=centralized_alias
+OUTBOUND_SENDING_DOMAIN=global.vertu.com
 ```
 
-此时系统会尝试发送：
+未授权时保持 `SMTP_ALLOW_FROM_ALIAS=false`。系统仍会显示当前登录销售的姓名，但实际发件地址使用 SMTP 登录邮箱。
 
-```text
-From: Viki <viki@outreach.vertu.cn>
+## Docker 运行
+
+生产 Compose 已包含 `mailbox-worker`，默认每 60 秒轮询一次：
+
+```bash
+docker compose -f deployment/docker-compose.production.yml up -d --build
+docker compose -f deployment/docker-compose.production.yml logs -f mailbox-worker
 ```
 
-未授权时不要开启，否则可能出现 SMTP 拒绝、From 被重写或进入垃圾箱。
+单次手动检查：
 
-## 上线步骤
+```bash
+docker compose -f deployment/docker-compose.production.yml exec salesbot \
+  salesbot mailbox-poll --config config.yaml --limit 50
+```
 
-1. 创建专用获客邮箱，不使用员工个人邮箱。
-2. 开启 SMTP 服务并生成客户端专用密码。
-3. 把环境变量交给运维写入服务器 `.env`，权限设为仅部署用户可读。
-4. 更新代码并重启容器。
-5. 执行：
+## 验收
 
-   ```bash
-   salesbot doctor --config config.yaml
-   ```
+1. 从网站向公司测试邮箱发送一封邮件。
+2. 确认 From、显示名称、正文和签名正确。
+3. 在收件端直接回复该邮件。
+4. 等待最多 60 秒。
+5. 网站邮件中心出现回复，客户进入已回复/C 阶段。
+6. 再运行一次轮询，确认同一回复不会重复入库。
 
-6. 先只向公司测试邮箱发送一封，检查 From、Reply-To、正文和签名。
-7. 回复测试邮件，确认回复正文进入网站并归属正确销售。
-8. 小流量 warmup，不要第一天直接发送 200 封。
-
-## 失败处理
-
-- SMTP 明确拒绝：记录为发送失败，可以修复后人工重试。
-- SMTP 网络超时：系统不会自动重发，因为服务端可能已经接收；先查发件箱再决定是否重试。
-- Resend Receiving 异常：不影响 SMTP 发信，但客户回复不会自动进入客户池，应暂停批量发送并修复回流。
+上线前先小流量测试，不要第一天直接发送 200 封。

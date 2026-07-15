@@ -22,6 +22,7 @@ def outbound_sender(config: AppConfig, user: dict[str, Any] | None, transport_se
     """Return the customer-visible sender while retaining transport account metadata."""
 
     sender = dict(transport_sender)
+    sender["name"] = _sender_display_name(user, str(sender.get("name") or "VERTU"))
     if not centralized_identity_enabled(config):
         return sender
     identity = config.raw.get("outbound_identity", {})
@@ -29,7 +30,6 @@ def outbound_sender(config: AppConfig, user: dict[str, Any] | None, transport_se
     if not domain:
         raise RuntimeError("OUTBOUND_SENDING_DOMAIN is required for centralized_alias mode")
     localpart = sender_alias_localpart(user, fallback=identity.get("default_localpart"))
-    sender["name"] = _sender_display_name(user, str(sender.get("name") or "VERTU"))
     sender["transport_email"] = transport_sender.get("email")
     smtp_config = config.raw.get("smtp", {})
     smtp_alias_allowed = str(smtp_config.get("allow_from_alias") or "").strip().lower() in {"1", "true", "yes", "on"}

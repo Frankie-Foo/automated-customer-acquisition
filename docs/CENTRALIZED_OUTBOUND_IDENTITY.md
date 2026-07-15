@@ -2,10 +2,10 @@
 
 ## 目标
 
-系统使用统一 SMTP 发信和集中回信基础设施，但每个销售对客户显示独立身份：
+系统使用 `global.vertu.com` 统一发信域和集中回信基础设施，但每个销售对客户显示独立身份：
 
-- 默认显示 `Viki <partnerships@outreach.vertu.cn>`，客户仍能识别具体销售；
-- 邮箱后台授予 Send As 权限后，可显示 `Viki <viki@outreach.vertu.cn>`；
+- 默认显示 `Viki <viki@global.vertu.com>`；
+- 每位销售的本地部分来自账号的“发件别名”，没有配置时使用登录账号名；
 - 销售不需要提供企业邮箱密码或 SMTP 授权码；
 - 每封邮件的 `Reply-To` 都是不可伪造的签名地址；
 - 客户回复后，系统自动识别联系人、原销售和触达轮次；
@@ -16,10 +16,10 @@
 ```mermaid
 flowchart LR
   A[销售登录] --> B[系统生成销售发件别名]
-  B --> C[企业邮箱 SMTP 发送]
+  B --> C[企业邮箱 SMTP 使用 global.vertu.com 发送]
   C --> D[客户收到个性化 From 和签名 Reply-To]
   D --> E[客户回复到独立 reply 子域]
-  E --> F[Resend email.received Webhook]
+  E --> F[reply.global.vertu.com 的 Resend email.received Webhook]
   F --> G[验证 Webhook 和回复地址 HMAC]
   G --> H[拉取回复正文]
   H --> I[匹配客户和销售]
@@ -31,27 +31,30 @@ flowchart LR
 
 ```dotenv
 OUTBOUND_IDENTITY_MODE=centralized_alias
-OUTBOUND_SENDING_DOMAIN=outreach.vertu.cn
-OUTBOUND_REPLY_DOMAIN=reply.outreach.vertu.cn
+OUTBOUND_SENDING_DOMAIN=global.vertu.com
+OUTBOUND_REPLY_DOMAIN=reply.global.vertu.com
 REPLY_ROUTING_SECRET=至少32位、与其他密钥不同的随机字符串
 RESEND_API_KEY=re_xxx
 RESEND_WEBHOOK_SECRET=whsec_xxx
 MAIL_PROVIDER=smtp
+MAIL_FROM_EMAIL=partnerships@global.vertu.com
 SMTP_HOST=smtp.exmail.qq.com
 SMTP_PORT=465
-SMTP_USER=partnerships@outreach.vertu.cn
+SMTP_USER=partnerships@global.vertu.com
 SMTP_PASSWORD=客户端专用密码
 SMTP_SECURITY=ssl
-SMTP_ALLOW_FROM_ALIAS=false
+SMTP_ENVELOPE_FROM=partnerships@global.vertu.com
+SMTP_ALLOW_FROM_ALIAS=true
 ```
 
 `REPLY_ROUTING_SECRET`、`TRACKING_SIGNING_SECRET` 和 `RESEND_WEBHOOK_SECRET` 必须是三个不同的值，不得提交到 Git。
 
 ## Resend 与 DNS
 
-1. 在 Resend 添加并验证 `outreach.vertu.cn`，完成 DKIM/SPF 配置。
-2. 在 Resend 为 `reply.outreach.vertu.cn` 启用 Receiving，按页面提供的值添加 MX 记录。
-3. 不要修改 `vertu.cn` 根域现有企业邮箱 MX；回信使用独立子域，避免影响腾讯企业邮箱。
+1. 在企业邮箱后台添加 `global.vertu.com`，创建专用 SMTP 账号，并为每个销售别名授予 Send As 权限。
+2. 在 DNS 中完成 `global.vertu.com` 的 SPF、DKIM、DMARC 配置。
+3. 在 Resend 添加 `reply.global.vertu.com`，启用 Receiving，并严格按页面提供的值添加 MX 记录。
+4. 不要修改 `vertu.com` 根域现有企业邮箱 MX；发信和回信都使用独立子域。
 4. 在 Resend Webhooks 使用：
 
    `https://global-autoleads.vertu.cn/webhooks/resend`
@@ -59,7 +62,9 @@ SMTP_ALLOW_FROM_ALIAS=false
 5. 至少勾选 `email.received`、`email.sent`、`email.delivered`、`email.opened`、`email.clicked`、`email.bounced`、`email.complained`、`email.failed`。
 6. 将该 Webhook 的 Signing Secret 填入 `RESEND_WEBHOOK_SECRET`。
 
-SMTP 负责发送，Resend 只负责独立回复子域的 Receiving。Receiving Webhook 只包含邮件元数据，系统会再调用 Resend Received Email API 拉取正文。
+企业邮箱 SMTP 负责发送；Resend 只负责独立回复子域的 Receiving。Receiving Webhook 只包含邮件元数据，系统会再调用 Resend Received Email API 拉取正文。
+
+不要使用 Resend API 发送陌生客户开发信。Resend 的 Acceptable Use Policy 禁止 cold outreach、购买名单和抓取名单发送。
 
 ## 管理员操作
 
@@ -77,7 +82,7 @@ salesbot doctor --config config.yaml
 然后用一个测试客户发送邮件，确认：
 
 1. From 是当前登录销售的别名；
-2. Reply-To 类似 `reply+v1.385.11.1.<signature>@reply.outreach.vertu.cn`；
+2. Reply-To 类似 `reply+v1.385.11.1.<signature>@reply.global.vertu.com`；
 3. 回复后网站出现 `replied` 事件和回复正文；
 4. 客户归属发送销售，SABCD 至少进入 C；
 5. 重放同一个 Webhook 不会重复创建回复记录。

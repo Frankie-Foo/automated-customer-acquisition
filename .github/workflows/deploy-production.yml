@@ -1,0 +1,70 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA to deploy (defaults to main HEAD)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: salesbot-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Resolve release SHA
+        id: release
+        env:
+          MANUAL_SHA: ${{ inputs.commit_sha }}
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$MANUAL_SHA" ]; then
+            echo "sha=$MANUAL_SHA" >> "$GITHUB_OUTPUT"
+          elif [ -n "$WORKFLOW_SHA" ]; then
+            echo "sha=$WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/salesbot_deploy
+          chmod 600 ~/.ssh/salesbot_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy verified commit
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_PORT: ${{ secrets.PROD_SSH_PORT }}
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_PATH: ${{ vars.PROD_PATH }}
+          COMPOSE_FILE: ${{ vars.PROD_COMPOSE_FILE }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          port="${PROD_PORT:-22}"
+          path="${PROD_PATH:-/opt/salesbot}"
+          compose_file="${COMPOSE_FILE:-deployment/docker-compose.external-db.yml}"
+          ssh -i ~/.ssh/salesbot_deploy -p "$port" "$PROD_USER@$PROD_HOST" \
+            "set -e; cd '$path'; git fetch --prune origin; git switch --detach '$RELEASE_SHA'; PROD_COMPOSE_FILE='$compose_file' bash scripts/deploy-production.sh '$RELEASE_SHA'"
+

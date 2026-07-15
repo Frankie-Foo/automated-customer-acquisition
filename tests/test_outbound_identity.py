@@ -39,10 +39,13 @@ def test_signed_reply_address_round_trip_and_tamper_rejection():
     assert parse_signed_reply_route(cfg, address.replace(".385.", ".386.")) is None
 
 
-def test_legacy_mode_preserves_transport_sender_and_has_no_route():
+def test_legacy_mode_preserves_transport_address_but_uses_sales_display_name():
     transport = {"name": "Transport", "email": "api@mail.example"}
 
-    assert outbound_sender(config(mode="legacy"), {"username": "Viki"}, transport) == transport
+    assert outbound_sender(config(mode="legacy"), {"username": "Viki"}, transport) == {
+        "name": "Viki",
+        "email": "api@mail.example",
+    }
     assert signed_reply_address(config(mode="legacy"), contact_id=1, user_id=2, sequence_step=1) is None
 
 

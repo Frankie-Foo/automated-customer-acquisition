@@ -47,8 +47,12 @@ export default function App() {
       setVisitedPages((current) => current.has(page) ? current : new Set([...current, page]));
     };
     window.addEventListener("hashchange", syncRoute);
+    window.addEventListener("salesbot:page-change", syncRoute);
     syncRoute();
-    return () => window.removeEventListener("hashchange", syncRoute);
+    return () => {
+      window.removeEventListener("hashchange", syncRoute);
+      window.removeEventListener("salesbot:page-change", syncRoute);
+    };
   }, []);
 
   useEffect(() => {

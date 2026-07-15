@@ -1267,7 +1267,7 @@ class Repository:
                        COALESCE(e.metadata->>'sender_id', '') AS sender_id,
                        COALESCE(e.metadata->>'reply_to_email', '') AS reply_to_email,
                        COALESCE(e.metadata->>'mode', '') AS mode,
-                       COALESCE((e.metadata->>'dry_run')::boolean, FALSE) AS dry_run,
+                       COALESCE(NULLIF(e.metadata->>'dry_run', '')::boolean, FALSE) AS dry_run,
                        c.first_name,
                        c.last_name,
                        c.email AS recipient_email,
