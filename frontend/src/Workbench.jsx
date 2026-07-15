@@ -120,6 +120,7 @@ function CompanySeedPanelV2({ guarded, notify }) {
   const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_prepare_drafts: true });
   const [runs, setRuns] = useState([]);
   const [working, setWorking] = useState(false);
+  const regionMode = regionModeLabel(form.default_location);
 
   const loadRuns = useCallback(async () => {
     const response = await api("/api/automation-runs");
@@ -163,6 +164,10 @@ function CompanySeedPanelV2({ guarded, notify }) {
 
   return (
     <div className="tab-panel active">
+      <div className={`region-mode-strip ${regionMode.key}`}>
+        <strong>{regionMode.label}</strong>
+        <span>{regionMode.description}</span>
+      </div>
       <div className="helper">
         <strong>批量获客导入</strong>
         <p>销售直接上传 Excel/CSV。系统会解析公司、官网、职位、电话、邮箱，自动找公开 LinkedIn 联系人，并把结果分成“去重可发送”和“需复核候选”。</p>
@@ -515,6 +520,20 @@ function refreshAll() {
 
 function normalizeCompanyWebsite(value) {
   return String(value || "").trim().replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0];
+}
+
+function regionModeLabel(location) {
+  const value = String(location || "").toLowerCase();
+  if (/(uae|dubai|abu dhabi|saudi|ksa|riyadh|jeddah|qatar|doha|kuwait|bahrain|oman|muscat|iraq|iran|jordan|lebanon|egypt|middle east|mena|gcc|中东)/.test(value)) {
+    return { key: "mena", label: "中东增强模式", description: "自动使用英语/阿拉伯语搜索，并补充官网、WhatsApp、Instagram、电话和公开邮箱。" };
+  }
+  if (/(kazakhstan|almaty|astana|uzbekistan|tashkent|kyrgyzstan|bishkek|tajikistan|turkmenistan|azerbaijan|armenia|georgia|central asia|中亚)/.test(value)) {
+    return { key: "central-asia", label: "中亚增强模式", description: "自动使用英语/俄语搜索，并优先识别当地官网、经销商目录和公开联系方式。" };
+  }
+  if (/(india|pakistan|bangladesh|sri lanka|nepal|south asia|南亚)/.test(value)) {
+    return { key: "south-asia", label: "南亚增强模式", description: "自动按国家搜索公司与负责人，并补充官网、社媒、电话和公开邮箱。" };
+  }
+  return { key: "global", label: "全球标准模式", description: "填写默认地区后，系统会自动切换对应的区域增强策略，无需手动选择。" };
 }
 
 function fullName(row) {

@@ -4,7 +4,9 @@ import re
 import socket
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
+from ipaddress import ip_address
 from typing import Any, Protocol
 
 from .clients import HunterClient, ProspeoClient, _domain_from_website, is_full_email
@@ -14,6 +16,7 @@ from .email_discovery import EmailCandidate, guess_email_candidates
 from .http import HttpClient
 from .logging_utils import log
 from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
+from .regional_sourcing import detect_regional_profile, regional_role_terms, search_options
 
 BLOCKED_DOMAINS = {
     "linkedin.com",
@@ -30,6 +33,14 @@ BLOCKED_DOMAINS = {
     "x.com",
 }
 
+BRAVE_SUPPORTED_COUNTRIES = {
+    "AR", "AU", "AT", "BE", "BR", "CA", "CL", "DK", "FI", "FR", "DE", "GR", "HK", "IN", "ID",
+    "IT", "JP", "KR", "MY", "MX", "NL", "NZ", "NO", "CN", "PL", "PT", "PH", "RU", "SA", "ZA", "ES",
+    "SE", "CH", "TW", "TR", "GB", "US", "ALL",
+}
+
+PUBLIC_MAILBOX_DOMAINS = {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "mail.ru", "yandex.ru", "proton.me"}
+
 
 class GoogleCSEClient:
     def __init__(self, api_key: str, cse_id: str, http: HttpClient | None = None):
@@ -37,7 +48,7 @@ class GoogleCSEClient:
         self.cse_id = cse_id
         self.http = http or HttpClient(timeout=30)
 
-    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
         params = {
             "key": self.api_key,
             "cx": self.cse_id,
@@ -50,7 +61,7 @@ class GoogleCSEClient:
 
 
 class SearchClient(Protocol):
-    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
         ...
 
 
@@ -59,7 +70,7 @@ class TavilySearchClient:
         self.api_key = api_key
         self.http = http or HttpClient(timeout=30)
 
-    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
         data = self.http.request(
             "POST",
             "https://api.tavily.com/search",
@@ -89,14 +100,18 @@ class BraveSearchClient:
         self.api_key = api_key
         self.http = http or HttpClient(timeout=30)
 
-    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
         params = {
             "q": query,
             "count": max(1, min(20, int(limit or 10))),
-            "search_lang": "en",
+            "search_lang": options.get("search_lang") or "en",
             "safesearch": "moderate",
             "text_decorations": "false",
+            "extra_snippets": "true" if options.get("extra_snippets") else "false",
         }
+        if options.get("country"):
+            requested_country = str(options["country"]).upper()
+            params["country"] = requested_country if requested_country in BRAVE_SUPPORTED_COUNTRIES else "ALL"
         url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(params)
         data = self.http.request(
             "GET",
@@ -110,7 +125,7 @@ class BraveSearchClient:
         return [
             {
                 "title": item.get("title") or item.get("url") or "",
-                "snippet": item.get("description") or item.get("snippet") or "",
+                "snippet": " ".join(filter(None, [item.get("description") or item.get("snippet") or "", *(item.get("extra_snippets") or [])])),
                 "link": item.get("url") or "",
                 "published_at": item.get("page_age") or item.get("age") or item.get("published_at") or "",
             }
@@ -123,11 +138,11 @@ class FallbackSearchClient:
         self.clients = clients
         self.last_provider = clients[0][0] if clients else ""
 
-    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
         last_error: Exception | None = None
         for name, client in self.clients:
             try:
-                results = client.search(query, limit=limit)
+                results = client.search(query, limit=limit, **options)
                 self.last_provider = name
                 return results
             except Exception as exc:
@@ -152,11 +167,21 @@ class CompanyDomainResolver:
             return domain
         if not company_name or not self.client:
             return None
-        query = f'"{company_name}" official website'
-        for item in self.client.search(query, limit=5):
-            candidate = _domain_from_website(item.get("link") or "")
-            if candidate and not _is_blocked_domain(candidate) and not is_low_quality_domain(candidate):
-                return candidate
+        criteria = {"location": location or "", "seed_category": category or ""}
+        profile = detect_regional_profile(location, category)
+        for index, phrase in enumerate(profile.channel_terms[:2]):
+            options = search_options(criteria)[index % len(search_options(criteria))]
+            query = f'"{company_name}" "{phrase}"'
+            try:
+                results = self.client.search(query, limit=5, **options)
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                results = self.client.search(query, limit=5)
+            for item in results:
+                candidate = _domain_from_website(item.get("link") or "")
+                if candidate and not _is_blocked_domain(candidate) and not is_low_quality_domain(candidate):
+                    return candidate
         return None
 
 
@@ -188,11 +213,13 @@ class LinkedInPublicSearchService:
         auto_generate_candidates = bool(criteria.get("auto_generate_email_candidates", self.cfg.get("auto_generate_email_candidates", True)))
         try:
             seen_urls: set[str] = set()
-            for query in queries:
+            query_options = search_options(criteria)
+            for query_index, query in enumerate(queries):
                 remaining = max(0, limit - len(all_results))
                 if remaining <= 0:
                     break
-                for item in self.client.search(query, limit=min(10, remaining)):
+                options = query_options[query_index % len(query_options)]
+                for item in self.client.search(query, limit=min(10, remaining), **options):
                     parsed = parse_linkedin_search_item(item, criteria)
                     if not parsed or parsed["linkedin_url"] in seen_urls:
                         continue
@@ -208,7 +235,8 @@ class LinkedInPublicSearchService:
                     parsed["match_confidence"] = parsed["lead_score"]
                     parsed["match_status"] = classify_identity_match(parsed, criteria)
                     if auto_generate_candidates:
-                        parsed["email_candidates"] = [asdict(item) for item in generate_public_search_email_candidates(parsed, self.repo)]
+                        generated = [asdict(item) for item in generate_public_search_email_candidates(parsed, self.repo)]
+                        parsed["email_candidates"] = _merge_email_candidates(generated, criteria.get("company_email_candidates") or [])
                     status = "candidate" if parsed["lead_score"] >= min_score and parsed["match_status"] != "mismatch" else "low_score"
                     result = self.repo.create_lead_search_result(task["id"], parsed, status=status)
                     all_results.append(result)
@@ -257,16 +285,19 @@ class LinkedInPublicSearchService:
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
         for seed in seeds:
             phone_candidates = list(seed.get("phone_candidates") or [])
+            seed_domain = self.domain_resolver.resolve(
+                seed.get("company_name"),
+                seed.get("company_domain") or seed.get("website"),
+                location=seed.get("location"),
+                category=seed.get("category") or seed.get("industry"),
+            )
+            if seed_domain:
+                seed["company_domain"] = seed_domain
+            channels = find_public_company_channels(seed.get("company_domain") or seed.get("website") or "")
             if not seed.get("phone") and not phone_candidates:
-                seed_domain = self.domain_resolver.resolve(
-                    seed.get("company_name"),
-                    seed.get("company_domain") or seed.get("website"),
-                    location=seed.get("location"),
-                    category=seed.get("category") or seed.get("industry"),
-                )
-                if seed_domain:
-                    seed["company_domain"] = seed_domain
-                phone_candidates = find_public_company_phone_candidates(seed.get("company_domain") or seed.get("website") or "")
+                phone_candidates = channels["phones"]
+            seed["public_channels"] = channels
+            seed["company_email_candidates"] = channels["emails"]
             criteria = company_seed_to_search_criteria(seed)
             result = self.run(criteria, per_company_limit, user=user)
             result["company_name"] = seed.get("company_name")
@@ -348,7 +379,7 @@ class LinkedInPublicSearchService:
 def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
     name = _target_name(criteria)
     role = _clean(criteria.get("role") or criteria.get("title"))
-    role_keywords = [_clean(item) for item in (criteria.get("role_keywords") or []) if _clean(item)]
+    role_keywords = regional_role_terms(criteria)
     industry = _clean(criteria.get("industry"))
     location = _clean(criteria.get("location"))
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_website"))
@@ -408,6 +439,9 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "company_website": seed.get("company_domain") or seed.get("website") or "",
         "seed_reason": seed.get("reason") or "",
         "seed_category": seed.get("category") or "",
+        "public_channels": seed.get("public_channels") or {},
+        "company_email_candidates": seed.get("company_email_candidates") or [],
+        "regional_profile": detect_regional_profile(seed.get("location"), seed.get("category"), seed.get("industry")).key,
         "auto_domain_lookup": True,
         "auto_generate_email_candidates": True,
         "high_confidence_verify": True,
@@ -541,30 +575,104 @@ def generate_public_search_email_candidates(contact: dict[str, Any], repo: Repos
     return candidates[:8]
 
 
+def _merge_email_candidates(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group or []:
+            email = str(item.get("email") or item.get("value") or "").strip().lower()
+            if not is_full_email(email):
+                continue
+            row = dict(item)
+            row.pop("type", None)
+            row.pop("value", None)
+            row["email"] = email
+            current = merged.get(email)
+            if current is None or int(row.get("confidence") or 0) > int(current.get("confidence") or 0):
+                merged[email] = row
+    return sorted(merged.values(), key=lambda item: int(item.get("confidence") or 0), reverse=True)[:10]
+
+
 def find_public_company_phone_candidates(domain_or_url: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    return find_public_company_channels(domain_or_url, limit=limit)["phones"]
+
+
+def find_public_company_channels(domain_or_url: str, *, limit: int = 5) -> dict[str, list[dict[str, Any]]]:
     domain = _domain_from_website(domain_or_url or "")
-    if not domain or _is_blocked_domain(domain):
-        return []
-    seen: dict[str, dict[str, Any]] = {}
-    for path in ("", "/contact", "/contact-us", "/about", "/about-us"):
-        for scheme in ("https", "http"):
-            url = f"{scheme}://{domain}{path}"
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": "salesbot-phone-discovery/0.1"})
-                with urllib.request.urlopen(request, timeout=5) as response:
-                    content_type = response.headers.get("Content-Type", "")
-                    if "text/html" not in content_type and "text/plain" not in content_type:
-                        continue
-                    text = response.read(300_000).decode("utf-8", errors="ignore")
-            except Exception:
+    if not domain or _is_blocked_domain(domain) or not _is_public_domain(domain):
+        return {"phones": [], "emails": [], "socials": []}
+    phones: dict[str, dict[str, Any]] = {}
+    emails: dict[str, dict[str, Any]] = {}
+    socials: dict[str, dict[str, Any]] = {}
+    urls = [f"https://{domain}{path}" for path in ("", "/contact", "/contact-us", "/about", "/about-us")]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_fetch_public_page, url): url for url in urls}
+        for future in as_completed(futures):
+            url = futures[future]
+            text = future.result()
+            if not text:
                 continue
             for candidate in pick_public_phone_candidates(text, source_url=url):
-                current = seen.get(candidate["phone"])
+                current = phones.get(candidate["phone"])
                 if current is None or int(candidate["confidence"]) > int(current["confidence"]):
-                    seen[candidate["phone"]] = candidate
-                if len(seen) >= limit:
-                    return list(seen.values())[:limit]
-    return list(seen.values())[:limit]
+                    phones[candidate["phone"]] = candidate
+            for candidate in pick_public_channel_candidates(text, source_url=url, company_domain=domain):
+                target = emails if candidate["type"] == "email" else socials
+                target[candidate["value"].casefold()] = candidate
+    return {
+        "phones": list(phones.values())[:limit],
+        "emails": list(emails.values())[:limit],
+        "socials": list(socials.values())[:limit],
+    }
+
+
+def _fetch_public_page(url: str) -> str:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "salesbot-public-channel-discovery/1.0"})
+        with urllib.request.urlopen(request, timeout=4) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return ""
+            return response.read(300_000).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def pick_public_channel_candidates(text: str, *, source_url: str = "", company_domain: str = "") -> list[dict[str, Any]]:
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for email in re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", text or "", flags=re.I):
+        normalized = email.lower().strip(".,;:")
+        if not is_full_email(normalized):
+            continue
+        email_domain = normalized.rsplit("@", 1)[-1]
+        expected_domain = _domain_from_website(company_domain or "")
+        if expected_domain and email_domain not in PUBLIC_MAILBOX_DOMAINS and email_domain != expected_domain and not email_domain.endswith(f".{expected_domain}"):
+            continue
+        row = asdict(EmailCandidate.build(normalized, "public_website", "unverified", 45, "company_generic"))
+        row.update(type="email", value=normalized, source_url=source_url)
+        found[("email", normalized)] = row
+    for match in re.findall(r'href=["\']([^"\']+)["\']', text or "", flags=re.I):
+        decoded = urllib.parse.unquote(match).strip()
+        lower = decoded.casefold()
+        channel = ""
+        if "wa.me/" in lower or "whatsapp.com/" in lower:
+            channel = "whatsapp"
+        elif "instagram.com/" in lower:
+            channel = "instagram"
+        elif "facebook.com/" in lower:
+            channel = "facebook"
+        if not channel:
+            continue
+        absolute = urllib.parse.urljoin(source_url, decoded)
+        found[(channel, absolute.casefold())] = {
+            "type": "social",
+            "channel": channel,
+            "value": absolute,
+            "source": "public_website",
+            "source_url": source_url,
+            "status": "public",
+            "confidence": 75,
+        }
+    return list(found.values())
 
 
 def pick_public_phone_candidates(text: str, *, source_url: str = "") -> list[dict[str, Any]]:
@@ -607,7 +715,7 @@ def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[st
     }
 
 
-def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, str]:
+def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     mapping = {
         "seed_company": criteria.get("company_keyword") or criteria.get("company_name"),
         "seed_website": criteria.get("company_website"),
@@ -616,8 +724,13 @@ def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, str]:
         "seed_location": criteria.get("location"),
         "target_role": criteria.get("role") or criteria.get("title"),
         "target_name": _target_name(criteria),
+        "regional_profile": criteria.get("regional_profile"),
     }
-    return {key: _clean(value) for key, value in mapping.items() if _clean(value)}
+    context: dict[str, Any] = {key: _clean(value) for key, value in mapping.items() if _clean(value)}
+    channels = criteria.get("public_channels")
+    if isinstance(channels, dict) and any(channels.values()):
+        context["public_channels"] = channels
+    return context
 
 
 def _target_name(criteria: dict[str, Any]) -> str:
@@ -779,6 +892,14 @@ def _is_blocked_domain(domain: str) -> bool:
     return any(domain == item or domain.endswith(f".{item}") for item in blocked)
 
 
+def _is_public_domain(domain: str) -> bool:
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM)}
+    except Exception:
+        return False
+    return bool(addresses) and all(ip_address(address).is_global for address in addresses)
+
+
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -789,10 +910,12 @@ __all__ = [
     "LinkedInPublicSearchService",
     "build_linkedin_queries",
     "company_seed_to_search_criteria",
+    "find_public_company_channels",
     "find_public_company_phone_candidates",
     "generate_public_search_email_candidates",
     "infer_email_pattern",
     "parse_linkedin_search_item",
     "pick_public_phone_candidates",
+    "pick_public_channel_candidates",
     "score_lead",
 ]

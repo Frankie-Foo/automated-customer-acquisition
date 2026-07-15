@@ -1145,6 +1145,36 @@ select:focus {
   margin: 0;
 }
 
+.region-mode-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #64748b;
+  background: #f8fafc;
+  color: #334155;
+}
+
+.region-mode-strip strong {
+  flex: 0 0 auto;
+  color: #0f172a;
+}
+
+.region-mode-strip span {
+  font-size: 12px;
+}
+
+.region-mode-strip.mena { border-left-color: #d97706; background: #fffbeb; }
+.region-mode-strip.central-asia { border-left-color: #2563eb; background: #eff6ff; }
+.region-mode-strip.south-asia { border-left-color: #059669; background: #ecfdf5; }
+
+@media (max-width: 720px) {
+  .region-mode-strip { align-items: flex-start; flex-direction: column; gap: 3px; }
+}
+
 .workbench,
 .list-section,
 .sent-emails-section {

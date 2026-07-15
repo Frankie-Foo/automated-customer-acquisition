@@ -6,6 +6,7 @@ from sales_automation.linkedin_public_search import (
     TavilySearchClient,
     build_linkedin_queries,
     company_seed_to_search_criteria,
+    pick_public_channel_candidates,
     generate_public_search_email_candidates,
     parse_linkedin_search_item,
     pick_public_phone_candidates,
@@ -217,6 +218,33 @@ def test_brave_search_maps_results_to_google_shape():
     assert items == [{"title": "Ada - Founder | LinkedIn", "snippet": "Founder at Example.", "link": "https://www.linkedin.com/in/ada", "published_at": ""}]
 
 
+def test_brave_search_forwards_regional_options_and_extra_snippets():
+    class Http:
+        def request(self, method, url, *, headers=None, json_body=None):
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            assert params["country"] == ["SA"]
+            assert params["search_lang"] == ["ar"]
+            assert params["extra_snippets"] == ["true"]
+            return {"web": {"results": [{"title": "نتيجة", "url": "https://example.com", "description": "وصف", "extra_snippets": ["واتساب"]}]}}
+
+    items = BraveSearchClient("brave-test", Http()).search("متجر فاخر", country="SA", search_lang="ar", extra_snippets=True)
+
+    assert items[0]["snippet"] == "وصف واتساب"
+
+
+def test_brave_search_falls_back_to_all_for_unsupported_country():
+    class Http:
+        def request(self, method, url, *, headers=None, json_body=None):
+            from urllib.parse import parse_qs, urlparse
+
+            assert parse_qs(urlparse(url).query)["country"] == ["ALL"]
+            return {"web": {"results": []}}
+
+    assert BraveSearchClient("brave-test", Http()).search("luxury UAE", country="AE") == []
+
+
 def test_fallback_search_uses_second_provider_after_first_fails():
     class Broken:
         def search(self, query, *, limit=10):
@@ -281,3 +309,30 @@ def test_public_phone_candidates_prefer_tel_links_and_filter_noise():
     assert candidates[0]["source"] == "public_website_phone"
     assert candidates[0]["confidence"] == 80
     assert all("20240101" not in item["phone"] for item in candidates)
+
+
+def test_public_channel_candidates_keep_generic_email_and_social_links():
+    candidates = pick_public_channel_candidates(
+        '<a href="mailto:info@example.ae">Email</a>'
+        '<a href="https://wa.me/971501234567">WhatsApp</a>'
+        '<a href="https://instagram.com/example">Instagram</a>',
+        source_url="https://example.ae/contact",
+        company_domain="example.ae",
+    )
+
+    email = next(item for item in candidates if item["type"] == "email")
+    socials = {item["channel"] for item in candidates if item["type"] == "social"}
+    assert email["email"] == "info@example.ae"
+    assert email["category"] == "company_generic"
+    assert email["status"] == "unverified"
+    assert email["confidence"] == 45
+    assert socials == {"whatsapp", "instagram"}
+
+
+def test_public_channel_candidates_reject_unrelated_asset_emails():
+    candidates = pick_public_channel_candidates(
+        "info@example.ae sprite@icons.png owner@gmail.com",
+        company_domain="example.ae",
+    )
+
+    assert {item["email"] for item in candidates if item["type"] == "email"} == {"info@example.ae", "owner@gmail.com"}
