@@ -754,7 +754,7 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/profile-agent":
-                if not self._require_contact_access(int(payload["contact_id"])):
+                if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
                 self._json_audit(
                     "profile_agent",
@@ -823,7 +823,7 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/email-draft":
-                if not self._require_contact_access(int(payload["contact_id"])):
+                if not self._require_private_contact_access(int(payload["contact_id"])):
                     return
                 self._json_audit("email_draft", lambda: PersonalizedEmailService(config, repo).draft(
                     int(payload["contact_id"]),
@@ -979,12 +979,18 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/blacklist":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 def blacklist() -> dict[str, Any]:
                     repo.add_blacklist(email=payload.get("email"), domain=payload.get("domain"), reason=payload.get("reason"))
                     return {"ok": True}
                 self._json_audit("blacklist", blacklist, summary="加入黑名单", metadata={"email": payload.get("email"), "domain": payload.get("domain")})
                 return
             if parsed.path == "/api/webhook":
+                admin = self._require_admin()
+                if not admin:
+                    return
                 def webhook() -> dict[str, Any]:
                     notifier = SlackClient(config.raw.get("notifications", {}).get("slack_webhook_url"))
                     event = WebhookService(repo, notifier, config=config).process_payload(payload.get("provider", "manual"), payload.get("payload", {}))

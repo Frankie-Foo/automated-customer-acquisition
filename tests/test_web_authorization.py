@@ -31,6 +31,9 @@ class FakeRepo:
     def delete_session(self, token):
         self.deleted_tokens.append(token)
 
+    def get_private_contact_for_user(self, contact_id, user):
+        return None
+
 
 def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
     monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
@@ -41,7 +44,14 @@ def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
     base_url = f"http://127.0.0.1:{server.server_port}"
 
     try:
-        for path in ("/api/migrate", "/api/scheduler", "/api/send", "/api/send-one"):
+        for path in (
+            "/api/migrate",
+            "/api/scheduler",
+            "/api/send",
+            "/api/send-one",
+            "/api/blacklist",
+            "/api/webhook",
+        ):
             req = urllib.request.Request(
                 base_url + path,
                 data=json.dumps({}).encode("utf-8"),
@@ -55,6 +65,34 @@ def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
                 assert json.loads(exc.read().decode("utf-8"))["error"] == "admin_required"
             else:
                 raise AssertionError(f"{path} should require admin")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_sales_user_must_claim_contact_before_ai_mutations(monkeypatch):
+    monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
+    handler = web.make_handler(SimpleNamespace(raw={"app": {}}), FakeRepo())
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+
+    try:
+        for path in ("/api/profile-agent", "/api/email-draft"):
+            req = urllib.request.Request(
+                base_url + path,
+                data=json.dumps({"contact_id": 77}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Cookie": "salesbot_session=sales-token"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=5)
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 403
+                assert json.loads(exc.read().decode("utf-8"))["error"] == "claim_required"
+            else:
+                raise AssertionError(f"{path} should require private contact ownership")
     finally:
         server.shutdown()
         thread.join(timeout=5)

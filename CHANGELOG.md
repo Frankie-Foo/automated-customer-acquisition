@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-16
+
+- Tightened production authorization: sales users must claim a contact before generating AI profiles or email drafts, while global blacklist changes and manual webhook injection are now administrator-only.
+- Added HTTP authorization regressions for administrator operations and private-contact AI mutations; the full suite now passes 141 tests.
+
 ## 2026-07-15
 
 - Added automatic Middle East, Central Asia, and South Asia sourcing profiles: Brave requests now use country/language targeting, LinkedIn queries include regional decision-maker terms, and public company sites contribute phone, WhatsApp, Instagram, Facebook, and low-confidence generic-email candidates without automatic sending.
