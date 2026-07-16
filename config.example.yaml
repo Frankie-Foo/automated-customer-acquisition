@@ -40,7 +40,7 @@ llm:
   model: deepseek-chat
 
 sender:
-  name: Your Name
+  name: VERTU Global
   email: ${MAIL_FROM_EMAIL}
   provider: ${MAIL_PROVIDER}
   daily_limit: 6000
@@ -68,7 +68,7 @@ imap:
 sender_pool:
   strategy: round_robin
   accounts:
-    - name: Your Name
+    - name: VERTU Global
       email: ${MAIL_FROM_EMAIL}
       provider: ${MAIL_PROVIDER}
       daily_limit: 200

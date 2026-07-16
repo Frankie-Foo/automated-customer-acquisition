@@ -6,8 +6,8 @@ from pathlib import Path
 from .clients import SlackClient
 from .config import load_config
 from .db import Database, Repository
+from .health import check_readiness
 from .logging_utils import log
-from .production import readiness
 from .quotas import QuotaService
 from .services import EnrichmentService, MailboxReplyService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
@@ -94,9 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.database_only:
             log("doctor.database", ok=db_ok)
             return 0 if db_ok else 1
-        data = readiness(config)
-        checks = [{"name": "database_connection", "ok": db_ok, "required": True, "message": "PostgreSQL connection succeeds"}, *data["checks"]]
-        ready = db_ok and all(check["ok"] for check in checks if check.get("required"))
+        data = check_readiness(config, repo)
+        checks = data["checks"]
+        ready = bool(data["ready"])
         for check in checks:
             log("doctor.check", name=check["name"], ok=check["ok"], required=check.get("required", True), message=check.get("message"))
         log("doctor.completed", ready=ready)
