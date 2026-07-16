@@ -2,6 +2,7 @@
 
 ## 2026-07-16
 
+- Clarified the sales email workflow with live research/generation progress, a business-readable real-send confirmation, and distinct social-profile status labels so verified email state is no longer confused with missing social data.
 - Tightened production authorization: sales users must claim a contact before generating AI profiles or email drafts, while global blacklist changes and manual webhook injection are now administrator-only.
 - Added HTTP authorization regressions for administrator operations and private-contact AI mutations; the full suite now passes 141 tests.
 

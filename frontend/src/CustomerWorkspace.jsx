@@ -61,6 +61,7 @@ function CustomerWorkspace() {
   const [body, setBody] = useState("");
   const [approved, setApproved] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [operationLabel, setOperationLabel] = useState("");
   const [error, setError] = useState("");
 
   const contact = detail?.contact;
@@ -164,21 +165,27 @@ function CustomerWorkspace() {
 
   async function draftEmail() {
     if (!contact) throw new Error("请先选择客户");
-    if (emailMode === "ai" && !detail?.research && contact.pool_type === "private") {
-      const researched = await api("/api/contact-research", {
+    try {
+      if (emailMode === "ai" && !detail?.research && contact.pool_type === "private") {
+        setOperationLabel("正在调研公司与实时新闻...");
+        const researched = await api("/api/contact-research", {
+          method: "POST",
+          body: JSON.stringify({ contact_id: contact.id }),
+        });
+        setDetail((current) => ({ ...current, research: researched.research }));
+      }
+      setOperationLabel(emailMode === "ai" ? "正在生成个性化草稿..." : "正在套用自定义草稿...");
+      const result = await api("/api/email-draft", {
         method: "POST",
-        body: JSON.stringify({ contact_id: contact.id }),
+        body: JSON.stringify({ contact_id: contact.id, mode: emailMode, subject, body }),
       });
-      setDetail((current) => ({ ...current, research: researched.research }));
+      setSubject(result.subject || "");
+      setBody(result.body || "");
+      setApproved(false);
+      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "邮件草稿已生成，请检查后再发送" } }));
+    } finally {
+      setOperationLabel("");
     }
-    const result = await api("/api/email-draft", {
-      method: "POST",
-      body: JSON.stringify({ contact_id: contact.id, mode: emailMode, subject, body }),
-    });
-    setSubject(result.subject || "");
-    setBody(result.body || "");
-    setApproved(false);
-    window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "邮件草稿已生成，请检查后再发送" } }));
   }
 
   async function researchContact() {
@@ -196,7 +203,9 @@ function CustomerWorkspace() {
     if (!contact) throw new Error("请先选择客户");
     if (!subject.trim() || !body.trim()) throw new Error("请先填写主题和正文");
     if (!approved) throw new Error("请先审核并锁定当前邮件草稿");
-    if (!window.confirm("确认发送给当前客户？dry_run=false 时会真实发出。")) return;
+    const recipient = contact.email || "当前客户";
+    const name = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.company_name || "当前客户";
+    if (!window.confirm(`确认真实发送给 ${name}（${recipient}）？发送后会计入今日发信额度。`)) return;
     const result = await api("/api/send-custom", {
       method: "POST",
       body: JSON.stringify({ contact_id: contact.id, mode: emailMode, subject: subject.trim(), body: body.trim() }),
@@ -287,10 +296,11 @@ function CustomerWorkspace() {
             <label>正文<textarea value={body} onChange={(event) => { setBody(event.target.value); setApproved(false); }} placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}" /></label>
             <div className={`draft-approval ${approved ? "approved" : "pending"}`}><strong>{approved ? "草稿已审核锁定" : "草稿尚未审核"}</strong><span>{approved ? "若修改主题或正文，需要重新审核。" : "检查收件人、事实依据、主题和正文后再锁定发送。"}</span></div>
             <div className="panel-actions">
-              <button type="button" disabled={loading} onClick={() => guarded(draftEmail)}>{loading ? "处理中..." : "生成/套用草稿"}</button>
+              <button type="button" disabled={loading} onClick={() => guarded(draftEmail)}>{loading ? (operationLabel || "处理中...") : (emailMode === "ai" ? "调研并生成草稿" : "套用自定义草稿")}</button>
               <button type="button" disabled={loading} onClick={() => guarded(approveEmail)}>审核并锁定</button>
               <button type="button" disabled={loading || !approved} className="primary" onClick={() => guarded(sendCustomEmail)}>发送已审核邮件</button>
             </div>
+            {loading && operationLabel && <div className="composer-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{operationLabel}</strong><small>实时调研和 AI 生成通常需要 10-30 秒，请勿重复点击。</small></div></div>}
           </div>
           <ActivityList activities={activities} onAnalyze={(activityId) => guarded(() => analyzeStage({ activity_id: activityId }))} />
         </div>

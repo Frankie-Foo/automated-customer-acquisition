@@ -1997,6 +1997,45 @@ textarea {
   background: var(--ok-bg);
 }
 
+.composer-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--primary-light);
+  border-radius: var(--radius-sm);
+  background: var(--primary-faint);
+  color: var(--text-2);
+}
+
+.composer-progress .spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid var(--primary-light);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: composer-spin .8s linear infinite;
+}
+
+.composer-progress div {
+  display: grid;
+  gap: 2px;
+}
+
+.composer-progress small {
+  color: var(--text-3);
+}
+
+@keyframes composer-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-progress .spinner { animation: none; }
+}
+
 .draft-approval strong {
   flex: 0 0 auto;
   color: var(--text-1);

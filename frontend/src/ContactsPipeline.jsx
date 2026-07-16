@@ -346,8 +346,8 @@ function SocialProfiles({ contact }) {
   const profiles = contact.social_profiles || {};
   const entries = [["linkedin", "LinkedIn"], ["twitter", "X"], ["github", "GitHub"], ["facebook", "Facebook"], ["website", "Website"]].filter(([key]) => isHttpUrl(profiles[key]));
   if (entries.length) return <div className="social-links">{entries.map(([key, label]) => <a key={key} className="social-link" href={profiles[key]} target="_blank" rel="noreferrer">{label}</a>)}</div>;
-  if (contact.social_error) return <span className="muted" title={contact.social_error}>未找到</span>;
-  return <span className="muted">待富化</span>;
+  if (contact.social_error) return <span className="muted" title={contact.social_error}>社媒未找到</span>;
+  return <span className="muted">社媒待补</span>;
 }
 
 function EmailFeedback({ contact }) {
