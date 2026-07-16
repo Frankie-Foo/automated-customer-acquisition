@@ -92,7 +92,7 @@ class PersonalizedEmailService:
             contact_id=int(contact["id"]),
             user_id=int(user["id"]) if user else None,
             sequence_step=step,
-        ) or _reply_to_email(user)
+        ) or _reply_to_email(user) or sender.get("email")
         values = {
             **contact,
             "sender_name": _sender_signature_name(user, sender.get("name", "")),
@@ -378,7 +378,7 @@ class OutreachService:
             contact_id=int(contact["id"]),
             user_id=int(user["id"]) if user else None,
             sequence_step=step,
-        ) or _reply_to_email(user)
+        ) or _reply_to_email(user) or sender.get("email")
         idempotency_key = f"contact-{contact['id']}-step-{step}"
         attempt = self.repo.reserve_send_attempt(
             int(contact["id"]),

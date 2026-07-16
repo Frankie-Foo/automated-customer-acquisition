@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-17 - Explicit default reply routing
+
+- Record the active sender address as `Reply-To` when a salesperson has no personal reply mailbox.
+- Keep sent-mail history explicit so sales users can see where customer replies will arrive.
+
 ## 2026-07-16
 
 - Clarified the sales email workflow with live research/generation progress, a business-readable real-send confirmation, and distinct social-profile status labels so verified email state is no longer confused with missing social data.

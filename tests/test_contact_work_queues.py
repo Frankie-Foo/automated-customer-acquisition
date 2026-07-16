@@ -130,11 +130,12 @@ def test_approved_send_to_reply_advances_customer_lifecycle(monkeypatch):
         apis={"resend_key": "test"},
         raw={"app": {"public_base_url": "https://sales.example.com", "tracking_signing_secret": "tracking-secret-at-least-24-chars"}},
     )
-    user = {"id": 3, "role": "sales", "username": "ada", "display_name": "Ada", "reply_to_email": "ada@example.com"}
+    user = {"id": 3, "role": "sales", "username": "ada", "display_name": "Ada", "reply_to_email": None}
     repo = Repo()
 
     sent = PersonalizedEmailService(config, repo).send(9, subject=subject, body=body, user=user)
     assert sent["message_id"] == "message-9"
+    assert sent["reply_to_email"] == "sales@mail.example.com"
     assert repo.contact["status"] == "sent_1"
     assert repo.draft["status"] == "sent"
 
