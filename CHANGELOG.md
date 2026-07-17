@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-17 - Russia and Southeast Asia sourcing modes
+
+- Add dedicated Russia searches using Russian and English decision-maker and channel terms.
+- Add country-aware Southeast Asia searches using English plus local-language queries where applicable.
+- Show the active Russia or Southeast Asia enhancement mode in the company-seed import workflow.
+
 ## 2026-07-17 - Explicit default reply routing
 
 - Record the active sender address as `Reply-To` when a salesperson has no personal reply mailbox.

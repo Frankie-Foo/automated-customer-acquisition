@@ -56,6 +56,18 @@ _CENTRAL_ASIA_ROLES = (
     "владелец", "основатель", "генеральный директор", "коммерческий директор",
 )
 _CENTRAL_ASIA_CHANNELS = ("официальный сайт", "контакты", "дистрибьютор", "дилер", "Instagram", "WhatsApp")
+_RUSSIA_ROLES = (
+    "owner", "founder", "general director", "commercial director", "retail director",
+    "владелец", "основатель", "генеральный директор", "коммерческий директор", "директор по рознице",
+)
+_RUSSIA_CHANNELS = ("официальный сайт", "контакты", "дистрибьютор", "дилер", "магазин", "Telegram")
+_SOUTHEAST_ASIA_ROLES = (
+    "owner", "founder", "managing director", "general manager", "commercial director", "retail director",
+    "pemilik", "pendiri", "giám đốc", "chủ sở hữu", "กรรมการผู้จัดการ", "เจ้าของ",
+)
+_SOUTHEAST_ASIA_CHANNELS = (
+    "official website", "authorized dealer", "distributor", "contact", "WhatsApp", "Instagram", "Facebook", "Zalo",
+)
 _SOUTH_ASIA_ROLES = ("owner", "founder", "managing director", "business head", "purchase head", "director")
 _SOUTH_ASIA_CHANNELS = ("official website", "contact", "authorized dealer", "distributor", "Instagram", "WhatsApp")
 
@@ -86,6 +98,38 @@ for aliases, country in (
 ):
     _register(aliases, key="central_asia", label="Central Asia enhanced", country=country, languages=("en", "ru"), role_terms=_CENTRAL_ASIA_ROLES, channel_terms=_CENTRAL_ASIA_CHANNELS)
 
+_register(
+    ("russia", "russian federation", "moscow", "saint petersburg", "st petersburg", "россия", "москва", "санкт-петербург"),
+    key="russia",
+    label="Russia enhanced",
+    country="RU",
+    languages=("ru", "en"),
+    role_terms=_RUSSIA_ROLES,
+    channel_terms=_RUSSIA_CHANNELS,
+)
+
+for aliases, country, languages in (
+    (("singapore", "新加坡"), "SG", ("en",)),
+    (("malaysia", "kuala lumpur", "马来西亚"), "MY", ("en", "ms")),
+    (("indonesia", "jakarta", "indonesia", "印度尼西亚"), "ID", ("en", "id")),
+    (("thailand", "bangkok", "ประเทศไทย", "泰国"), "TH", ("en", "th")),
+    (("vietnam", "ho chi minh", "hanoi", "việt nam", "越南"), "VN", ("en", "vi")),
+    (("philippines", "manila", "菲律宾"), "PH", ("en", "tl")),
+    (("cambodia", "phnom penh", "កម្ពុជា", "柬埔寨"), "KH", ("en", "km")),
+    (("laos", "vientiane", "ລາວ", "老挝"), "LA", ("en", "lo")),
+    (("myanmar", "yangon", "မြန်မာ", "缅甸"), "MM", ("en", "my")),
+    (("brunei", "bandar seri begawan", "文莱"), "BN", ("en", "ms")),
+):
+    _register(
+        aliases,
+        key="southeast_asia",
+        label="Southeast Asia enhanced",
+        country=country,
+        languages=languages,
+        role_terms=_SOUTHEAST_ASIA_ROLES,
+        channel_terms=_SOUTHEAST_ASIA_CHANNELS,
+    )
+
 for aliases, country in (
     (("india", "भारत"), "IN"),
     (("pakistan", "پاکستان"), "PK"),
@@ -98,6 +142,8 @@ for aliases, country in (
 _REGION_ALIASES = {
     "middle east": "mena", "mena": "mena", "gulf": "mena", "gcc": "mena", "中东": "mena",
     "central asia": "central_asia", "中亚": "central_asia",
+    "russia": "russia", "俄罗斯": "russia",
+    "southeast asia": "southeast_asia", "asean": "southeast_asia", "东南亚": "southeast_asia",
     "south asia": "south_asia", "南亚": "south_asia",
 }
 

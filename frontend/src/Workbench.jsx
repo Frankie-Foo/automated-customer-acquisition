@@ -530,6 +530,12 @@ function regionModeLabel(location) {
   if (/(kazakhstan|almaty|astana|uzbekistan|tashkent|kyrgyzstan|bishkek|tajikistan|turkmenistan|azerbaijan|armenia|georgia|central asia|中亚)/.test(value)) {
     return { key: "central-asia", label: "中亚增强模式", description: "自动使用英语/俄语搜索，并优先识别当地官网、经销商目录和公开联系方式。" };
   }
+  if (/(russia|russian federation|moscow|saint petersburg|st petersburg|россия|москва|俄罗斯)/.test(value)) {
+    return { key: "russia", label: "俄罗斯增强模式", description: "自动使用俄语/英语搜索负责人、官网、经销商目录、Telegram 和公开联系方式。" };
+  }
+  if (/(singapore|malaysia|indonesia|thailand|vietnam|philippines|cambodia|laos|myanmar|brunei|southeast asia|asean|东南亚|新加坡|马来西亚|印度尼西亚|泰国|越南|菲律宾|柬埔寨|老挝|缅甸|文莱)/.test(value)) {
+    return { key: "southeast-asia", label: "东南亚增强模式", description: "自动按国家使用英语和当地语言搜索，并补充经销商、官网、WhatsApp、Facebook 和公开联系方式。" };
+  }
   if (/(india|pakistan|bangladesh|sri lanka|nepal|south asia|南亚)/.test(value)) {
     return { key: "south-asia", label: "南亚增强模式", description: "自动按国家搜索公司与负责人，并补充官网、社媒、电话和公开邮箱。" };
   }

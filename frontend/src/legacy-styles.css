@@ -1169,6 +1169,8 @@ select:focus {
 
 .region-mode-strip.mena { border-left-color: #d97706; background: #fffbeb; }
 .region-mode-strip.central-asia { border-left-color: #2563eb; background: #eff6ff; }
+.region-mode-strip.russia { border-left-color: #475569; background: #f8fafc; }
+.region-mode-strip.southeast-asia { border-left-color: #0f766e; background: #f0fdfa; }
 .region-mode-strip.south-asia { border-left-color: #059669; background: #ecfdf5; }
 
 @media (max-width: 720px) {
