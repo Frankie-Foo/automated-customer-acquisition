@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-17 - Direct-import ownership and review flow
+
+- Assign sales-uploaded company seed results to the uploading salesperson instead of applying regional reassignment; administrator imports still use region rules.
+- Open sales users on "My customers" by default and route completed import tasks directly to that review view.
+- Show task ownership, skipped candidates, review count, send-ready draft count, and the missing-verified-email reason on each batch task.
+
 ## 2026-07-17 - Russia and Southeast Asia sourcing modes
 
 - Add dedicated Russia searches using Russian and English decision-maker and channel terms.

@@ -2331,6 +2331,54 @@ class Repository:
                 skipped += 0 if row else 1
         return {"assigned": assigned, "skipped": skipped, "missing_rules": False}
 
+    def assign_public_contacts_to_owner(
+        self,
+        contact_ids: list[int],
+        *,
+        owner_user_id: int,
+        owner_name: str,
+        assignment_source: str = "direct_import",
+    ) -> dict[str, Any]:
+        """Assign newly sourced public contacts to the salesperson who uploaded them."""
+        contact_ids = [int(contact_id) for contact_id in contact_ids if contact_id]
+        if not contact_ids:
+            return {
+                "assigned": 0,
+                "skipped": 0,
+                "missing_rules": False,
+                "mode": assignment_source,
+                "owner_user_id": owner_user_id,
+                "owner": owner_name,
+            }
+        private_days = _private_pool_days(self.db.config.raw)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                UPDATE contacts
+                SET pool_type = 'private',
+                    owner_user_id = %s,
+                    owner = %s,
+                    assignment_source = %s,
+                    assigned_at = NOW(),
+                    pool_expires_at = NOW() + (%s::text || ' days')::interval,
+                    returned_to_public_at = NULL
+                WHERE id = ANY(%s)
+                  AND pool_type = 'public'
+                  AND sabcd_stage <> 'S'
+                RETURNING id
+                """,
+                (owner_user_id, owner_name, assignment_source, private_days, contact_ids),
+            ).fetchall()
+        assigned = len(rows)
+        return {
+            "assigned": assigned,
+            "skipped": len(contact_ids) - assigned,
+            "missing_rules": False,
+            "mode": assignment_source,
+            "owner_user_id": owner_user_id,
+            "owner": owner_name,
+        }
+
     def list_contacts_for_search_tasks(self, task_ids: list[int]) -> list[dict[str, Any]]:
         if not task_ids:
             return []

@@ -52,6 +52,16 @@ class FakeRepo:
     def auto_assign_public_pool(self, *, limit, contact_ids=None):
         return {"assigned": 0, "skipped": 0, "missing_rules": True}
 
+    def assign_public_contacts_to_owner(self, contact_ids, *, owner_user_id, owner_name, assignment_source="direct_import"):
+        return {
+            "assigned": len(contact_ids),
+            "skipped": 0,
+            "missing_rules": False,
+            "mode": assignment_source,
+            "owner_user_id": owner_user_id,
+            "owner": owner_name,
+        }
+
 
 class FakeSearchService:
     def __init__(self, config, repo):
@@ -111,12 +121,13 @@ def test_automation_postprocess_profiles_assigns_and_prepares_draft(monkeypatch)
         def __init__(self):
             super().__init__()
             self.assigned = False
+            self.assigned_owner_id = None
 
         def list_contacts_for_search_tasks(self, task_ids):
             return [{
                 "id": 51,
                 "pool_type": "private" if self.assigned else "public",
-                "owner_user_id": 3 if self.assigned else None,
+                "owner_user_id": self.assigned_owner_id if self.assigned else None,
                 "email": "lead@example.com",
                 "email_status": "valid",
             }]
@@ -124,6 +135,18 @@ def test_automation_postprocess_profiles_assigns_and_prepares_draft(monkeypatch)
         def auto_assign_public_pool(self, *, limit, contact_ids=None):
             self.assigned = True
             return {"assigned": 1, "skipped": 0, "missing_rules": False}
+
+        def assign_public_contacts_to_owner(self, contact_ids, *, owner_user_id, owner_name, assignment_source="direct_import"):
+            self.assigned = True
+            self.assigned_owner_id = owner_user_id
+            return {
+                "assigned": 1,
+                "skipped": 0,
+                "missing_rules": False,
+                "mode": assignment_source,
+                "owner_user_id": owner_user_id,
+                "owner": owner_name,
+            }
 
     calls = []
 
@@ -157,11 +180,48 @@ def test_automation_postprocess_profiles_assigns_and_prepares_draft(monkeypatch)
     result = service._prepare_results(
         7,
         {"tasks": [{"task_id": 91}]},
-        owner={"id": 2},
+        owner={"id": 2, "role": "sales", "username": "Haiwen"},
         payload={"seeds": [{"company_name": "A"}], "auto_prepare_drafts": True},
     )
 
     assert result["profiled"] == 1
     assert result["assignment"]["assigned"] == 1
     assert result["drafted"] == 1
-    assert calls == [("profile", 51, False), ("research", 51, 3), ("draft", 51, 3)]
+    assert result["assignment"]["owner_user_id"] == 2
+    assert result["assignment"]["owner"] == "Haiwen"
+    assert calls == [("profile", 51, False), ("research", 51, 2), ("draft", 51, 2)]
+
+
+def test_admin_company_import_keeps_region_assignment(monkeypatch):
+    class AdminRepo(FakeRepo):
+        def __init__(self):
+            super().__init__()
+            self.region_assignment_called = False
+
+        def list_contacts_for_search_tasks(self, task_ids):
+            return [{"id": 61, "pool_type": "public", "owner_user_id": None, "email": None, "email_status": "unknown"}]
+
+        def auto_assign_public_pool(self, *, limit, contact_ids=None):
+            self.region_assignment_called = True
+            return {"assigned": 1, "skipped": 0, "missing_rules": False, "mode": "auto_region"}
+
+    class Profile:
+        def __init__(self, config, repo):
+            pass
+
+        def summarize(self, contact_id, *, use_llm=True):
+            return None
+
+    repo = AdminRepo()
+    monkeypatch.setattr(automation, "ProfileAgentService", Profile)
+    service = AutomationRunService(SimpleNamespace(raw={"automation": {}}), repo)
+
+    result = service._prepare_results(
+        7,
+        {"tasks": [{"task_id": 92}]},
+        owner={"id": 1, "role": "admin", "username": "admin"},
+        payload={"seeds": [{"company_name": "A"}], "auto_prepare_drafts": False},
+    )
+
+    assert repo.region_assignment_called is True
+    assert result["assignment"]["mode"] == "auto_region"

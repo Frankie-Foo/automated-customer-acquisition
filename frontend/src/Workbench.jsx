@@ -212,6 +212,14 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
     await reload();
   }
 
+  function openReview() {
+    window.location.hash = "research";
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("salesbot:contact-filter", { detail: { filter: "mine" } }));
+      window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+    }, 50);
+  }
+
   return (
     <section className="automation-runs">
       <header><div><span className="eyebrow">Background tasks</span><h3>批量获客任务</h3></div><button type="button" onClick={() => guarded(reload)}>刷新</button></header>
@@ -221,16 +229,21 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
           const total = Number(run.progress_total || 0);
           const percent = total ? Math.round((current / total) * 100) : 0;
           const result = run.result || {};
+          const assignment = result.assignment || {};
+          const promoted = Number(result.promoted || 0);
+          const drafted = Number(result.drafted || 0);
           return (
             <article key={run.id} className={`automation-run ${run.status}`}>
               <div className="automation-run-title"><strong>#{run.id} 公司批量获客</strong><span>{automationStatus(run.status)}</span></div>
               <div className="automation-progress"><span style={{ width: `${percent}%` }} /></div>
-              <div className="automation-run-stats"><span>{current}/{total} 家</span><span>入库 {result.promoted || 0}</span><span>画像 {result.profiled || 0}</span><span>草稿 {result.drafted || 0}</span><span>{percent}%</span></div>
+              <div className="automation-run-stats"><span>{current}/{total} 家</span><span>待核验 {promoted}</span><span>跳过 {result.skipped || 0}</span><span>画像 {result.profiled || 0}</span><span>可发送草稿 {drafted}</span><span>{percent}%</span></div>
+              {assignment.owner && <p className="automation-run-note">已归属：<strong>{assignment.owner}</strong>，可在“我的客户”中核验。</p>}
+              {run.status === "awaiting_approval" && promoted > 0 && drafted === 0 && <p className="automation-run-note is-warning">尚未找到已验证邮箱，需先核对身份并补齐邮箱，系统不会直接发送。</p>}
               {run.error && <p className="error-text">{run.error}</p>}
               <footer>
                 {run.status === "running" && <button type="button" onClick={() => guarded(() => act(run, "pause"))}>暂停</button>}
                 {["paused", "failed"].includes(run.status) && <button type="button" className="primary soft" onClick={() => guarded(() => act(run, run.status === "failed" ? "retry" : "resume"))}>{run.status === "failed" ? "重试" : "继续"}</button>}
-                {run.status === "awaiting_approval" && <><a href="#research">去核验结果</a>{Number(result.drafted || 0) > 0 && <a className="primary-link" href="#outreach">去审核邮件</a>}</>}
+                {run.status === "awaiting_approval" && <><button type="button" onClick={openReview}>核验 {promoted} 个客户</button>{drafted > 0 && <a className="primary-link" href="#outreach">去审核邮件</a>}</>}
               </footer>
             </article>
           );

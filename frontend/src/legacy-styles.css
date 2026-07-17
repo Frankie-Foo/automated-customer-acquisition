@@ -1474,6 +1474,17 @@ select:focus {
   font-size: 11px;
 }
 
+.automation-run-note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.automation-run-note.is-warning {
+  color: #9a5b00;
+}
+
 .automation-run footer {
   justify-content: flex-end;
 }

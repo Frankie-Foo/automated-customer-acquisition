@@ -134,7 +134,15 @@ class AutomationRunService:
             except Exception as exc:
                 result["preparation_errors"].append({"contact_id": contact["id"], "stage": "profile", "error": str(exc)[:300]})
 
-        assignment = self.repo.auto_assign_public_pool(limit=max(len(contact_ids), 1), contact_ids=contact_ids)
+        if owner.get("role") == "sales":
+            owner_name = str(owner.get("display_name") or owner.get("username") or f"User {owner['id']}")
+            assignment = self.repo.assign_public_contacts_to_owner(
+                contact_ids,
+                owner_user_id=int(owner["id"]),
+                owner_name=owner_name,
+            )
+        else:
+            assignment = self.repo.auto_assign_public_pool(limit=max(len(contact_ids), 1), contact_ids=contact_ids)
         result["assignment"] = assignment
         if not payload.get("auto_prepare_drafts", True) or not assignment.get("assigned"):
             self.repo.update_automation_run_progress(

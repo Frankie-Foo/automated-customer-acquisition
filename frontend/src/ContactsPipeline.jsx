@@ -74,7 +74,7 @@ function ContactsPipeline() {
   const [sessionUser, setSessionUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const [contacts, setContacts] = useState([]);
   const [status, setStatus] = useState("");
-  const [filter, setFilter] = useState(() => window.SALESBOT_SESSION?.user?.role === "admin" ? "" : "public_pool");
+  const [filter, setFilter] = useState(() => window.SALESBOT_SESSION?.user?.role === "admin" ? "" : "mine");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
