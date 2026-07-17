@@ -79,6 +79,70 @@ def test_exact_person_name_mismatch_is_rejected_even_with_matching_company():
     assert classify_identity_match(parsed, criteria) == "mismatch"
 
 
+def test_resolved_seed_domain_is_not_treated_as_observed_company_evidence():
+    criteria = {
+        "company_keyword": "Raintree Hotels",
+        "company_website": "raintreehotels.com",
+        "role": "Founder",
+        "industry": "hotel",
+        "location": "India",
+    }
+    parsed = {
+        "raw_title": "Chengyi Dai - Chengdu, Sichuan, China | Professional Profile",
+        "raw_snippet": "Chinese startup and NFT cofounder based in Chengdu.",
+        "first_name": "Chengyi",
+        "last_name": "Dai",
+        "job_title": "Chengdu, Sichuan, China",
+        "company_name": "Professional Profile",
+        "company_domain": "raintreehotels.com",
+        "company_domain_source": "resolved",
+        "observed_company_domain": "",
+        "industry": "hotel",
+        "location": "India",
+        "linkedin_url": "https://www.linkedin.com/in/chengyi-dai",
+    }
+
+    score, evidence = score_lead_details(parsed, criteria)
+    parsed.update(match_confidence=score, match_evidence=evidence)
+
+    assert next(item for item in evidence if item["field"] == "company_domain")["matched"] is False
+    assert classify_identity_match(parsed, criteria) == "mismatch"
+
+
+def test_unverified_email_candidate_cannot_be_adopted():
+    class Repo:
+        adopted = None
+
+        def get_private_contact_for_user(self, contact_id, user):
+            return {
+                "id": contact_id,
+                "email_candidates": [{
+                    "email": "ada@example.com",
+                    "category": "personal_work",
+                    "status": "accept_all",
+                    "confidence": 72,
+                }],
+            }
+
+        def adopt_email_candidate(self, contact_id, selected):
+            self.adopted = (contact_id, selected)
+
+    class Config:
+        apis = {}
+        raw = {"sourcing": {"linkedin_public_search": {}}}
+
+    repo = Repo()
+    service = LinkedInPublicSearchService(Config(), repo)
+
+    try:
+        service.adopt_candidate(1, "ada@example.com", user={"id": 7, "role": "sales"})
+    except RuntimeError as exc:
+        assert "verified as valid" in str(exc)
+    else:
+        raise AssertionError("unverified candidate was adopted")
+    assert repo.adopted is None
+
+
 def test_company_seed_to_search_criteria_expands_job_titles():
     criteria = company_seed_to_search_criteria({
         "company_name": "Luxepolis",

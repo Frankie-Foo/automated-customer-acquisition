@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-17 - Visible enrichment outcomes and guarded progression
+
+- Show live per-contact enrichment progress, verified-email success, saved-candidate warnings, provider failures, and a direct next-step button instead of the generic "customer updated" notice.
+- Add an explicit four-step customer flow from identity review through valid email, draft approval, sending, and feedback.
+- Prevent unverified or accept-all candidates from being adopted as sendable addresses and label them as requiring verification.
+- Stop resolved seed domains and copied search criteria from inflating LinkedIn identity scores; explicit company mismatches are now rejected.
+
 ## 2026-07-17 - Direct-import ownership and review flow
 
 - Assign sales-uploaded company seed results to the uploading salesperson instead of applying regional reassignment; administrator imports still use region rules.

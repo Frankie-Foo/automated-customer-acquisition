@@ -81,6 +81,8 @@ function ContactsPipeline() {
   const [importReport, setImportReport] = useState(null);
   const [page, setPage] = useState(1);
   const [busyContactId, setBusyContactId] = useState(null);
+  const [busyAction, setBusyAction] = useState("");
+  const [actionFeedback, setActionFeedback] = useState(null);
 
   useEffect(() => {
     const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
@@ -154,7 +156,23 @@ function ContactsPipeline() {
   async function runContactAction(contact, action) {
     if (busyContactId) return;
     setBusyContactId(contact.id);
+    setBusyAction(action);
     setError("");
+    if (action === "enrich-email") {
+      setActionFeedback({
+        tone: "progress",
+        title: `正在为 ${fullName(contact)} 查找工作邮箱`,
+        message: "正在调用邮箱数据源并验证候选，通常需要 10-30 秒，请勿重复点击。",
+        contactId: contact.id,
+      });
+    } else if (action === "enrich-social") {
+      setActionFeedback({
+        tone: "progress",
+        title: `正在为 ${fullName(contact)} 补齐社媒`,
+        message: "正在查询公开社媒资料，请稍候。",
+        contactId: contact.id,
+      });
+    }
     try {
       if (action === "detail") {
         window.location.hash = "outreach";
@@ -172,9 +190,15 @@ function ContactsPipeline() {
       } else if (action === "return-public") {
         await api("/api/customer-pool/return", { method: "POST", body: JSON.stringify({ contact_id: contact.id, reason: "manual_return" }) });
       } else if (action === "enrich-email") {
-        await api("/api/enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+        const result = await api("/api/enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+        const feedback = emailEnrichmentFeedback(contact, result);
+        setActionFeedback(feedback);
+        window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: feedback.title, type: feedback.tone === "success" ? "success" : "warning" } }));
       } else if (action === "enrich-social") {
-        await api("/api/social-enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+        const result = await api("/api/social-enrich-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
+        const feedback = socialEnrichmentFeedback(contact, result);
+        setActionFeedback(feedback);
+        window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: feedback.title, type: feedback.tone === "success" ? "success" : "warning" } }));
       } else if (action === "queue-one") {
         await api("/api/queue-one", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
       } else if (action === "send-one") {
@@ -185,15 +209,24 @@ function ContactsPipeline() {
       } else {
         await api("/api/lifecycle", { method: "POST", body: JSON.stringify(lifecyclePayload(action, contact)) });
       }
-      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "客户已更新" } }));
+      if (!["enrich-email", "enrich-social"].includes(action)) {
+        window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "客户已更新" } }));
+      }
       await loadContacts();
       window.dispatchEvent(new CustomEvent("salesbot:refresh-related"));
     } catch (err) {
       setError(err.message);
+      setActionFeedback({ tone: "error", title: "操作失败", message: err.message, contactId: contact.id });
       window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: err.message, type: "error" } }));
     } finally {
       setBusyContactId(null);
+      setBusyAction("");
     }
+  }
+
+  function openContact(contactId) {
+    window.location.hash = "outreach";
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId } })), 0);
   }
 
   if (!sessionUser) return null;
@@ -222,6 +255,8 @@ function ContactsPipeline() {
           ["draft_approved", "可发送"],
         ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
       </nav>
+      <CustomerStageGuide />
+      {actionFeedback && <ActionFeedback feedback={actionFeedback} onNext={() => openContact(actionFeedback.contactId)} onDismiss={() => setActionFeedback(null)} />}
       <ImportBatchReport report={importReport} />
       {error && <div className="admin-alert is-error">{error}</div>}
       <div className="table-shell">
@@ -232,12 +267,35 @@ function ContactsPipeline() {
             </tr>
           </thead>
           <tbody>
-            {loading && !contacts.length ? <tr><td colSpan="7"><div className="empty-state">正在加载客户...</div></td></tr> : visibleContacts.length ? visibleContacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} busy={busyContactId === contact.id} />) : <tr><td colSpan="7"><div className="empty-state"><strong>还没有客户</strong><div>先去“获取线索”搜索、导入或手动新增联系人。</div></div></td></tr>}
+            {loading && !contacts.length ? <tr><td colSpan="7"><div className="empty-state">正在加载客户...</div></td></tr> : visibleContacts.length ? visibleContacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} busy={busyContactId === contact.id} busyAction={busyContactId === contact.id ? busyAction : ""} />) : <tr><td colSpan="7"><div className="empty-state"><strong>还没有客户</strong><div>先去“获取线索”搜索、导入或手动新增联系人。</div></div></td></tr>}
           </tbody>
         </table>
       </div>
       {contacts.length > pageSize && <div className="table-pagination"><span>共 {contacts.length} 条，每页 {pageSize} 条</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
+  );
+}
+
+function CustomerStageGuide() {
+  return (
+    <section className="contact-stage-guide" aria-label="客户处理步骤">
+      <article><b>1</b><div><strong>核对身份</strong><span>确认姓名、公司、职位确实匹配</span></div></article>
+      <article><b>2</b><div><strong>获得 valid 邮箱</strong><span>候选邮箱不等于可发送邮箱</span></div></article>
+      <article><b>3</b><div><strong>生成并审核邮件</strong><span>检查客户证据、主题和正文</span></div></article>
+      <article><b>4</b><div><strong>发送并看回流</strong><span>打开、回复后再推进 SABCD</span></div></article>
+    </section>
+  );
+}
+
+function ActionFeedback({ feedback, onNext, onDismiss }) {
+  return (
+    <section className={`contact-action-feedback ${feedback.tone || "neutral"}`} role="status" aria-live="polite">
+      <div><strong>{feedback.title}</strong><span>{feedback.message}</span></div>
+      <div className="contact-action-feedback-actions">
+        {feedback.tone !== "progress" && feedback.contactId && <button type="button" className="primary soft" onClick={onNext}>{feedback.nextLabel || "查看客户详情"}</button>}
+        {feedback.tone !== "progress" && <button type="button" onClick={onDismiss}>关闭</button>}
+      </div>
+    </section>
   );
 }
 
@@ -278,7 +336,7 @@ function MetricChip({ label, value }) {
   return <span className="metric-chip"><b>{Number(value || 0)}</b><em>{label}</em></span>;
 }
 
-function ContactRow({ contact, onAction, busy }) {
+function ContactRow({ contact, onAction, busy, busyAction }) {
   return (
     <tr>
       <td><div className="customer-identity"><small>#{contact.id}</small><strong>{fullName(contact)}</strong><div className="muted">{contact.job_title || "职位待确认"}</div><div className="inline-links">{isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}<SocialProfiles contact={contact} /></div></div></td>
@@ -287,7 +345,7 @@ function ContactRow({ contact, onAction, busy }) {
       <td><div className="pipeline-cell"><div><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span><small>Step {contact.sequence_step || 0}</small></div><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span><div className="lifecycle-cell"><span>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><small>{dispositionLabel(contact.disposition)}</small></div></div></td>
       <td><EmailFeedback contact={contact} /></td>
       <td><PoolBadge contact={contact} /></td>
-      <td><ContactActions contact={contact} onAction={onAction} busy={busy} /></td>
+      <td><ContactActions contact={contact} onAction={onAction} busy={busy} busyAction={busyAction} /></td>
     </tr>
   );
 }
@@ -298,11 +356,11 @@ function IdentityQuality({ contact }) {
   return <div className="identity-quality"><div><b>{score || "--"}</b><span>{identityStatusLabel(status)}</span></div><small>{emailQuality(contact)}</small>{contact.enrich_error && <em title={contact.enrich_error}>数据需处理</em>}</div>;
 }
 
-function ContactActions({ contact, onAction, busy }) {
+function ContactActions({ contact, onAction, busy, busyAction }) {
   const { primary, secondary } = rowActions(contact);
   return (
     <div className="row-actions compact-actions">
-      <button type="button" disabled={busy} className="primary soft main-row-action" onClick={() => onAction(contact, primary[0])}>{busy ? "处理中..." : primary[1]}</button>
+      <button type="button" disabled={busy} className="primary soft main-row-action" onClick={() => onAction(contact, primary[0])}>{busy ? busyActionLabel(busyAction) : primary[1]}</button>
       {!!secondary.length && (
         <details className="row-action-menu">
           <summary aria-label="更多客户操作" title="更多客户操作">更多</summary>
@@ -322,8 +380,17 @@ function rowActions(contact) {
     || Number(contact.unsubscribed_count || 0) > 0
     || Number(contact.complained_count || 0) > 0;
   const hasValidEmail = Boolean(contact.email) && contact.email_status === "valid";
-  const primary = !hasValidEmail
-    ? ["enrich-email", "补齐邮箱"]
+  const candidates = Array.isArray(contact.email_candidates) ? contact.email_candidates : [];
+  const hasValidCandidate = candidates.some((item) => item.category === "personal_work" && item.status === "valid");
+  const identityNeedsReview = contact.identity_status === "mismatch" || (contact.identity_status === "review" && Number(contact.identity_confidence ?? contact.lead_score ?? 0) < 70);
+  const primary = identityNeedsReview
+    ? ["detail", "先核对身份"]
+    : !hasValidEmail
+      ? hasValidCandidate
+        ? ["detail", "采用已验证邮箱"]
+        : candidates.length
+          ? ["detail", "核验邮箱候选"]
+          : ["enrich-email", "查找工作邮箱"]
     : blocked || contact.status === "replied" || Number(contact.replied_count || 0) > 0
       ? ["detail", "查看并跟进"]
       : contact.draft_status === "draft"
@@ -332,9 +399,60 @@ function rowActions(contact) {
           ? ["detail", "发送邮件"]
           : ["detail", "准备邮件"];
   const queueAction = blocked || contact.status !== "enriched" ? [] : [["queue-one", "加入发送队列"]];
-  const secondary = [["enrich-social", "补社媒"], ["profile", "生成画像"], ...queueAction, ["next", "推进阶段"], ["wait", "进入等待"], ["return-public", "退回公共池"]]
+  const retryEmail = !hasValidEmail && candidates.length ? [["enrich-email", "重新查找邮箱"]] : [];
+  const secondary = [...retryEmail, ["enrich-social", "补社媒"], ["profile", "生成画像"], ...queueAction, ["next", "推进销售阶段"], ["wait", "进入等待"], ["return-public", "退回公共池"]]
     .filter(([action]) => action !== primary[0]);
   return { primary, secondary };
+}
+
+function busyActionLabel(action) {
+  if (action === "enrich-email") return "正在查找邮箱...";
+  if (action === "enrich-social") return "正在补齐社媒...";
+  if (action === "profile") return "正在生成画像...";
+  return "正在处理...";
+}
+
+function emailEnrichmentFeedback(contact, result) {
+  const fields = result?.fields || {};
+  if (fields.email && fields.email_status === "valid") {
+    return {
+      tone: "success",
+      title: "已找到并验证工作邮箱",
+      message: `${fields.email} 已成为正式收件邮箱。下一步请生成客户画像和邮件草稿。`,
+      contactId: contact.id,
+      nextLabel: "下一步：准备邮件",
+    };
+  }
+  const candidates = Array.isArray(fields.email_candidates) ? fields.email_candidates : [];
+  if (candidates.length) {
+    const best = [...candidates].sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))[0];
+    return {
+      tone: "warning",
+      title: "未找到已验证邮箱",
+      message: `已保存 ${candidates.length} 个候选，最高 ${Number(best?.confidence || 0)}%（${best?.status || "unknown"}）。候选仍需验证，当前不会进入发送阶段。`,
+      contactId: contact.id,
+      nextLabel: "查看邮箱候选",
+    };
+  }
+  return {
+    tone: "warning",
+    title: "本次没有找到可用邮箱",
+    message: "请先检查姓名、公司和官网是否属于同一个人；资料正确时可稍后重新查找。",
+    contactId: contact.id,
+    nextLabel: "检查客户资料",
+  };
+}
+
+function socialEnrichmentFeedback(contact, result) {
+  if (result?.ok) {
+    return { tone: "success", title: "社媒资料已补齐", message: `已通过 ${result.provider || "社媒数据源"} 更新公开主页。`, contactId: contact.id };
+  }
+  return {
+    tone: "warning",
+    title: "本次没有补到社媒资料",
+    message: result?.error || "数据源没有返回公开主页，或当前数据源额度不足。",
+    contactId: contact.id,
+  };
 }
 
 function PoolBadge({ contact }) {

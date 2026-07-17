@@ -455,7 +455,9 @@ function EmailCandidates({ contact, onAdoptEmail }) {
           <span>{candidateCategoryLabel(item.category)}</span>
           <span>{item.status || "unknown"}</span>
           <b>{Number(item.confidence || 0)}%</b>
-          {item.category === "personal_work" && <button type="button" onClick={() => onAdoptEmail(item.email)}>采用</button>}
+          {item.category === "personal_work" && item.status === "valid"
+            ? <button type="button" onClick={() => onAdoptEmail(item.email)}>采用</button>
+            : <small>{item.category === "personal_work" ? "需进一步验证" : "仅供参考"}</small>}
         </div>
       ))}
     </section>

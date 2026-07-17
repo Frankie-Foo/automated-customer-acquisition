@@ -30,7 +30,13 @@ class SocialEnrichmentService:
         if not contact:
             raise RuntimeError(f"Contact not found: {contact_id}")
         ok = self._enrich_and_save(contact, client, provider)
-        return {"contact_id": contact_id, "ok": ok, "provider": provider}
+        refreshed = self.repo.get_contact(contact_id) or {}
+        return {
+            "contact_id": contact_id,
+            "ok": ok,
+            "provider": provider,
+            "error": None if ok else refreshed.get("social_error") or "No social profiles found",
+        }
 
     def _client(self) -> tuple[Any, str]:
         peopledb_key = self.config.apis.get("peopledb_key", "")

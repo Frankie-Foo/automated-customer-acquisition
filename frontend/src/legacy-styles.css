@@ -4683,6 +4683,103 @@ main,
   color: var(--primary-dark);
 }
 
+.contact-stage-guide {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 18px 14px;
+}
+
+.contact-stage-guide article {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.contact-stage-guide b {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--primary-faint);
+  color: var(--primary-dark);
+}
+
+.contact-stage-guide strong,
+.contact-stage-guide span {
+  display: block;
+}
+
+.contact-stage-guide strong {
+  font-size: 12px;
+}
+
+.contact-stage-guide span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.contact-action-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 18px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.contact-action-feedback.warning {
+  border-color: #f3c37a;
+  border-left-color: #d97706;
+  background: #fff9ed;
+}
+
+.contact-action-feedback.success {
+  border-color: var(--ok-border);
+  border-left-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.contact-action-feedback.error {
+  border-color: #f1aaa3;
+  border-left-color: var(--danger);
+  background: #fff7f6;
+}
+
+.contact-action-feedback.progress {
+  border-left-color: var(--primary);
+  background: var(--primary-faint);
+}
+
+.contact-action-feedback strong,
+.contact-action-feedback span {
+  display: block;
+}
+
+.contact-action-feedback span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.contact-action-feedback-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .workspace-picker {
   align-items: stretch;
   text-align: left;
@@ -4763,6 +4860,10 @@ main,
   .email-candidates header {
     flex-wrap: wrap;
   }
+
+  .contact-stage-guide {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -4779,6 +4880,27 @@ main,
   .pipeline-quick-filters {
     padding-right: 12px;
     padding-left: 12px;
+  }
+
+  .contact-stage-guide {
+    grid-template-columns: minmax(0, 1fr);
+    margin-right: 12px;
+    margin-left: 12px;
+  }
+
+  .contact-action-feedback {
+    align-items: stretch;
+    flex-direction: column;
+    margin-right: 12px;
+    margin-left: 12px;
+  }
+
+  .contact-action-feedback-actions {
+    width: 100%;
+  }
+
+  .contact-action-feedback-actions button {
+    flex: 1 1 0;
   }
 
   .workspace-suggestions {

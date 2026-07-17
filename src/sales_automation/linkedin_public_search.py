@@ -224,13 +224,17 @@ class LinkedInPublicSearchService:
                     if not parsed or parsed["linkedin_url"] in seen_urls:
                         continue
                     seen_urls.add(parsed["linkedin_url"])
+                    parsed["observed_company_domain"] = parsed.get("company_domain") or ""
                     if auto_domain_lookup:
-                        parsed["company_domain"] = self.domain_resolver.resolve(
+                        resolved_domain = self.domain_resolver.resolve(
                             parsed.get("company_name"),
                             parsed.get("company_domain") or criteria.get("company_website"),
                             location=parsed.get("location") or criteria.get("location"),
                             category=parsed.get("industry") or criteria.get("industry") or criteria.get("seed_category"),
                         )
+                        parsed["company_domain"] = resolved_domain
+                        if resolved_domain and not parsed["observed_company_domain"]:
+                            parsed["company_domain_source"] = "resolved"
                     parsed["lead_score"], parsed["match_evidence"] = score_lead_details(parsed, criteria)
                     parsed["match_confidence"] = parsed["lead_score"]
                     parsed["match_status"] = classify_identity_match(parsed, criteria)
@@ -335,6 +339,8 @@ class LinkedInPublicSearchService:
             raise RuntimeError("Email candidate not found")
         if selected.get("category") != "personal_work":
             raise RuntimeError("Only personal work email candidates can be adopted")
+        if selected.get("status") != "valid":
+            raise RuntimeError("Email candidate must be verified as valid before adoption")
         self.repo.adopt_email_candidate(contact_id, selected)
         return {"contact_id": contact_id, "email": selected["email"]}
 
@@ -490,7 +496,7 @@ def score_lead_details(parsed: dict[str, Any], criteria: dict[str, Any]) -> tupl
     location = _clean(criteria.get("location")).lower()
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_name")).lower()
     expected_domain = _domain_from_website(criteria.get("company_website") or "")
-    haystack = " ".join(str(parsed.get(key) or "") for key in ("raw_title", "raw_snippet", "job_title", "company_name", "location")).lower()
+    observed_text = " ".join(str(parsed.get(key) or "") for key in ("raw_title", "raw_snippet")).lower()
     observed_name = " ".join(part for part in [str(parsed.get("first_name") or ""), str(parsed.get("last_name") or "")] if part).strip()
     if target_name:
         matched = _names_match(target_name, observed_name)
@@ -498,29 +504,35 @@ def score_lead_details(parsed: dict[str, Any], criteria: dict[str, Any]) -> tupl
         if matched:
             score += 40
     company_matched = False
-    observed_domain = _domain_from_website(parsed.get("company_domain") or "")
+    observed_domain = _domain_from_website(
+        parsed.get("observed_company_domain")
+        or (parsed.get("company_domain") if parsed.get("company_domain_source") != "resolved" else "")
+        or ""
+    )
     if expected_domain:
-        company_matched = observed_domain == expected_domain
-        evidence.append(_match_evidence("company_domain", expected_domain, observed_domain, company_matched, 25))
+        expected_company = company or expected_domain.split(".", 1)[0]
+        company_matched = observed_domain == expected_domain or _company_names_match(expected_company, observed_text)
+        observed_company = observed_domain or parsed.get("company_name") or parsed.get("raw_snippet")
+        evidence.append(_match_evidence("company_domain", expected_domain, observed_company, company_matched, 25))
     elif company:
         observed_company = _clean(parsed.get("company_name")).lower()
-        company_matched = bool(observed_company and (company in observed_company or observed_company in company or company in haystack))
+        company_matched = _company_names_match(company, observed_text)
         evidence.append(_match_evidence("company", company, observed_company, company_matched, 25))
     elif parsed.get("company_name"):
         company_matched = True
     if company_matched:
         score += 25
-    role_matched = bool(role and role in haystack)
+    role_matched = bool(role and role in observed_text)
     if role:
         evidence.append(_match_evidence("title", role, parsed.get("job_title"), role_matched, 15))
     if role_matched:
         score += 15
-    industry_matched = bool(industry and industry in haystack)
+    industry_matched = bool(industry and industry in observed_text)
     if industry:
         evidence.append(_match_evidence("industry", industry, parsed.get("industry") or parsed.get("raw_snippet"), industry_matched, 5))
     if industry_matched:
         score += 5
-    location_matched = bool(location and location in haystack)
+    location_matched = bool(location and location in observed_text)
     if location:
         evidence.append(_match_evidence("location", location, parsed.get("location") or parsed.get("raw_snippet"), location_matched, 10))
     if location_matched:
@@ -547,6 +559,8 @@ def classify_identity_match(parsed: dict[str, Any], criteria: dict[str, Any]) ->
     name_check = next((item for item in evidence if item.get("field") == "name"), None)
     company_check = next((item for item in evidence if item.get("field") in {"company", "company_domain"}), None)
     if name_check and not name_check.get("matched"):
+        return "mismatch"
+    if company_check and not company_check.get("matched"):
         return "mismatch"
     if score >= 85 and (not name_check or name_check.get("matched")) and (not company_check or company_check.get("matched")):
         return "confirmed"
@@ -747,6 +761,19 @@ def _names_match(expected: str, observed: str) -> bool:
 
 def _identity_tokens(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", str(value or "").casefold()) if len(token) > 1}
+
+
+def _company_names_match(expected: str, observed: str) -> bool:
+    noise = {
+        "the", "and", "company", "co", "inc", "ltd", "limited", "llc", "plc", "corp", "corporation",
+        "holding", "holdings", "international", "global", "official", "professional", "profile", "www", "com",
+        "net", "org",
+    }
+    expected_tokens = {token for token in _identity_tokens(expected) if token not in noise}
+    observed_tokens = _identity_tokens(observed)
+    if not expected_tokens or not observed_tokens:
+        return False
+    return expected_tokens.issubset(observed_tokens)
 
 
 def _match_evidence(field: str, expected: Any, observed: Any, matched: bool, weight: int) -> dict[str, Any]:
