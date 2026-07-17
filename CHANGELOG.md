@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-17 - Sales-first work queues
+
+- Replace the step-heavy customer pipeline header with a sales work queue: ready to send, auto-enrichable, needs human review, and blocked.
+- Add one-click bulk email/social enrichment from the customer review page so salespeople do not need to process customers one by one.
+- Add backend filters for auto-enrichable contacts and review-only exceptions.
+- Rename the customer table copy around actionable queues instead of raw technical status fields.
+
 ## 2026-07-17 - Visible enrichment outcomes and guarded progression
 
 - Show live per-contact enrichment progress, verified-email success, saved-candidate warnings, provider failures, and a direct next-step button instead of the generic "customer updated" notice.

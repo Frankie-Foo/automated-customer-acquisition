@@ -1206,6 +1206,8 @@ class Repository:
             "returned_pool": "c.pool_type = 'public' AND c.returned_to_public_at IS NOT NULL",
             "unassigned_replies": "c.pool_type = 'public' AND c.reply_assignment_pending = TRUE",
             "needs_enrichment": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
+            "auto_enrich": "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL) AND COALESCE(jsonb_array_length(c.email_candidates), 0) = 0 AND COALESCE(c.identity_status, '') IS DISTINCT FROM 'mismatch'",
+            "needs_review": "(COALESCE(c.identity_status, '') = 'mismatch' OR (COALESCE(c.identity_status, '') = 'review' AND COALESCE(c.identity_confidence, c.lead_score, 0) < 70) OR ((c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL) AND COALESCE(jsonb_array_length(c.email_candidates), 0) > 0) OR c.enrich_error IS NOT NULL)",
             "ready_to_send": "c.email_status = 'valid' AND c.status = 'enriched' AND c.email IS NOT NULL AND lower(split_part(c.email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team') AND COALESCE(c.lead_score, 60) >= 50 AND COALESCE(c.job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'",
             "missing_draft": "c.pool_type = 'private' AND c.email_status = 'valid' AND c.email IS NOT NULL AND draft.id IS NULL",
             "draft_pending": "c.pool_type = 'private' AND draft.status = 'draft'",

@@ -11,6 +11,8 @@ const filters = [
   ["pool_expiring", "14天内到期"],
   ["returned_pool", "已回公共池"],
   ["mine", "我的客户"],
+  ["auto_enrich", "系统可自动补"],
+  ["needs_review", "需人工确认"],
   ["sabcd_d", "D 未接触"],
   ["sabcd_c", "C 已触达"],
   ["sabcd_b", "B 多轮沟通"],
@@ -83,6 +85,7 @@ function ContactsPipeline() {
   const [busyContactId, setBusyContactId] = useState(null);
   const [busyAction, setBusyAction] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState("");
 
   useEffect(() => {
     const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
@@ -224,6 +227,37 @@ function ContactsPipeline() {
     }
   }
 
+  async function runBulkAction(action) {
+    if (bulkBusy) return;
+    setBulkBusy(action);
+    setError("");
+    setActionFeedback({
+      tone: "progress",
+      title: action === "bulk-email" ? "正在批量补齐邮箱" : "正在批量补齐社媒",
+      message: "系统会自动处理当前客户池里最需要补资料的客户。销售不用逐条点，完成后页面会刷新结果。",
+    });
+    try {
+      const result = action === "bulk-email"
+        ? await api("/api/enrich", { method: "POST", body: JSON.stringify({ limit: 100 }) })
+        : await api("/api/social-enrich", { method: "POST", body: JSON.stringify({ limit: 100 }) });
+      const count = Number(result.enriched || result.social_enriched || 0);
+      setActionFeedback({
+        tone: count ? "success" : "warning",
+        title: count ? `已批量处理 ${count} 个客户` : "本次没有可自动处理的客户",
+        message: count ? "系统已刷新客户状态。接下来只需要处理“可直接发”和“需人工确认”两个队列。" : "可能是当前客户已经处理过，或者外部数据源没有返回新结果。",
+        nextLabel: "查看处理结果",
+      });
+      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: count ? `已批量处理 ${count} 个客户` : "本次没有新结果", type: count ? "success" : "warning" } }));
+      await loadContacts();
+      window.dispatchEvent(new CustomEvent("salesbot:refresh-related"));
+    } catch (err) {
+      setError(err.message);
+      setActionFeedback({ tone: "error", title: "批量处理失败", message: err.message });
+    } finally {
+      setBulkBusy("");
+    }
+  }
+
   function openContact(contactId) {
     window.location.hash = "outreach";
     window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId } })), 0);
@@ -236,8 +270,8 @@ function ContactsPipeline() {
       <div className="section-head">
         <div>
           <span className="eyebrow">Pipeline</span>
-          <h2>{filter === "public_pool" ? "公共客户池" : filter === "mine" || filter === "private_pool" ? "我的客户" : "客户列表"}</h2>
-          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "核对身份和邮箱，打开详情生成画像与邮件，再推进触达。"}</p>
+          <h2>{filter === "public_pool" ? "公共客户池" : filter === "mine" || filter === "private_pool" ? "我的客户" : "销售任务"}</h2>
+          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "系统已经把客户分组，优先处理可发送和需确认的客户。"}</p>
         </div>
         <div className="toolbar">
           <label htmlFor="contact-status-filter">Status<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
@@ -249,17 +283,22 @@ function ContactsPipeline() {
         {[
           ["public_pool", "公共池"],
           ["mine", "我的客户"],
-          ["needs_enrichment", "待补资料"],
+          ["auto_enrich", "系统可补"],
+          ["needs_review", "需人工确认"],
           ["missing_draft", "待写草稿"],
           ["draft_pending", "待审核"],
           ["draft_approved", "可发送"],
         ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
       </nav>
-      <CustomerStageGuide />
+      <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} />
       {actionFeedback && <ActionFeedback feedback={actionFeedback} onNext={() => openContact(actionFeedback.contactId)} onDismiss={() => setActionFeedback(null)} />}
       <ImportBatchReport report={importReport} />
       {error && <div className="admin-alert is-error">{error}</div>}
-      <div className="table-shell">
+      <div className="table-shell contact-task-table">
+        <div className="task-table-head">
+          <strong>{taskTableTitle(filter)}</strong>
+          <span>{taskTableHint(filter)}</span>
+        </div>
         <table className="customer-table">
           <thead>
             <tr>
@@ -267,13 +306,162 @@ function ContactsPipeline() {
             </tr>
           </thead>
           <tbody>
-            {loading && !contacts.length ? <tr><td colSpan="7"><div className="empty-state">正在加载客户...</div></td></tr> : visibleContacts.length ? visibleContacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} busy={busyContactId === contact.id} busyAction={busyContactId === contact.id ? busyAction : ""} />) : <tr><td colSpan="7"><div className="empty-state"><strong>还没有客户</strong><div>先去“获取线索”搜索、导入或手动新增联系人。</div></div></td></tr>}
+            {loading && !contacts.length ? <tr><td colSpan="7"><div className="empty-state">正在加载客户...</div></td></tr> : visibleContacts.length ? visibleContacts.map((contact) => <ContactRow key={contact.id} contact={contact} onAction={runContactAction} busy={busyContactId === contact.id} busyAction={busyContactId === contact.id ? busyAction : ""} />) : <tr><td colSpan="7"><div className="empty-state"><strong>当前队列没有客户</strong><div>换一个队列查看，或去“获取线索”导入新客户。</div></div></td></tr>}
           </tbody>
         </table>
       </div>
       {contacts.length > pageSize && <div className="table-pagination"><span>共 {contacts.length} 条，每页 {pageSize} 条</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
   );
+}
+
+function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkBusy }) {
+  const stats = useMemo(() => summarizeWorkQueue(contacts), [contacts]);
+  const cards = [
+    {
+      key: "ready",
+      title: "可直接发",
+      value: stats.readyToSend,
+      text: "有 valid 邮箱，下一步只需审核邮件并发送。",
+      filter: "ready_to_send",
+      tone: "ready",
+    },
+    {
+      key: "auto",
+      title: "系统可自动补",
+      value: stats.autoEnrich,
+      text: "资料够，交给系统批量查邮箱和社媒。",
+      filter: "auto_enrich",
+      tone: "auto",
+    },
+    {
+      key: "review",
+      title: "需人工确认",
+      value: stats.review,
+      text: "只处理身份可疑、候选邮箱或资料冲突的少量客户。",
+      filter: "needs_review",
+      tone: "review",
+    },
+    {
+      key: "blocked",
+      title: "停止触达",
+      value: stats.blocked,
+      text: "退信、退订、身份不匹配，系统默认不推进。",
+      filter: "bounced",
+      tone: "blocked",
+    },
+  ];
+  return (
+    <section className="sales-work-queue">
+      <div className="sales-work-head">
+        <div>
+          <span className="eyebrow">Today</span>
+          <h3>今天先处理这三件事</h3>
+          <p>系统先自动分组，销售只看结果：能发的先发，能自动补的批量补，剩下少量再人工确认。</p>
+        </div>
+        <div className="sales-work-actions">
+          <button type="button" className="primary" disabled={!!bulkBusy} onClick={() => onBulkAction("bulk-email")}>{bulkBusy === "bulk-email" ? "正在补邮箱..." : "批量补邮箱"}</button>
+          <button type="button" disabled={!!bulkBusy} onClick={() => onBulkAction("bulk-social")}>{bulkBusy === "bulk-social" ? "正在补社媒..." : "批量补社媒"}</button>
+        </div>
+      </div>
+      <div className="sales-work-cards">
+        {cards.map((card) => (
+          <button key={card.key} type="button" className={`sales-work-card ${card.tone} ${activeFilter === card.filter ? "active" : ""}`} onClick={() => setFilter(card.filter)}>
+            <span>{card.title}</span>
+            <b>{card.value}</b>
+            <small>{card.text}</small>
+          </button>
+        ))}
+      </div>
+      <div className="sales-work-summary">
+        <strong>{stats.mainAdvice}</strong>
+        <span>{stats.secondaryAdvice}</span>
+      </div>
+    </section>
+  );
+}
+
+function taskTableTitle(filter) {
+  return {
+    ready_to_send: "可发送客户",
+    auto_enrich: "系统可自动补资料",
+    needs_review: "需要人工确认的客户",
+    public_pool: "公共客户池",
+    mine: "我的客户",
+    private_pool: "我的客户",
+    missing_draft: "待写邮件草稿",
+    draft_pending: "待审核邮件",
+    draft_approved: "已审核待发送",
+    bounced: "退信需处理",
+  }[filter] || "客户任务列表";
+}
+
+function taskTableHint(filter) {
+  return {
+    ready_to_send: "这些客户已经有 valid 邮箱，直接进入邮件审核和发送。",
+    auto_enrich: "这批客户不用逐条点，先用上方“批量补邮箱/社媒”。",
+    needs_review: "只看这批例外：身份可疑、只有候选邮箱、或数据源返回冲突。",
+    public_pool: "确认适合后领取，领取后进入自己的私人客户池。",
+    mine: "默认只看你负责的客户。",
+    private_pool: "默认只看你负责的客户。",
+    missing_draft: "打开客户详情，生成个性化邮件。",
+    draft_pending: "检查主题和正文，没问题后批准发送。",
+    draft_approved: "已批准的邮件可以发送。",
+    bounced: "退信客户不要继续触达，先检查邮箱或放弃。",
+  }[filter] || "按队列处理客户，不需要逐条理解所有技术状态。";
+}
+
+function summarizeWorkQueue(contacts) {
+  const stats = { readyToSend: 0, autoEnrich: 0, review: 0, blocked: 0 };
+  for (const contact of contacts) {
+    const bucket = contactWorkBucket(contact);
+    if (bucket === "ready") stats.readyToSend += 1;
+    else if (bucket === "auto") stats.autoEnrich += 1;
+    else if (bucket === "blocked") stats.blocked += 1;
+    else stats.review += 1;
+  }
+  if (stats.readyToSend) {
+    return {
+      ...stats,
+      mainAdvice: `优先发送 ${stats.readyToSend} 个可触达客户`,
+      secondaryAdvice: "这些客户已经有 valid 邮箱，别再卡在核验环节，直接进邮件审核和发送。",
+    };
+  }
+  if (stats.autoEnrich) {
+    return {
+      ...stats,
+      mainAdvice: `先批量补齐 ${stats.autoEnrich} 个客户资料`,
+      secondaryAdvice: "批量按钮会自动查邮箱/社媒，只有系统拿不准的客户才需要人工看。",
+    };
+  }
+  if (stats.review) {
+    return {
+      ...stats,
+      mainAdvice: `还有 ${stats.review} 个客户需要人工判断`,
+      secondaryAdvice: "重点看姓名、公司、职位是否匹配；不匹配就放弃，匹配再补邮箱。",
+    };
+  }
+  return {
+    ...stats,
+    mainAdvice: "当前没有紧急客户",
+    secondaryAdvice: "可以去“获取线索”继续导入或搜索新客户。",
+  };
+}
+
+function contactWorkBucket(contact) {
+  const blocked = ["bounced", "unsubscribed"].includes(contact.status)
+    || contact.identity_status === "mismatch"
+    || Number(contact.bounced_count || 0) > 0
+    || Number(contact.unsubscribed_count || 0) > 0
+    || Number(contact.complained_count || 0) > 0;
+  if (blocked) return "blocked";
+  const hasValidEmail = Boolean(contact.email) && contact.email_status === "valid";
+  if (hasValidEmail && !["replied", "sent_1", "sent_2", "sent_3"].includes(contact.status)) return "ready";
+  const candidates = Array.isArray(contact.email_candidates) ? contact.email_candidates : [];
+  const identityNeedsReview = contact.identity_status === "review" && Number(contact.identity_confidence ?? contact.lead_score ?? 0) < 70;
+  if (identityNeedsReview || candidates.length) return "review";
+  if (!hasValidEmail) return "auto";
+  return "review";
 }
 
 function CustomerStageGuide() {
