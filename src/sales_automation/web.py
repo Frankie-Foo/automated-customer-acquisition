@@ -23,7 +23,7 @@ from .outbound_identity import parse_signed_reply_route
 from .quotas import QuotaService
 from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
-from .services import AccountResearchService, AutomationRunService, EnrichmentService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .services import AccountResearchService, AutomationRunService, EnrichmentService, LeadWorkflowService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 from .vps_sso import VpsSsoError, VpsSsoService
 
 
@@ -201,6 +201,12 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/automation-runs":
                 self._json(lambda: {"runs": repo.list_automation_runs(user=self._current_user())})
                 return
+            if parsed.path == "/api/followup-tasks":
+                qs = parse_qs(parsed.query)
+                status = qs.get("status", ["open"])[0] or "open"
+                limit = int(qs.get("limit", ["100"])[0])
+                self._json(lambda: {"tasks": repo.list_followup_tasks(user=self._current_user(), status=status, limit=limit)})
+                return
             if parsed.path == "/api/search-results":
                 qs = parse_qs(parsed.query)
                 task_id = int(qs.get("task_id", ["0"])[0])
@@ -343,9 +349,13 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/contacts":
                 def create_contact() -> dict[str, Any]:
                     user = self._current_user()
-                    payload.setdefault("owner", user.get("display_name") or user.get("username"))
-                    inserted, skipped = repo.upsert_contacts([payload], owner_user_id=int(user["id"]))
-                    return {"inserted": inserted, "skipped": skipped}
+                    result = LeadWorkflowService(repo).ingest_contacts(
+                        [payload],
+                        user=user,
+                        source_type="manual_entry",
+                        source_ref="web_form",
+                    )
+                    return {**result, "skipped": result["duplicates"]}
                 self._json_audit(
                     "create_contact",
                     create_contact,
@@ -356,11 +366,15 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/import/csv":
                 def import_csv() -> dict[str, Any]:
                     user = self._current_user()
-                    contacts = parse_contacts_csv(payload.get("csv", ""), default_source=payload.get("source") or "csv_import")
-                    for contact in contacts:
-                        contact.setdefault("owner", user.get("display_name") or user.get("username"))
-                    inserted, skipped = repo.upsert_contacts(contacts, owner_user_id=int(user["id"]))
-                    return {"parsed": len(contacts), "inserted": inserted, "skipped": skipped}
+                    source_ref = str(payload.get("source") or "csv_import")[:500]
+                    contacts = parse_contacts_csv(payload.get("csv", ""), default_source=source_ref)
+                    result = LeadWorkflowService(repo).ingest_contacts(
+                        contacts,
+                        user=user,
+                        source_type="csv_import",
+                        source_ref=source_ref,
+                    )
+                    return {**result, "skipped": result["duplicates"]}
                 self._json_audit(
                     "import_csv",
                     import_csv,
@@ -477,6 +491,24 @@ def make_handler(config, repo: Repository):
                     target_id=payload.get("run_id"),
                     summary="暂停或恢复批量获客任务",
                     metadata={"action": payload.get("action")},
+                )
+                return
+            if parsed.path == "/api/followup-tasks/complete":
+                def complete_followup_task() -> dict[str, Any]:
+                    task = repo.complete_followup_task(
+                        int(payload.get("task_id") or 0),
+                        user=self._current_user(),
+                        outcome=str(payload.get("outcome") or "completed")[:500],
+                    )
+                    if not task:
+                        raise RuntimeError("待办不存在或无权操作")
+                    return {"task": task}
+                self._json_audit(
+                    "complete_followup_task",
+                    complete_followup_task,
+                    target_type="followup_task",
+                    target_id=payload.get("task_id"),
+                    summary="完成销售跟进待办",
                 )
                 return
             if parsed.path == "/api/source":
@@ -784,14 +816,32 @@ def make_handler(config, repo: Repository):
                 def activity() -> dict[str, Any]:
                     if not self._has_private_contact_access(int(payload["contact_id"])):
                         raise RuntimeError("Contact not found")
-                    return repo.add_lifecycle_activity(
-                        int(payload["contact_id"]),
+                    contact_id = int(payload["contact_id"])
+                    user = self._current_user()
+                    activity_type = payload.get("activity_type") or "note"
+                    saved = repo.add_lifecycle_activity(
+                        contact_id,
                         lifecycle_stage=payload.get("lifecycle_stage") or "lead",
-                        activity_type=payload.get("activity_type") or "note",
+                        activity_type=activity_type,
                         title=payload.get("title"),
                         content=payload.get("content") or "",
                         created_by=payload.get("created_by") or "dashboard",
                     )
+                    repo.record_interaction(
+                        contact_id=contact_id,
+                        user_id=int(user["id"]),
+                        interaction_type=activity_type,
+                        direction="inbound" if activity_type == "reply" else "outbound",
+                        channel=_activity_channel(activity_type),
+                        subject=payload.get("title"),
+                        content=payload.get("content") or "",
+                        outcome=payload.get("lifecycle_stage") or "lead",
+                        source_ref=f"lifecycle_activity:{saved['id']}",
+                    )
+                    repo.close_open_followup_tasks(contact_id)
+                    LeadWorkflowService(repo).ensure_next_task(contact_id, owner_user_id=int(user["id"]))
+                    repo.refresh_contact_campaign_metrics(contact_id)
+                    return saved
                 self._json_audit(
                     "add_lifecycle_activity",
                     activity,
@@ -842,6 +892,20 @@ def make_handler(config, repo: Repository):
                     draft = repo.approve_latest_email_draft(contact_id, user_id=int(user["id"]))
                     if not draft:
                         raise RuntimeError("No draft is available for approval")
+                    repo.close_open_followup_tasks(contact_id)
+                    contact = repo.get_contact(contact_id) or {}
+                    repo.ensure_followup_task(
+                        contact_id=contact_id,
+                        assigned_user_id=int(user["id"]),
+                        created_by_user_id=int(user["id"]),
+                        task_type="send",
+                        priority="high",
+                        title=f"发送已审核邮件：{_contact_display_name(contact)}",
+                        description="邮件已审核，可在配额和工作时间内发送。",
+                        due_at=None,
+                        trigger_rule="approved_draft_ready",
+                        metadata={"draft_id": draft["id"], "generated_by": "draft_approval"},
+                    )
                     return {"draft": draft}
                 self._json_audit(
                     "approve_email_draft",
@@ -1286,6 +1350,24 @@ def make_handler(config, repo: Repository):
 
 def _result(label: str, value: Any) -> dict[str, Any]:
     return {label: value}
+
+
+def _activity_channel(activity_type: str) -> str:
+    value = str(activity_type or "").lower()
+    if "email" in value or value == "reply":
+        return "email"
+    if "meeting" in value or "appointment" in value:
+        return "meeting"
+    if "phone" in value or "call" in value:
+        return "phone"
+    if "whatsapp" in value:
+        return "whatsapp"
+    return "manual"
+
+
+def _contact_display_name(contact: dict[str, Any]) -> str:
+    person = " ".join(str(contact.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+    return person or str(contact.get("company_name") or "客户")
 
 
 def _tracking_secret(config: Any) -> str:

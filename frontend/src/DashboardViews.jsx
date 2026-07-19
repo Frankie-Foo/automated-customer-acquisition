@@ -65,6 +65,7 @@ function DashboardViews({ targets, activePage }) {
   const [lifecycle, setLifecycle] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [publicContacts, setPublicContacts] = useState([]);
+  const [tasks, setTasks] = useState([]);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -80,12 +81,14 @@ function DashboardViews({ targets, activePage }) {
       return;
     }
     if (activePage === "followup") {
-      const [lifecycleData, contactsData] = await Promise.all([
+      const [lifecycleData, contactsData, taskData] = await Promise.all([
         api("/api/lifecycle"),
         api(user.role === "admin" ? "/api/contacts?limit=100" : "/api/contacts?limit=100&filter=private_pool"),
+        api("/api/followup-tasks?status=open&limit=100"),
       ]);
       setLifecycle(lifecycleData);
       setContacts(contactsData.contacts || []);
+      setTasks(taskData.tasks || []);
       return;
     }
     if (activePage === "report") setOps(await api("/api/ops-report"));
@@ -115,7 +118,7 @@ function DashboardViews({ targets, activePage }) {
       {targets.dashboard && activePage === "dashboard" && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
       {targets.quickstart && activePage === "dashboard" && createPortal(<QuickStart user={user} contacts={contacts} publicContacts={publicContacts} />, targets.quickstart)}
       {targets.ops && activePage === "report" && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
-      {targets.followups && activePage === "followup" && createPortal(<Followups contacts={contacts} />, targets.followups)}
+      {targets.followups && activePage === "followup" && createPortal(<Followups contacts={contacts} tasks={tasks} reload={load} />, targets.followups)}
       {targets.lifecycle && activePage === "followup" && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
     </>
   );
@@ -357,7 +360,7 @@ function OpsCard({ label, value }) {
   return <article><span>{label}</span><strong>{Number(value || 0)}</strong></article>;
 }
 
-function Followups({ contacts }) {
+function Followups({ contacts, tasks, reload }) {
   const openedNoReply = contacts.filter((c) => Number(c.opened_count || 0) > 0 && !["replied", "bounced", "unsubscribed"].includes(c.status));
   const replied = contacts.filter((c) => c.status === "replied" || Number(c.replied_count || 0) > 0);
   const bounced = contacts.filter((c) => c.status === "bounced" || Number(c.bounced_count || 0) > 0);
@@ -367,13 +370,81 @@ function Followups({ contacts }) {
         <div><span className="eyebrow">Sales follow-up</span><h2>今日待办</h2></div>
         <p>优先处理已打开未回复、已回复和退信客户。</p>
       </div>
-      <div className="followup-grid">
+      <TodayTaskQueue tasks={tasks} reload={reload} />
+      <div className="followup-grid signal-summary">
         <FollowupCard title="已打开未回复" hint="建议今天跟进或准备下一封" tone="hot" contacts={openedNoReply} />
         <FollowupCard title="已回复" hint="需要销售马上接手沟通" tone="reply" contacts={replied} />
         <FollowupCard title="退信需处理" hint="检查邮箱质量或加入黑名单" tone="risk" contacts={bounced} />
       </div>
     </section>
   );
+}
+
+function TodayTaskQueue({ tasks, reload }) {
+  const [busyId, setBusyId] = useState(null);
+  const now = Date.now();
+  const rows = [...(tasks || [])].sort((left, right) => {
+    const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
+    return (rank[left.priority] ?? 4) - (rank[right.priority] ?? 4)
+      || new Date(left.due_at || "2999-01-01").getTime() - new Date(right.due_at || "2999-01-01").getTime();
+  });
+
+  async function complete(task) {
+    setBusyId(task.id);
+    try {
+      await api("/api/followup-tasks/complete", {
+        method: "POST",
+        body: JSON.stringify({ task_id: task.id, outcome: "sales_completed" }),
+      });
+      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "待办已完成" } }));
+      await reload();
+      window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function open(task) {
+    window.location.hash = task.task_type === "enrich_contact" ? "research" : "outreach";
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: task.contact_id } })), 50);
+  }
+
+  return (
+    <section className="today-task-queue">
+      <header>
+        <div><strong>系统生成的销售待办</strong><span>系统根据导入、发送和客户反馈自动更新</span></div>
+        <b>{rows.length}</b>
+      </header>
+      <div className="today-task-list">
+        {rows.length ? rows.slice(0, 20).map((task) => {
+          const due = task.due_at ? new Date(task.due_at) : null;
+          const overdue = due && due.getTime() < now;
+          return (
+            <article key={task.id} className={`sales-task priority-${task.priority || "normal"} ${overdue ? "overdue" : ""}`}>
+              <button className="task-main" type="button" onClick={() => open(task)}>
+                <span className="task-priority">{taskPriorityLabel(task.priority)}</span>
+                <span><strong>{task.title}</strong><small>{task.description || task.company_name || ""}</small></span>
+                <em>{formatTaskDue(due, overdue)}</em>
+              </button>
+              <button className="task-complete" type="button" disabled={busyId === task.id} onClick={() => complete(task)}>{busyId === task.id ? "保存中" : "完成"}</button>
+            </article>
+          );
+        }) : <div className="empty-state compact">当前没有待处理任务</div>}
+      </div>
+    </section>
+  );
+}
+
+function taskPriorityLabel(priority) {
+  return { urgent: "立即", high: "优先", normal: "常规", low: "稍后" }[priority] || "常规";
+}
+
+function formatTaskDue(due, overdue) {
+  if (!due || Number.isNaN(due.getTime())) return "无截止时间";
+  if (overdue) return "已到期";
+  const today = new Date();
+  if (due.toDateString() === today.toDateString()) return "今天";
+  return `${due.getMonth() + 1}/${due.getDate()}`;
 }
 
 function FollowupCard({ title, hint, tone, contacts }) {

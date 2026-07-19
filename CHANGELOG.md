@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-19 - Lead-to-follow-up PDCA workflow
+
+- Connect manual entry, CSV import, and background company sourcing to canonical contacts, raw lead provenance, explainable scoring, campaigns, and deduplicated sales tasks.
+- Add a database-backed daily task queue with owner isolation and automatic task transitions for draft generation, approval, sending, opens, replies, and bounces.
+- Mirror email drafts, sends, delivery feedback, and lifecycle notes into unified outreach and interaction records, with campaign metric rollups.
+- Add workflow guard indexes and regression tests for normalization, deduplication, scoring evidence, task selection, and intake closure.
+
 ## 2026-07-17 - Sales-first work queues
 
 - Replace the step-heavy customer pipeline header with a sales work queue: ready to send, auto-enrichable, needs human review, and blocked.

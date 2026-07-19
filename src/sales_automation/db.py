@@ -821,6 +821,40 @@ class Repository:
                 tuple(params),
             ).fetchone()
 
+    def find_contact_match(self, contact: dict[str, Any]) -> dict[str, Any] | None:
+        """Find a canonical contact using stable identifiers before inserting a lead."""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        linkedin_url = str(contact.get("linkedin_url") or "").strip()
+        email = _clean_optional_email(contact.get("email"))
+        phone = re.sub(r"\D", "", str(contact.get("phone") or ""))
+        domain = str(contact.get("company_domain") or "").strip().lower()
+        first = str(contact.get("first_name") or "").strip()
+        last = str(contact.get("last_name") or "").strip()
+        if linkedin_url:
+            clauses.append("linkedin_url = %s")
+            params.append(linkedin_url)
+        if email:
+            clauses.append("LOWER(email) = LOWER(%s)")
+            params.append(email)
+        if len(phone) >= 7:
+            clauses.append("regexp_replace(COALESCE(phone, ''), '[^0-9]+', '', 'g') = %s")
+            params.append(phone)
+        if first and last and domain:
+            clauses.append(
+                "(LOWER(first_name) = LOWER(%s) AND LOWER(last_name) = LOWER(%s) "
+                "AND LOWER(COALESCE(company_domain, '')) = LOWER(%s))"
+            )
+            params.extend([first, last, domain])
+        if not clauses:
+            return None
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"SELECT * FROM contacts WHERE {' OR '.join(clauses)} ORDER BY created_at DESC, id DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+
     def get_contact_for_user(self, contact_id: int, user: dict[str, Any]) -> dict[str, Any] | None:
         if user.get("role") == "admin":
             return self.get_contact(contact_id)
@@ -3088,6 +3122,22 @@ class Repository:
                 (email, domain, reason),
             )
 
+    def blacklist_match(self, *, email: str | None, domain: str | None) -> dict[str, Any] | None:
+        if not email and not domain:
+            return None
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, email, domain, reason, created_at
+                FROM blacklist
+                WHERE (%s::text IS NOT NULL AND LOWER(email) = LOWER(%s))
+                   OR (%s::text IS NOT NULL AND LOWER(domain) = LOWER(%s))
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (email, email, domain, domain),
+            ).fetchone()
+
     def create_campaign(
         self,
         *,
@@ -3120,6 +3170,61 @@ class Repository:
                     json.dumps(metadata or {}),
                 ),
             ).fetchone()
+
+    def refresh_campaign_metrics(self, campaign_id: int) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                WITH metric AS (
+                  SELECT
+                    COUNT(DISTINCT l.id)::integer AS leads_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE c.email_status = 'valid' AND c.email IS NOT NULL)::integer AS valid_contacts_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'sent')::integer AS sent_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'opened')::integer AS opened_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'replied' OR c.status = 'replied')::integer AS replied_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('meeting', 'business_plan', 'store_visit', 'trial_order', 'agency_agreement', 'hq_visit', 'signed', 'maintenance'))::integer AS meeting_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('business_plan', 'trial_order', 'agency_agreement', 'signed', 'maintenance'))::integer AS quoted_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('signed', 'maintenance') OR c.disposition = 'won')::integer AS won_count,
+                    COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage = 'abandoned' OR c.disposition IN ('abandoned', 'lost'))::integer AS lost_count
+                  FROM leads l
+                  LEFT JOIN contacts c ON c.id = l.contact_id
+                  LEFT JOIN email_events e ON e.contact_id = c.id
+                  WHERE l.campaign_id = %s
+                )
+                INSERT INTO campaign_metrics(
+                    campaign_id, metric_date, leads_count, valid_contacts_count, sent_count,
+                    opened_count, replied_count, meeting_count, quoted_count, won_count, lost_count
+                )
+                SELECT %s, CURRENT_DATE, leads_count, valid_contacts_count, sent_count,
+                       opened_count, replied_count, meeting_count, quoted_count, won_count, lost_count
+                FROM metric
+                ON CONFLICT (campaign_id, metric_date)
+                DO UPDATE SET
+                    leads_count = EXCLUDED.leads_count,
+                    valid_contacts_count = EXCLUDED.valid_contacts_count,
+                    sent_count = EXCLUDED.sent_count,
+                    opened_count = EXCLUDED.opened_count,
+                    replied_count = EXCLUDED.replied_count,
+                    meeting_count = EXCLUDED.meeting_count,
+                    quoted_count = EXCLUDED.quoted_count,
+                    won_count = EXCLUDED.won_count,
+                    lost_count = EXCLUDED.lost_count,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (campaign_id, campaign_id),
+            ).fetchone()
+
+    def refresh_contact_campaign_metrics(self, contact_id: int) -> int:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT campaign_id FROM leads WHERE contact_id = %s AND campaign_id IS NOT NULL",
+                (contact_id,),
+            ).fetchall()
+        campaign_ids = [int(row["campaign_id"]) for row in rows]
+        for campaign_id in campaign_ids:
+            self.refresh_campaign_metrics(campaign_id)
+        return len(campaign_ids)
 
     def upsert_lead_record(
         self,
@@ -3278,6 +3383,147 @@ class Repository:
                 ),
             ).fetchone()
 
+    def ensure_followup_task(
+        self,
+        *,
+        contact_id: int,
+        assigned_user_id: int | None,
+        title: str,
+        task_type: str = "followup",
+        priority: str = "normal",
+        lead_id: int | None = None,
+        created_by_user_id: int | None = None,
+        description: str | None = None,
+        due_at: str | None = None,
+        trigger_rule: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO followup_tasks(
+                    contact_id, lead_id, assigned_user_id, created_by_user_id, task_type, priority,
+                    title, description, due_at, trigger_rule, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::timestamptz, %s, %s::jsonb)
+                ON CONFLICT (contact_id, task_type, trigger_rule)
+                  WHERE status = 'open' AND trigger_rule IS NOT NULL
+                DO UPDATE SET
+                    assigned_user_id = COALESCE(EXCLUDED.assigned_user_id, followup_tasks.assigned_user_id),
+                    priority = EXCLUDED.priority,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    due_at = CASE
+                        WHEN followup_tasks.due_at IS NULL THEN EXCLUDED.due_at
+                        WHEN EXCLUDED.due_at IS NULL THEN followup_tasks.due_at
+                        ELSE LEAST(followup_tasks.due_at, EXCLUDED.due_at)
+                    END,
+                    metadata = followup_tasks.metadata || EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (
+                    contact_id,
+                    lead_id,
+                    assigned_user_id,
+                    created_by_user_id,
+                    task_type,
+                    priority,
+                    title,
+                    description,
+                    due_at,
+                    trigger_rule,
+                    json.dumps(metadata or {}),
+                ),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_followup_tasks(
+        self,
+        *,
+        user: dict[str, Any],
+        status: str = "open",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["t.status = %s"]
+        params: list[Any] = [status]
+        if user.get("role") != "admin":
+            clauses.append("(t.assigned_user_id = %s OR (t.assigned_user_id IS NULL AND c.owner_user_id = %s))")
+            params.extend([user["id"], user["id"]])
+        params.append(max(1, min(int(limit), 500)))
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT t.*, c.first_name, c.last_name, c.company_name, c.email, c.phone,
+                       c.status::text AS contact_status, c.lifecycle_stage, c.sabcd_stage,
+                       c.pool_type, c.owner_user_id, u.display_name AS assigned_user_name
+                FROM followup_tasks t
+                JOIN contacts c ON c.id = t.contact_id
+                LEFT JOIN sales_users u ON u.id = t.assigned_user_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY
+                  CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                  t.due_at NULLS LAST,
+                  t.created_at
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def complete_followup_task(
+        self,
+        task_id: int,
+        *,
+        user: dict[str, Any],
+        outcome: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            if user.get("role") == "admin":
+                row = conn.execute(
+                    """
+                    UPDATE followup_tasks
+                    SET status = 'completed', completed_at = NOW(),
+                        metadata = metadata || jsonb_build_object(
+                            'outcome', COALESCE(%s, 'completed'), 'completed_by', %s
+                        ),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (outcome, user["id"], task_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    UPDATE followup_tasks t
+                    SET status = 'completed', completed_at = NOW(),
+                        metadata = t.metadata || jsonb_build_object(
+                            'outcome', COALESCE(%s, 'completed'), 'completed_by', %s
+                        ),
+                        updated_at = NOW()
+                    FROM contacts c
+                    WHERE t.id = %s AND c.id = t.contact_id
+                      AND (t.assigned_user_id = %s OR (t.assigned_user_id IS NULL AND c.owner_user_id = %s))
+                    RETURNING t.*
+                    """,
+                    (outcome, user["id"], task_id, user["id"], user["id"]),
+                ).fetchone()
+            return dict(row) if row else None
+
+    def close_open_followup_tasks(self, contact_id: int, *, except_trigger: str | None = None) -> int:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE followup_tasks
+                SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
+                WHERE contact_id = %s AND status = 'open'
+                  AND (%s::text IS NULL OR trigger_rule IS DISTINCT FROM %s)
+                RETURNING id
+                """,
+                (contact_id, except_trigger, except_trigger),
+            ).fetchall()
+            return len(row)
+
     def record_outreach_message(
         self,
         *,
@@ -3300,6 +3546,20 @@ class Repository:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
+            if lead_id is None or campaign_id is None:
+                lead_context = conn.execute(
+                    """
+                    SELECT id, campaign_id
+                    FROM leads
+                    WHERE contact_id = %s
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (contact_id,),
+                ).fetchone()
+                if lead_context:
+                    lead_id = lead_id or int(lead_context["id"])
+                    campaign_id = campaign_id or lead_context.get("campaign_id")
             return conn.execute(
                 """
                 INSERT INTO outreach_messages(
@@ -3308,6 +3568,21 @@ class Repository:
                     provider_message_id, error, metadata
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (draft_id) WHERE draft_id IS NOT NULL
+                DO UPDATE SET
+                    lead_id = COALESCE(EXCLUDED.lead_id, outreach_messages.lead_id),
+                    campaign_id = COALESCE(EXCLUDED.campaign_id, outreach_messages.campaign_id),
+                    subject = EXCLUDED.subject,
+                    body = EXCLUDED.body,
+                    language = COALESCE(EXCLUDED.language, outreach_messages.language),
+                    ai_model = COALESCE(EXCLUDED.ai_model, outreach_messages.ai_model),
+                    personalization_evidence = EXCLUDED.personalization_evidence,
+                    status = EXCLUDED.status,
+                    provider = COALESCE(EXCLUDED.provider, outreach_messages.provider),
+                    provider_message_id = COALESCE(EXCLUDED.provider_message_id, outreach_messages.provider_message_id),
+                    error = EXCLUDED.error,
+                    metadata = outreach_messages.metadata || EXCLUDED.metadata,
+                    updated_at = NOW()
                 RETURNING *
                 """,
                 (
@@ -3358,7 +3633,7 @@ class Repository:
             "clicked": "opened",
         }.get(event_type, event_type)
         with self.db.connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 f"""
                 UPDATE outreach_messages
                 SET status = %s,
@@ -3366,9 +3641,12 @@ class Repository:
                     error = COALESCE(%s, error),
                     updated_at = NOW()
                 WHERE provider = %s AND provider_message_id = %s
+                RETURNING campaign_id
                 """,
                 (status, error, provider, provider_message_id),
-            )
+            ).fetchone()
+        if row and row.get("campaign_id"):
+            self.refresh_campaign_metrics(int(row["campaign_id"]))
 
     def export_contacts(self, out: Path, status: str | None = None) -> int:
         params: tuple[Any, ...] = ()

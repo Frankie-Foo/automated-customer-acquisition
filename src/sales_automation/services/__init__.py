@@ -6,6 +6,7 @@ from .enrichment import EnrichmentService
 from .lifecycle import LifecycleService
 from .mailbox import MailboxReplyService
 from .outreach import OutreachService, PersonalizedEmailService
+from .pdca import LeadWorkflowService
 from .queue import QueueService
 from .research import AccountResearchService
 from .scheduler import SchedulerService
@@ -17,6 +18,7 @@ __all__ = [
     "EnrichmentService",
     "AutomationRunService",
     "LifecycleService",
+    "LeadWorkflowService",
     "MailboxReplyService",
     "OutreachService",
     "PersonalizedEmailService",

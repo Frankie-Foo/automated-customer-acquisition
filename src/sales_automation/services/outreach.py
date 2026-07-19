@@ -15,6 +15,7 @@ from ..outbound_identity import outbound_sender, signed_reply_address
 from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
+from .pdca import LeadWorkflowService
 
 
 class PersonalizedEmailService:
@@ -68,6 +69,7 @@ class PersonalizedEmailService:
         readiness = send_readiness(contact)
         if not readiness["ok"]:
             raise ValueError(f"Contact is not ready to send: {', '.join(readiness['reasons'])}")
+        approved = None
         if hasattr(self.repo, "get_latest_email_draft"):
             approved = self.repo.get_latest_email_draft(contact_id, user_id=int(user["id"]) if user else None)
             if not approved or approved.get("status") != "approved":
@@ -132,6 +134,19 @@ class PersonalizedEmailService:
             )
         except Exception as exc:
             self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
+            if approved and hasattr(self.repo, "record_outreach_message"):
+                self.repo.record_outreach_message(
+                    contact_id=int(contact["id"]),
+                    user_id=int(user["id"]) if user else None,
+                    draft_id=int(approved["id"]),
+                    channel="email",
+                    sequence_step=step,
+                    subject=subject,
+                    body=body,
+                    status="failed",
+                    provider=str(transport_sender.get("provider") or "resend"),
+                    error=str(exc)[:1000],
+                )
             raise
         metadata = {
             "dry_run": sender.get("dry_run", True),
@@ -146,6 +161,45 @@ class PersonalizedEmailService:
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
         self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
         self.repo.mark_latest_email_draft_sent(int(contact["id"]), user_id=int(user["id"]) if user else None)
+        provider = str(transport_sender.get("provider") or "resend")
+        if hasattr(self.repo, "record_outreach_message"):
+            self.repo.record_outreach_message(
+                contact_id=int(contact["id"]),
+                user_id=int(user["id"]) if user else None,
+                draft_id=int(approved["id"]) if approved else None,
+                channel="email",
+                sequence_step=step,
+                subject=subject,
+                body=body,
+                status="sent",
+                provider=provider,
+                provider_message_id=message_id,
+                metadata=metadata,
+            )
+            self.repo.update_outreach_message_event(
+                provider=provider,
+                provider_message_id=message_id,
+                event_type="sent",
+            )
+        if hasattr(self.repo, "record_interaction"):
+            self.repo.record_interaction(
+                contact_id=int(contact["id"]),
+                user_id=int(user["id"]) if user else None,
+                interaction_type="email_sent",
+                direction="outbound",
+                channel="email",
+                subject=subject,
+                content=text,
+                outcome="sent",
+                source_ref=message_id,
+                metadata=metadata,
+            )
+        if hasattr(self.repo, "close_open_followup_tasks"):
+            self.repo.close_open_followup_tasks(int(contact["id"]))
+            LeadWorkflowService(self.repo).ensure_next_task(
+                int(contact["id"]),
+                owner_user_id=int(user["id"]) if user else contact.get("owner_user_id"),
+            )
         if recorded:
             sender_pool.record_send(transport_sender)
         return {
@@ -161,7 +215,7 @@ class PersonalizedEmailService:
         if not hasattr(self.repo, "save_email_draft"):
             return
         research = self.repo.get_contact_research(int(contact["id"])) or {}
-        self.repo.save_email_draft(
+        saved = self.repo.save_email_draft(
             int(contact["id"]),
             user_id=int(user["id"]) if user else None,
             sequence_step=int(contact.get("sequence_step") or 0) + 1,
@@ -174,6 +228,37 @@ class PersonalizedEmailService:
                 "researched_at": str(research.get("researched_at") or ""),
             },
         )
+        if saved and hasattr(self.repo, "record_outreach_message"):
+            research_snapshot = saved.get("research_snapshot") if isinstance(saved.get("research_snapshot"), dict) else {}
+            self.repo.record_outreach_message(
+                contact_id=int(contact["id"]),
+                user_id=int(user["id"]) if user else None,
+                draft_id=int(saved["id"]),
+                channel="email",
+                sequence_step=int(saved.get("sequence_step") or 1),
+                subject=saved.get("subject") or "",
+                body=saved.get("body") or "",
+                language=str(contact.get("language") or "en"),
+                ai_model=str(self.config.raw.get("llm", {}).get("provider") or "fallback"),
+                personalization_evidence=list(research_snapshot.get("sources") or []),
+                status="draft",
+                metadata={"mode": mode},
+            )
+        if saved and hasattr(self.repo, "close_open_followup_tasks") and hasattr(self.repo, "ensure_followup_task"):
+            self.repo.close_open_followup_tasks(int(contact["id"]))
+            owner_user_id = int(user["id"]) if user else contact.get("owner_user_id")
+            self.repo.ensure_followup_task(
+                contact_id=int(contact["id"]),
+                assigned_user_id=owner_user_id,
+                created_by_user_id=owner_user_id,
+                task_type="review_draft",
+                priority="normal",
+                title=f"审核首封邮件：{_contact_name(contact)}",
+                description="检查客户事实、主题、正文和收件邮箱后确认发送。",
+                due_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
+                trigger_rule="first_touch_review",
+                metadata={"draft_id": saved["id"], "generated_by": "email_draft"},
+            )
 
     def _ai_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
         fallback = self._fallback_draft(contact, user=user)
@@ -443,6 +528,11 @@ def _source_context(contact: dict[str, Any]) -> dict[str, str]:
     if not isinstance(context, dict):
         return {}
     return {str(key): str(value).strip() for key, value in context.items() if str(value or "").strip()}
+
+
+def _contact_name(contact: dict[str, Any]) -> str:
+    person = " ".join(str(contact.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+    return person or str(contact.get("company_name") or "客户")
 
 
 def _account_context(contact: dict[str, Any]) -> str:

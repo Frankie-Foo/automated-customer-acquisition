@@ -10,6 +10,7 @@ from ..db import Repository
 from ..logging_utils import log
 from ..outbound_identity import parse_signed_reply_route
 from ..outreach_guard import annotate_delivery_payload
+from .pdca import LeadWorkflowService
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
@@ -47,6 +48,49 @@ class WebhookService:
             }
         payload = annotate_delivery_payload(event_type, payload)
         self.repo.record_event(contact_id, event_type, payload)
+        message_id = _extract_message_id(payload)
+        if message_id and hasattr(self.repo, "update_outreach_message_event"):
+            self.repo.update_outreach_message_event(
+                provider=provider,
+                provider_message_id=message_id,
+                event_type=event_type,
+                error=str(payload.get("delivery_reason") or "")[:1000] or None,
+            )
+        contact = self.repo.get_contact(contact_id) if hasattr(self.repo, "get_contact") else None
+        owner_user_id = contact.get("owner_user_id") if contact else None
+        if event_type == "opened" and contact and hasattr(self.repo, "ensure_followup_task"):
+            self.repo.ensure_followup_task(
+                contact_id=contact_id,
+                assigned_user_id=owner_user_id,
+                created_by_user_id=owner_user_id,
+                task_type="followup",
+                priority="high",
+                title=f"跟进已打开的客户 {_contact_name(contact)}",
+                description="客户已打开但尚未回复，补充一个新的业务价值点，不要重复首封内容。",
+                due_at=None,
+                trigger_rule="opened_no_reply",
+                metadata={"provider": provider, "message_id": message_id},
+            )
+        if event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"} and contact:
+            if hasattr(self.repo, "close_open_followup_tasks"):
+                self.repo.close_open_followup_tasks(contact_id)
+            LeadWorkflowService(self.repo).ensure_next_task(
+                contact_id,
+                owner_user_id=owner_user_id,
+            )
+        if event_type in {"replied", "bounced", "failed"} and hasattr(self.repo, "record_interaction"):
+            self.repo.record_interaction(
+                contact_id=contact_id,
+                user_id=owner_user_id,
+                interaction_type="email_reply" if event_type == "replied" else "email_delivery_failure",
+                direction="inbound",
+                channel="email",
+                subject=_extract_subject(payload),
+                content=_extract_message_text(payload),
+                outcome=event_type,
+                source_ref=message_id,
+                metadata={"provider": provider},
+            )
         if event_type == "replied" and hasattr(self.repo, "add_lifecycle_activity"):
             self.repo.add_lifecycle_activity(
                 contact_id,
@@ -245,6 +289,11 @@ def _html_to_text(value: Any) -> str:
     text = re.sub(r"<\s*br\s*/?\s*>", "\n", str(value or ""), flags=re.IGNORECASE)
     text = re.sub(r"</\s*(p|div|li|tr|h[1-6])\s*>", "\n", text, flags=re.IGNORECASE)
     return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _contact_name(contact: dict[str, Any]) -> str:
+    person = " ".join(str(contact.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+    return person or str(contact.get("company_name") or "客户")
 
 
 __all__ = ["WebhookService", "_extract_contact_id", "_extract_event_type", "_extract_message_id", "_extract_recipient_email", "_extract_sender_email"]

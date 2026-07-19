@@ -4995,6 +4995,134 @@ main,
 }
 
 /* Sales-first queue view: keep bulk outreach understandable for non-technical users. */
+
+.today-task-queue {
+  margin: 18px 0;
+  border-top: 1px solid #d8e2ea;
+  border-bottom: 1px solid #d8e2ea;
+  background: #fff;
+}
+
+.today-task-queue > header {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 2px;
+}
+
+.today-task-queue > header div,
+.today-task-queue > header span,
+.sales-task .task-main > span:nth-child(2) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.today-task-queue > header span,
+.sales-task small {
+  color: #65778a;
+  font-size: 12px;
+}
+
+.today-task-queue > header > b {
+  min-width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: #087f75;
+  background: #e8f8f5;
+}
+
+.today-task-list {
+  border-top: 1px solid #e4ebf0;
+}
+
+.sales-task {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #edf1f4;
+}
+
+.sales-task:last-child {
+  border-bottom: 0;
+}
+
+.sales-task .task-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 66px;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 10px 2px;
+}
+
+.sales-task .task-main:hover {
+  background: #f7fafb;
+}
+
+.task-priority {
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  border-radius: 4px;
+  color: #506274;
+  background: #edf2f6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.priority-urgent .task-priority,
+.priority-high.overdue .task-priority {
+  color: #a62821;
+  background: #ffebe8;
+}
+
+.priority-high .task-priority {
+  color: #9a6100;
+  background: #fff4d6;
+}
+
+.sales-task .task-main em {
+  color: #708195;
+  font-size: 12px;
+  font-style: normal;
+  text-align: right;
+}
+
+.task-complete {
+  min-height: 34px;
+  border-color: #9edbd3;
+  color: #087f75;
+  background: #f2fbf9;
+}
+
+.signal-summary {
+  margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .sales-task {
+    grid-template-columns: minmax(0, 1fr) 60px;
+  }
+
+  .sales-task .task-main {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .sales-task .task-main em {
+    grid-column: 2;
+    text-align: left;
+  }
+}
 .sales-work-queue {
   display: grid;
   gap: 14px;

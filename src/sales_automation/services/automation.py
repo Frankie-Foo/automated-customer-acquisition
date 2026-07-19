@@ -10,6 +10,7 @@ from ..logging_utils import log
 from ..quotas import QuotaService
 from .ai_agents import ProfileAgentService
 from .outreach import PersonalizedEmailService
+from .pdca import LeadWorkflowService
 from .research import AccountResearchService
 
 
@@ -144,6 +145,14 @@ class AutomationRunService:
         else:
             assignment = self.repo.auto_assign_public_pool(limit=max(len(contact_ids), 1), contact_ids=contact_ids)
         result["assignment"] = assignment
+        workflow = LeadWorkflowService(self.repo).register_contacts(
+            contact_ids,
+            user=owner,
+            source_type="company_seed_import",
+            source_ref=f"automation_run:{run_id}",
+        )
+        result["workflow_linked"] = workflow["linked"]
+        result["tasks_created"] = workflow["tasks_created"]
         if not payload.get("auto_prepare_drafts", True) or not assignment.get("assigned"):
             self.repo.update_automation_run_progress(
                 run_id,
