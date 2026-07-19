@@ -25,6 +25,7 @@ from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
 from .services import AccountResearchService, AutomationRunService, EnrichmentService, LeadWorkflowService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 from .vps_sso import VpsSsoError, VpsSsoService
+from .pdca_sso import PdcaSsoError, PdcaSsoService
 
 
 def normalize_company_website(value: str | None) -> str:
@@ -37,6 +38,18 @@ def normalize_company_website(value: str | None) -> str:
 
 def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _embed_allowed_origins(value: Any) -> tuple[str, ...]:
+    result: list[str] = []
+    for item in str(value or "").split(","):
+        origin = item.strip().rstrip("/")
+        parsed = urlparse(origin)
+        is_https = parsed.scheme == "https" and bool(parsed.netloc)
+        is_local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        if (is_https or is_local_http) and not parsed.path and not parsed.query and not parsed.fragment:
+            result.append(origin)
+    return tuple(dict.fromkeys(result))
 
 
 STATIC_DIR = Path(__file__).parent / "web_static"
@@ -79,6 +92,7 @@ def make_handler(config, repo: Repository):
     public_base_url = str(config.raw.get("app", {}).get("public_base_url") or "")
     secure_cookie = public_base_url.startswith("https://")
     sso_cookie_same_site = "None" if secure_cookie and _truthy(config.raw.get("sso", {}).get("iframe_cookie")) else "Lax"
+    embed_allowed_origins = _embed_allowed_origins(config.raw.get("sso", {}).get("embed_allowed_origins"))
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -317,6 +331,44 @@ def make_handler(config, repo: Repository):
                     return
                 token = repo.create_session(int(user["id"]))
                 self._audit("login", user=user, summary="Odoo/VPS 单点登录成功", metadata={"method": "vps_sso", "odoo_user_id": profile.odoo_user_id, "barcode": profile.barcode})
+                quota_snapshot = QuotaService(config, repo).snapshot(user)
+                self._send_json(
+                    {"ok": True, "data": {"next": "/", "user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
+                    headers={"Set-Cookie": session_cookie(token, secure=secure_cookie, same_site=sso_cookie_same_site)},
+                )
+                return
+            if parsed.path == "/api/auth/pdca-login":
+                if not self._require_database():
+                    return
+                try:
+                    profile = PdcaSsoService(config).exchange(str(payload.get("code") or ""))
+                    user = repo.pdca_login_user(
+                        subject=profile.subject,
+                        username=profile.username,
+                        display_name=profile.display_name,
+                        pdca_role=profile.role,
+                        data_scope=profile.data_scope,
+                        owner_key=profile.owner_key,
+                        team_key=profile.team_key,
+                        owner_keys=profile.owner_keys,
+                        daily_source_limit=int(config.raw.get("quotas", {}).get("default_user_daily_source") or 100),
+                        daily_send_limit=int(config.raw.get("quotas", {}).get("default_user_daily_send") or 200),
+                    )
+                except PdcaSsoError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=exc.status)
+                    return
+                except RuntimeError as exc:
+                    status = 403 if str(exc) == "pdca_user_disabled" else 500
+                    message = "账号已被禁用" if status == 403 else "PDCA 账号映射失败"
+                    self._send_json({"ok": False, "error": message}, status=status)
+                    return
+                token = repo.create_session(int(user["id"]))
+                self._audit(
+                    "login",
+                    user=user,
+                    summary="PDCA 单点登录成功",
+                    metadata={"method": "pdca_sso", "pdca_subject": profile.subject, "pdca_role": profile.role},
+                )
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
                 self._send_json(
                     {"ok": True, "data": {"next": "/", "user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}},
@@ -1336,9 +1388,11 @@ def make_handler(config, repo: Repository):
 
         def _send_security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
+            if not embed_allowed_origins:
+                self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; connect-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+            frame_ancestors = "'none'" if not embed_allowed_origins else "'self' " + " ".join(embed_allowed_origins)
+            self.send_header("Content-Security-Policy", f"default-src 'self'; img-src 'self' data:; connect-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors {frame_ancestors}; base-uri 'self'; form-action 'self'")
             if secure_cookie:
                 self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 

@@ -16,6 +16,9 @@ sso:
   auto_create_users: ${VPS_SSO_AUTO_CREATE_USERS}
   default_role: sales
   iframe_cookie: ${VPS_SSO_IFRAME_COOKIE}
+  pdca_enabled: ${PDCA_SSO_ENABLED}
+  pdca_exchange_url: ${PDCA_SSO_EXCHANGE_URL}
+  embed_allowed_origins: ${PDCA_EMBED_ALLOWED_ORIGINS}
 
 apis:
   ninjapear_key: ${NINJAPEAR_API_KEY}

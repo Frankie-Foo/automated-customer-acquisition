@@ -51,6 +51,15 @@ docker build --pull \
 
 SALESBOT_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build
 
+# Bind-mounted Caddyfiles change without recreating the existing container, so
+# explicitly validate and reload this project's proxy on every release.
+if SALESBOT_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --services | grep -qx caddy; then
+  SALESBOT_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T caddy \
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  SALESBOT_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T caddy \
+    caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+fi
+
 CONTAINER_ID="$(SALESBOT_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q salesbot)"
 if [[ -z "$CONTAINER_ID" ]]; then
   echo "salesbot container was not created" >&2

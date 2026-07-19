@@ -38,10 +38,16 @@ function AuthGate({ onSessionChange }) {
   }, [mode]);
 
   useEffect(() => {
+    const pdcaCode = readPdcaCode();
     const vpsParams = readVpsParams();
     async function boot() {
       try {
-        const session = vpsParams
+        const session = pdcaCode
+          ? await api("/api/auth/pdca-login", {
+              method: "POST",
+              body: JSON.stringify({ code: pdcaCode }),
+            })
+          : vpsParams
           ? await api("/api/auth/vps-login", {
               method: "POST",
               body: JSON.stringify({ sessionID: vpsParams.sessionId, userId: vpsParams.userId }),
@@ -50,14 +56,14 @@ function AuthGate({ onSessionChange }) {
         setUser(session.user);
         setUsage(session.usage);
         publishSession(session.user, session.usage, onSessionChange);
-        if (vpsParams) cleanVpsParams(session.next || "/");
+        if (pdcaCode || vpsParams) cleanSsoParams(session.next || "/");
         setMode(session.user.must_change_password ? "change-password" : "authenticated");
         if (!session.user.must_change_password) {
           window.dispatchEvent(new CustomEvent("salesbot:refresh"));
         }
       } catch (err) {
         publishSession(null, null, onSessionChange);
-        if (vpsParams) setError(err.message);
+        if (pdcaCode || vpsParams) setError(err.message);
         setMode("login");
       }
     }
@@ -202,7 +208,11 @@ function readVpsParams() {
   return null;
 }
 
-function cleanVpsParams(next) {
+function readPdcaCode() {
+  return new URLSearchParams(window.location.search).get("pdca_code");
+}
+
+function cleanSsoParams(next) {
   const target = new URL(next || "/", window.location.origin);
   window.history.replaceState(null, "", `${target.pathname}${target.search}${window.location.hash || "#dashboard"}`);
 }
