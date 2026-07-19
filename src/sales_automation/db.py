@@ -3088,6 +3088,288 @@ class Repository:
                 (email, domain, reason),
             )
 
+    def create_campaign(
+        self,
+        *,
+        name: str,
+        channel: str,
+        region: str | None = None,
+        product_line: str | None = None,
+        owner_user_id: int | None = None,
+        budget_amount: float | None = None,
+        currency: str = "USD",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO campaigns(
+                    name, channel, region, product_line, owner_user_id, budget_amount, currency, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    name.strip(),
+                    channel.strip(),
+                    region,
+                    product_line,
+                    owner_user_id,
+                    budget_amount,
+                    currency or "USD",
+                    json.dumps(metadata or {}),
+                ),
+            ).fetchone()
+
+    def upsert_lead_record(
+        self,
+        *,
+        source_type: str,
+        external_id: str | None = None,
+        source_ref: str | None = None,
+        source_row: int | None = None,
+        campaign_id: int | None = None,
+        contact_id: int | None = None,
+        owner_user_id: int | None = None,
+        raw_data: dict[str, Any] | None = None,
+        normalized_email: str | None = None,
+        normalized_phone: str | None = None,
+        normalized_whatsapp: str | None = None,
+        company_domain: str | None = None,
+        country: str | None = None,
+        region: str | None = None,
+        language: str | None = None,
+        dedupe_key: str | None = None,
+        status: str = "new",
+        quality_score: int | None = None,
+        failure_reason: str | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO leads(
+                    external_id, source_type, source_ref, source_row, campaign_id, contact_id, owner_user_id,
+                    raw_data, normalized_email, normalized_phone, normalized_whatsapp, company_domain,
+                    country, region, language, dedupe_key, status, quality_score, failure_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_type, external_id)
+                DO UPDATE SET
+                    source_ref = COALESCE(EXCLUDED.source_ref, leads.source_ref),
+                    source_row = COALESCE(EXCLUDED.source_row, leads.source_row),
+                    campaign_id = COALESCE(EXCLUDED.campaign_id, leads.campaign_id),
+                    contact_id = COALESCE(EXCLUDED.contact_id, leads.contact_id),
+                    owner_user_id = COALESCE(EXCLUDED.owner_user_id, leads.owner_user_id),
+                    raw_data = leads.raw_data || EXCLUDED.raw_data,
+                    normalized_email = COALESCE(EXCLUDED.normalized_email, leads.normalized_email),
+                    normalized_phone = COALESCE(EXCLUDED.normalized_phone, leads.normalized_phone),
+                    normalized_whatsapp = COALESCE(EXCLUDED.normalized_whatsapp, leads.normalized_whatsapp),
+                    company_domain = COALESCE(EXCLUDED.company_domain, leads.company_domain),
+                    country = COALESCE(EXCLUDED.country, leads.country),
+                    region = COALESCE(EXCLUDED.region, leads.region),
+                    language = COALESCE(EXCLUDED.language, leads.language),
+                    dedupe_key = COALESCE(EXCLUDED.dedupe_key, leads.dedupe_key),
+                    status = EXCLUDED.status,
+                    quality_score = COALESCE(EXCLUDED.quality_score, leads.quality_score),
+                    failure_reason = COALESCE(EXCLUDED.failure_reason, leads.failure_reason),
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (
+                    external_id,
+                    source_type,
+                    source_ref,
+                    source_row,
+                    campaign_id,
+                    contact_id,
+                    owner_user_id,
+                    json.dumps(raw_data or {}),
+                    _clean_optional_email(normalized_email),
+                    normalized_phone,
+                    normalized_whatsapp,
+                    company_domain,
+                    country,
+                    region,
+                    language,
+                    dedupe_key,
+                    status,
+                    quality_score,
+                    failure_reason,
+                ),
+            ).fetchone()
+
+    def record_interaction(
+        self,
+        *,
+        contact_id: int,
+        interaction_type: str,
+        channel: str,
+        direction: str = "outbound",
+        lead_id: int | None = None,
+        user_id: int | None = None,
+        subject: str | None = None,
+        content: str | None = None,
+        outcome: str | None = None,
+        source_ref: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO interactions(
+                    contact_id, lead_id, user_id, interaction_type, direction, channel,
+                    subject, content, outcome, source_ref, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    contact_id,
+                    lead_id,
+                    user_id,
+                    interaction_type,
+                    direction,
+                    channel,
+                    subject,
+                    content,
+                    outcome,
+                    source_ref,
+                    json.dumps(metadata or {}),
+                ),
+            ).fetchone()
+
+    def create_followup_task(
+        self,
+        *,
+        contact_id: int,
+        assigned_user_id: int | None,
+        title: str,
+        task_type: str = "followup",
+        priority: str = "normal",
+        lead_id: int | None = None,
+        created_by_user_id: int | None = None,
+        description: str | None = None,
+        due_at: str | None = None,
+        trigger_rule: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO followup_tasks(
+                    contact_id, lead_id, assigned_user_id, created_by_user_id, task_type, priority,
+                    title, description, due_at, trigger_rule, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::timestamptz, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    contact_id,
+                    lead_id,
+                    assigned_user_id,
+                    created_by_user_id,
+                    task_type,
+                    priority,
+                    title,
+                    description,
+                    due_at,
+                    trigger_rule,
+                    json.dumps(metadata or {}),
+                ),
+            ).fetchone()
+
+    def record_outreach_message(
+        self,
+        *,
+        contact_id: int,
+        channel: str,
+        body: str,
+        user_id: int | None = None,
+        lead_id: int | None = None,
+        campaign_id: int | None = None,
+        draft_id: int | None = None,
+        sequence_step: int = 1,
+        subject: str | None = None,
+        language: str | None = None,
+        ai_model: str | None = None,
+        personalization_evidence: list[dict[str, Any]] | None = None,
+        status: str = "draft",
+        provider: str | None = None,
+        provider_message_id: str | None = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO outreach_messages(
+                    contact_id, lead_id, campaign_id, user_id, draft_id, channel, sequence_step,
+                    subject, body, language, ai_model, personalization_evidence, status, provider,
+                    provider_message_id, error, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    contact_id,
+                    lead_id,
+                    campaign_id,
+                    user_id,
+                    draft_id,
+                    channel,
+                    sequence_step,
+                    subject,
+                    body,
+                    language,
+                    ai_model,
+                    json.dumps(personalization_evidence or []),
+                    status,
+                    provider,
+                    provider_message_id,
+                    error,
+                    json.dumps(metadata or {}),
+                ),
+            ).fetchone()
+
+    def update_outreach_message_event(
+        self,
+        *,
+        provider: str,
+        provider_message_id: str,
+        event_type: str,
+        error: str | None = None,
+    ) -> None:
+        event_columns = {
+            "sent": "sent_at",
+            "delivered": "delivered_at",
+            "opened": "opened_at",
+            "clicked": "opened_at",
+            "replied": "replied_at",
+            "bounced": "bounced_at",
+            "bounce": "bounced_at",
+            "failed": "bounced_at",
+        }
+        column = event_columns.get(event_type)
+        if not column:
+            return
+        status = {
+            "bounce": "bounced",
+            "failed": "bounced",
+            "clicked": "opened",
+        }.get(event_type, event_type)
+        with self.db.connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE outreach_messages
+                SET status = %s,
+                    {column} = COALESCE({column}, NOW()),
+                    error = COALESCE(%s, error),
+                    updated_at = NOW()
+                WHERE provider = %s AND provider_message_id = %s
+                """,
+                (status, error, provider, provider_message_id),
+            )
+
     def export_contacts(self, out: Path, status: str | None = None) -> int:
         params: tuple[Any, ...] = ()
         where = ""
