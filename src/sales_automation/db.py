@@ -237,6 +237,92 @@ class Repository:
                 ),
             ).fetchone()
 
+    def pdca_login_user(
+        self,
+        *,
+        subject: str,
+        username: str,
+        display_name: str,
+        pdca_role: str,
+        data_scope: str,
+        owner_key: str | None = None,
+        team_key: str | None = None,
+        owner_keys: list[str] | tuple[str, ...] = (),
+        daily_source_limit: int = 100,
+        daily_send_limit: int = 200,
+    ) -> dict[str, Any]:
+        """Map a verified PDCA identity to an existing least-privilege account."""
+        login_name = str(username or "").strip()
+        mapped_role = "admin" if pdca_role == "admin" and data_scope == "all" else "sales"
+        with self.db.connect() as conn:
+            user = conn.execute(
+                """
+                SELECT * FROM sales_users
+                WHERE pdca_subject = %s OR LOWER(username) = LOWER(%s)
+                ORDER BY CASE WHEN pdca_subject = %s THEN 0 ELSE 1 END, id
+                LIMIT 1
+                """,
+                (subject, login_name, subject),
+            ).fetchone()
+            if user and not user["active"]:
+                raise RuntimeError("pdca_user_disabled")
+            values = (
+                display_name or login_name,
+                mapped_role,
+                subject,
+                pdca_role,
+                data_scope,
+                _blank_to_none(owner_key),
+                _blank_to_none(team_key),
+                json.dumps(list(owner_keys), ensure_ascii=False),
+            )
+            if user:
+                return conn.execute(
+                    """
+                    UPDATE sales_users
+                    SET display_name = %s,
+                        role = %s,
+                        pdca_subject = %s,
+                        pdca_role = %s,
+                        pdca_data_scope = %s,
+                        pdca_owner_key = %s,
+                        pdca_team_key = %s,
+                        pdca_owner_keys = %s::jsonb,
+                        auth_provider = 'pdca'
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (*values, user["id"]),
+                ).fetchone()
+            return conn.execute(
+                """
+                INSERT INTO sales_users(
+                    username, password_hash, display_name, role,
+                    daily_source_limit, daily_send_limit,
+                    must_change_password, password_changed_at, auth_provider,
+                    pdca_subject, pdca_role, pdca_data_scope, pdca_owner_key,
+                    pdca_team_key, pdca_owner_keys
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE, NOW(), 'pdca',
+                        %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    login_name,
+                    hash_password(secrets.token_urlsafe(32)),
+                    display_name or login_name,
+                    mapped_role,
+                    daily_source_limit,
+                    daily_send_limit,
+                    subject,
+                    pdca_role,
+                    data_scope,
+                    _blank_to_none(owner_key),
+                    _blank_to_none(team_key),
+                    json.dumps(list(owner_keys), ensure_ascii=False),
+                ),
+            ).fetchone()
+
     def list_users(self) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             return conn.execute(

@@ -11,6 +11,10 @@ services:
     environment:
       SALESBOT_REQUIRE_PRODUCTION_READY: "true"
       SALESBOT_DB_WAIT_TIMEOUT: 120
+      VPS_SSO_IFRAME_COOKIE: ${VPS_SSO_IFRAME_COOKIE:-true}
+      PDCA_SSO_ENABLED: ${PDCA_SSO_ENABLED:-true}
+      PDCA_SSO_EXCHANGE_URL: ${PDCA_SSO_EXCHANGE_URL:-https://pdca-workbench-teams.vertu.cn/api/auth/acquisition/exchange}
+      PDCA_EMBED_ALLOWED_ORIGINS: ${PDCA_EMBED_ALLOWED_ORIGINS:-https://pdca-workbench-teams.vertu.cn}
     expose:
       - "8765"
 
