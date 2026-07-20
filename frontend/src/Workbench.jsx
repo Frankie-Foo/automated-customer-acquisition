@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
 
@@ -350,18 +350,27 @@ function LinkedInSearchPanel({ guarded, notify }) {
   const [tasks, setTasks] = useState([]);
   const [taskId, setTaskId] = useState(null);
   const [results, setResults] = useState([]);
+  const selectedTaskRef = useRef(null);
 
-  const loadTasks = useCallback(async () => {
+  useEffect(() => {
+    selectedTaskRef.current = taskId;
+  }, [taskId]);
+
+  const loadTasks = useCallback(async (preferredTaskId = null) => {
     const data = await api("/api/search-tasks");
     const rows = data.tasks || [];
     setTasks(rows);
-    const nextId = taskId || rows[0]?.id || null;
+    const requestedId = preferredTaskId || selectedTaskRef.current;
+    const nextId = rows.some((row) => Number(row.id) === Number(requestedId)) ? requestedId : rows[0]?.id || null;
+    selectedTaskRef.current = nextId;
     setTaskId(nextId);
     if (nextId) {
       const resultData = await api(`/api/search-results?task_id=${encodeURIComponent(nextId)}`);
       setResults(resultData.results || []);
+    } else {
+      setResults([]);
     }
-  }, [taskId]);
+  }, []);
 
   useEffect(() => {
     loadTasks().catch(() => {});
@@ -391,10 +400,11 @@ function LinkedInSearchPanel({ guarded, notify }) {
           notify("正在通过 Google 公开索引搜索 LinkedIn 个人主页...");
           const response = await api("/api/source/linkedin-public-search", { method: "POST", body: JSON.stringify({ ...form, limit: Number(form.limit || 10) }) });
           if (response.usage) window.dispatchEvent(new CustomEvent("salesbot:usage", { detail: { usage: response.usage } }));
+          selectedTaskRef.current = response.result.task_id;
           setTaskId(response.result.task_id);
           notify(`LinkedIn 公网搜索完成：解析 ${response.result.results} 条，入库 ${response.result.promoted} 条，跳过 ${response.result.skipped} 条`);
           refreshAll();
-          await loadTasks();
+          await loadTasks(response.result.task_id);
         })}>开始公网搜索</button>
         <button type="button" onClick={() => guarded(loadTasks)}>刷新搜索结果</button>
       </div>
@@ -410,12 +420,15 @@ function SearchResults({ tasks, taskId, results, setTaskId, setResults, notify, 
     setResults(data.results || []);
   }
   if (!tasks.length) return <div className="search-output"><div className="empty-state compact"><strong>还没有 LinkedIn 公网搜索任务</strong><p>填写上方条件后开始搜索，结果会先进入候选池和客户列表，不会自动发邮件。</p></div></div>;
+  const currentTask = tasks.find((task) => Number(task.id) === Number(taskId));
   return (
     <div className="search-output">
+      <div className="search-output-head"><strong>搜索记录（点击切换）</strong><span>当前固定展示 #{taskId || "--"} 的候选客户，刷新不会自动跳到其他任务。</span></div>
       <div className="search-task-strip">
-        {tasks.slice(0, 8).map((task) => <button key={task.id} type="button" className={Number(task.id) === Number(taskId) ? "active" : ""} onClick={() => guarded(() => selectTask(task.id))}><strong>#{task.id} {task.status}</strong><span>{searchTaskTitle(task)}</span><small>结果 {task.result_count || 0} · 入库 {task.promoted_count || 0}</small></button>)}
+        {tasks.slice(0, 8).map((task) => <button key={task.id} type="button" className={Number(task.id) === Number(taskId) ? "active" : ""} onClick={() => guarded(() => selectTask(task.id))}><strong>#{task.id} {automationStatus(task.status)}</strong><span>{searchTaskTitle(task)}</span><small>结果 {task.result_count || 0} · 入库 {task.promoted_count || 0}</small></button>)}
       </div>
       <div className="search-result-panel">
+        {currentTask && <div className="search-result-title"><strong>#{currentTask.id} 的候选客户</strong><span>{searchTaskTitle(currentTask)} · 共 {results.length} 条</span></div>}
         {!results.length ? <div className="empty-state compact"><strong>该任务暂无结果</strong><p>如果 Google CSE 没有返回内容，可以放宽职位或地区关键词。</p></div> : (
           <div className="linkedin-results">{results.map((row) => <SearchResult key={row.id} row={row} onPromote={() => guarded(async () => {
             const result = await api("/api/search-results/promote", { method: "POST", body: JSON.stringify({ result_id: row.id }) });

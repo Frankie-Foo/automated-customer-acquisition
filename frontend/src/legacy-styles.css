@@ -2175,6 +2175,20 @@ textarea {
   margin-top: 14px;
 }
 
+.search-output-head,
+.search-result-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.search-output-head span,
+.search-result-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .search-task-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -2203,6 +2217,8 @@ textarea {
 }
 
 .search-result-panel {
+  display: grid;
+  gap: 10px;
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }

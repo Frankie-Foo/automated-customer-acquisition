@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -36,7 +37,7 @@ class HttpClient:
                 with urlopen(req, timeout=self.timeout) as response:
                     data = response.read().decode("utf-8")
                     return json.loads(data) if data else {}
-            except (HTTPError, URLError, TimeoutError) as exc:
+            except (HTTPError, URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, json.JSONDecodeError) as exc:
                 last_error = exc
                 if isinstance(exc, HTTPError):
                     try:
@@ -44,6 +45,8 @@ class HttpClient:
                     except Exception:
                         detail = str(exc)
                     last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                    if exc.code not in {408, 425, 429} and exc.code < 500:
+                        raise RuntimeError(f"HTTP request failed: {last_error}") from exc
                 if attempt == attempt_limit:
                     break
                 time.sleep(2 ** (attempt - 1))
