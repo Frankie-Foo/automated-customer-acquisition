@@ -59,10 +59,22 @@ class ProspeoClient:
         self.api_key = api_key
         self.http = http or HttpClient(timeout=60)
 
-    def search_people(self, *, company_website: str | None, role: str, industry: str | None = None, location: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
-        filters: dict[str, Any] = {
-            "person_job_title": {"include": [role]},
-        }
+    def search_people(
+        self,
+        *,
+        company_website: str | None,
+        role: str | list[str] | tuple[str, ...] = "",
+        industry: str | None = None,
+        location: str | None = None,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        filters: dict[str, Any] = {}
+        if isinstance(role, str):
+            roles = [item.strip() for item in role.replace(";", ",").split(",") if item.strip()]
+        else:
+            roles = [str(item).strip() for item in role if str(item).strip()]
+        if roles:
+            filters["person_job_title"] = {"include": roles[:25]}
         if company_website:
             filters["company"] = {"websites": {"include": [_domain_from_website(company_website)]}}
         # Prospeo validates industry/location against exact internal values.
@@ -77,7 +89,8 @@ class ProspeoClient:
         people = data.get("data") or data.get("results") or []
         if isinstance(people, dict):
             people = people.get("results") or people.get("items") or []
-        return [_normalize_prospeo_person(item, company_website, role) for item in people[:limit]]
+        fallback_role = roles[0] if roles else ""
+        return [_normalize_prospeo_person(item, company_website, fallback_role) for item in people[:limit]]
 
     def enrich_person(self, contact: dict[str, Any]) -> dict[str, Any]:
         data = {
@@ -167,6 +180,53 @@ class HunterClient:
         url = "https://api.hunter.io/v2/email-finder?" + urllib.parse.urlencode(params)
         data = self.http.request("GET", url)
         return data.get("data", {})
+
+    def find_company_domains(self, company: str, *, limit: int = 3, perfect_match: bool = True) -> list[dict[str, Any]]:
+        company = str(company or "").strip()
+        if len(company) < 3:
+            return []
+        params = {
+            "company": company,
+            "limit": max(1, min(10, int(limit or 3))),
+            "perfect_match": "true" if perfect_match else "false",
+            "api_key": self.api_key,
+        }
+        url = "https://api.hunter.io/v2/domain-finder?" + urllib.parse.urlencode(params)
+        data = self.http.request("GET", url)
+        results = data.get("data") or []
+        return results if isinstance(results, list) else []
+
+    def search_domain_emails(
+        self,
+        *,
+        domain: str | None = None,
+        company: str | None = None,
+        limit: int = 10,
+        seniority: str = "executive,senior",
+        department: str = "executive,management,sales,marketing,operations",
+        verification_status: str = "valid,accept_all",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": max(1, min(100, int(limit or 10))),
+            "type": "personal",
+            "api_key": self.api_key,
+        }
+        if domain:
+            params["domain"] = domain
+        elif company:
+            params["company"] = company
+        else:
+            return {"domain": None, "organization": None, "emails": []}
+        if seniority:
+            params["seniority"] = seniority
+        if department:
+            params["department"] = department
+        if verification_status:
+            params["verification_status"] = verification_status
+        url = "https://api.hunter.io/v2/domain-search?" + urllib.parse.urlencode(params)
+        data = self.http.request("GET", url)
+        payload = data.get("data") or {}
+        return payload if isinstance(payload, dict) else {"domain": None, "organization": None, "emails": []}
 
     def verify_email(self, email: str) -> dict[str, Any]:
         params = {"email": email, "api_key": self.api_key}
@@ -454,6 +514,7 @@ def _normalize_prospeo_person(item: dict[str, Any], company_website: str | None,
         linkedin_url = f"prospeo://person/{urllib.parse.quote(str(seed), safe='')}"
     email_obj = person.get("email") or person.get("work_email")
     email = email_obj.get("email") if isinstance(email_obj, dict) else email_obj
+    email_lookup_status = email_obj.get("status") if isinstance(email_obj, dict) else None
     if isinstance(email, str) and "*" in email:
         email = None
     location_obj = person.get("location")
@@ -468,7 +529,8 @@ def _normalize_prospeo_person(item: dict[str, Any], company_website: str | None,
         "last_name": last_name,
         "email": email,
         "email_status": "valid" if isinstance(email, str) and email else "unknown",
-        "job_title": person.get("job_title") or person.get("title") or role,
+        "email_lookup_status": str(email_lookup_status or "unknown").lower(),
+        "job_title": person.get("current_job_title") or person.get("job_title") or person.get("title") or role,
         "company_name": company.get("name") or person.get("company_name") or domain,
         "company_domain": domain,
         "industry": company.get("industry") or person.get("industry"),

@@ -9,6 +9,8 @@ from sales_automation.linkedin_public_search import (
     pick_public_channel_candidates,
     generate_public_search_email_candidates,
     parse_linkedin_search_item,
+    parse_hunter_domain_email,
+    parse_prospeo_company_person,
     pick_public_phone_candidates,
     score_lead,
     score_lead_details,
@@ -188,6 +190,79 @@ def test_parse_linkedin_profile_filters_non_profile_urls():
     assert parsed["source_context"]["seed_category"] == "second-hand luxury platform"
     assert parse_linkedin_search_item({**item, "link": "https://www.linkedin.com/company/rolex/"}, {}) is None
     assert parse_linkedin_search_item({**item, "link": "https://www.linkedin.com/jobs/view/1/"}, {}) is None
+
+
+def test_parse_hunter_domain_email_promotes_only_verified_personal_email():
+    parsed = parse_hunter_domain_email(
+        {
+            "value": "ada@example.com",
+            "type": "personal",
+            "confidence": 94,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "position": "Managing Director",
+            "linkedin": "https://www.linkedin.com/in/ada-lovelace",
+            "verification": {"status": "valid"},
+        },
+        {"company_keyword": "Example", "company_website": "example.com", "location": "Iran"},
+        {"domain": "example.com", "organization": "Example"},
+    )
+
+    assert parsed["email_candidates"][0]["email"] == "ada@example.com"
+    assert parsed["email_candidates"][0]["status"] == "valid"
+    assert parsed["lead_score"] >= 75
+    assert parsed["linkedin_url"] == "https://www.linkedin.com/in/ada-lovelace"
+
+
+def test_parse_hunter_domain_email_rejects_generic_mailbox():
+    assert parse_hunter_domain_email(
+        {"value": "info@example.com", "type": "generic", "verification": {"status": "valid"}},
+        {"company_website": "example.com"},
+        {"domain": "example.com"},
+    ) is None
+
+
+def test_parse_prospeo_company_person_accepts_verified_same_domain_email():
+    parsed = parse_prospeo_company_person(
+        {
+            "linkedin_url": "https://www.linkedin.com/in/ada-lovelace",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "job_title": "Managing Director",
+            "company_name": "Example",
+            "company_domain": "example.com",
+            "location": "Tehran, Iran",
+        },
+        {"company_keyword": "Example", "company_website": "example.com", "role": "Managing Director"},
+        {"email": {"email": "ada@example.com", "status": "VERIFIED"}},
+    )
+
+    assert parsed["email_candidates"][0]["email"] == "ada@example.com"
+    assert parsed["email_candidates"][0]["status"] == "valid"
+    assert parsed["source"] == "prospeo_company_search"
+
+
+def test_parse_prospeo_company_person_rejects_cross_domain_email():
+    assert parse_prospeo_company_person(
+        {"job_title": "CEO", "company_domain": "example.com"},
+        {"company_website": "example.com"},
+        {"email": {"email": "ada@other.example", "status": "VERIFIED"}},
+    ) is None
+
+
+def test_parse_prospeo_company_person_rejects_wrong_country_brand_employee():
+    assert parse_prospeo_company_person(
+        {
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "job_title": "Retail Director",
+            "company_name": "Global Brand",
+            "company_domain": "brand.example",
+            "location": "Geneva, Switzerland",
+        },
+        {"company_website": "brand.example", "location": "伊朗", "role": "Retail Director"},
+        {"email": {"email": "ada@brand.example", "status": "VERIFIED"}},
+    ) is None
 
 
 def test_score_lead_counts_role_industry_location_company_and_summary():
@@ -400,3 +475,12 @@ def test_public_channel_candidates_reject_unrelated_asset_emails():
     )
 
     assert {item["email"] for item in candidates if item["type"] == "email"} == {"info@example.ae", "owner@gmail.com"}
+
+
+def test_public_channel_candidates_reject_placeholder_mailboxes():
+    candidates = pick_public_channel_candidates(
+        "example@gmail.com test@example.ae sales@example.ae",
+        company_domain="example.ae",
+    )
+
+    assert {item["email"] for item in candidates if item["type"] == "email"} == {"sales@example.ae"}

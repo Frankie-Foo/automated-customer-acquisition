@@ -229,6 +229,16 @@ function ContactsPipeline() {
 
   async function runBulkAction(action) {
     if (bulkBusy) return;
+    if (!contacts.length) {
+      const feedback = {
+        tone: "warning",
+        title: "当前没有可批量处理的客户",
+        message: filter === "public_pool" ? "公共池客户需要先领取到“我的客户”，再补邮箱和社媒。" : "请先获取或导入客户，系统不会调用外部数据源和消耗额度。",
+      };
+      setActionFeedback(feedback);
+      window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: feedback.title, type: "warning" } }));
+      return;
+    }
     setBulkBusy(action);
     setError("");
     setActionFeedback({
@@ -241,10 +251,11 @@ function ContactsPipeline() {
         ? await api("/api/enrich", { method: "POST", body: JSON.stringify({ limit: 100 }) })
         : await api("/api/social-enrich", { method: "POST", body: JSON.stringify({ limit: 100 }) });
       const count = Number(result.enriched || result.social_enriched || 0);
+      const failed = Number(result.failed || 0);
       setActionFeedback({
         tone: count ? "success" : "warning",
         title: count ? `已批量处理 ${count} 个客户` : "本次没有可自动处理的客户",
-        message: count ? "系统已刷新客户状态。接下来只需要处理“可直接发”和“需人工确认”两个队列。" : "可能是当前客户已经处理过，或者外部数据源没有返回新结果。",
+        message: count ? `系统已刷新客户状态${failed ? `，另有 ${failed} 个未找到新资料` : ""}。接下来只需要处理“可直接发”和“需人工确认”两个队列。` : "当前客户已经处理过，或外部数据源没有返回新结果；系统不会把候选邮箱当成可发送邮箱。",
         nextLabel: "查看处理结果",
       });
       window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: count ? `已批量处理 ${count} 个客户` : "本次没有新结果", type: count ? "success" : "warning" } }));

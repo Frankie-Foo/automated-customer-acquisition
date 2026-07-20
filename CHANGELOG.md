@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-20 - Reliable regional contact discovery and review UX
+
+- Add Hunter domain discovery/search and bounded Prospeo company-person enrichment as fallbacks for company seeds and public LinkedIn searches, while only promoting verified personal work emails.
+- Improve role-list handling, regional company-domain resolution, import-header compatibility, and HTTP retry behavior for incomplete responses and transient provider failures.
+- Keep the selected public-search task stable after search or refresh, localize task status labels, and explicitly identify which task owns the visible candidate list.
+- Return structured success/failure counts from bulk email and social enrichment, and skip external calls immediately when the current customer queue is empty.
+- Rebuild the packaged React frontend and extend provider, importer, search, HTTP, and batch-result regression coverage; 172 tests pass.
+
 ## 2026-07-19 - Lead-to-follow-up PDCA workflow
 
 - Connect manual entry, CSV import, and background company sourcing to canonical contacts, raw lead provenance, explainable scoring, campaigns, and deduplicated sales tasks.

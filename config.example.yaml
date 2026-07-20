@@ -103,6 +103,7 @@ sourcing:
     auto_generate_email_candidates: true
     auto_verify_threshold: 70
     max_paid_verifications_per_contact: 2
+    max_prospeo_enrichments_per_company: 2
 
 email_discovery:
   providers:

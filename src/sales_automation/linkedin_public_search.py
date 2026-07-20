@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import socket
 import urllib.parse
@@ -194,8 +195,12 @@ class LinkedInPublicSearchService:
         self.domain_resolver = CompanyDomainResolver(self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
-        if not self.client:
-            raise RuntimeError("Missing search API config: set Google CSE or TAVILY_API_KEY")
+        hunter_key = self.config.apis.get("hunter_key", "")
+        prospeo_key = self.config.apis.get("prospeo_key", "")
+        hunter = HunterClient(hunter_key) if hunter_key else None
+        prospeo = ProspeoClient(prospeo_key) if prospeo_key else None
+        if not self.client and not hunter and not prospeo:
+            raise RuntimeError("Missing company discovery config: set PROSPEO_API_KEY, HUNTER_KEY, or a public search API key")
         max_queries = int(self.cfg.get("max_queries_per_run") or 10)
         has_target_name = bool(_target_name(criteria))
         min_score = int(criteria.get("min_lead_score") or (70 if has_target_name else self.cfg.get("min_lead_score") or 50))
@@ -208,11 +213,123 @@ class LinkedInPublicSearchService:
         )
         all_results: list[dict[str, Any]] = []
         promoted = skipped = 0
-        queries = build_linkedin_queries(criteria)[:max_queries]
+        queries = build_linkedin_queries(criteria)[:max_queries] if self.client else []
         auto_domain_lookup = bool(criteria.get("auto_domain_lookup", self.cfg.get("auto_domain_lookup", True)))
         auto_generate_candidates = bool(criteria.get("auto_generate_email_candidates", self.cfg.get("auto_generate_email_candidates", True)))
+        provider_queries = 0
+        prospeo_calls = 0
         try:
             seen_urls: set[str] = set()
+            company_domain = _domain_from_website(criteria.get("company_website") or "")
+            if hunter and (company_domain or criteria.get("company_keyword")):
+                provider_queries += 1
+                hunter_result = hunter.search_domain_emails(
+                    domain=company_domain or None,
+                    company=None if company_domain else criteria.get("company_keyword"),
+                    limit=min(10, limit),
+                )
+                hunter_rows = hunter_result.get("emails") or []
+                self.repo.record_email_provider_stat(
+                    "hunter_domain_search",
+                    calls=1,
+                    candidates=len(hunter_rows),
+                    valid_candidates=sum(1 for row in hunter_rows if _hunter_verification_status(row) == "valid"),
+                    selected=0,
+                    credits_used=1 if hunter_rows else 0,
+                )
+                for item in hunter_rows[:limit]:
+                    parsed = parse_hunter_domain_email(item, criteria, hunter_result)
+                    if not parsed or parsed["linkedin_url"] in seen_urls:
+                        continue
+                    seen_urls.add(parsed["linkedin_url"])
+                    result = self.repo.create_lead_search_result(task["id"], parsed, status="candidate")
+                    all_results.append(result)
+                    contact = _contact_from_search_result(parsed, task["id"])
+                    duplicate = self.repo.find_duplicate_contact(contact)
+                    if duplicate:
+                        skipped += 1
+                        self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
+                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
+                        continue
+                    inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                    if inserted:
+                        promoted += 1
+                        promoted_contact = self.repo.get_contact_by_linkedin_url(parsed["linkedin_url"])
+                        if promoted_contact:
+                            self.repo.mark_lead_search_result_promoted(result["id"], promoted_contact["id"])
+                    else:
+                        skipped += 1
+                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_or_existing_contact")
+
+            remaining = max(0, limit - len(all_results))
+            if prospeo and company_domain and remaining:
+                prospeo_people: list[dict[str, Any]] = []
+                try:
+                    provider_queries += 1
+                    prospeo_calls += 1
+                    prospeo_people = prospeo.search_people(
+                        company_website=company_domain,
+                        role="",
+                        limit=25,
+                    )
+                except RuntimeError as exc:
+                    if "NO_RESULTS" not in str(exc):
+                        log("prospeo.company_search.failed", domain=company_domain, error=str(exc)[:500])
+                email_ready_people = [
+                    person for person in prospeo_people
+                    if str(person.get("email_lookup_status") or "").casefold() == "verified"
+                ]
+                ranked_people = sorted(
+                    email_ready_people,
+                    key=lambda row: _decision_maker_score(row, criteria),
+                    reverse=True,
+                )
+                max_enrichments = max(0, int(self.cfg.get("max_prospeo_enrichments_per_company") or 2))
+                enrichments = 0
+                valid_people = 0
+                for person in ranked_people:
+                    if len(all_results) >= limit or enrichments >= max_enrichments:
+                        break
+                    if _decision_maker_score(person, criteria) <= 0:
+                        continue
+                    enrichments += 1
+                    try:
+                        enriched = prospeo.enrich_person(person)
+                    except Exception as exc:
+                        log("prospeo.person_enrich.failed", person_id=person.get("source_person_id"), error=str(exc)[:500])
+                        continue
+                    parsed = parse_prospeo_company_person(person, criteria, enriched)
+                    if not parsed or parsed["linkedin_url"] in seen_urls:
+                        continue
+                    valid_people += 1
+                    seen_urls.add(parsed["linkedin_url"])
+                    result = self.repo.create_lead_search_result(task["id"], parsed, status="candidate")
+                    all_results.append(result)
+                    contact = _contact_from_search_result(parsed, task["id"])
+                    duplicate = self.repo.find_duplicate_contact(contact)
+                    if duplicate:
+                        skipped += 1
+                        self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
+                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
+                        continue
+                    inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                    if inserted:
+                        promoted += 1
+                        promoted_contact = self.repo.get_contact_by_linkedin_url(parsed["linkedin_url"])
+                        if promoted_contact:
+                            self.repo.mark_lead_search_result_promoted(result["id"], promoted_contact["id"])
+                    else:
+                        skipped += 1
+                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_or_existing_contact")
+                self.repo.record_email_provider_stat(
+                    "prospeo_company_search",
+                    calls=prospeo_calls,
+                    candidates=len(prospeo_people),
+                    valid_candidates=valid_people,
+                    selected=valid_people,
+                    credits_used=enrichments + (1 if prospeo_people else 0),
+                )
+
             query_options = search_options(criteria)
             for query_index, query in enumerate(queries):
                 remaining = max(0, limit - len(all_results))
@@ -268,9 +385,15 @@ class LinkedInPublicSearchService:
                     else:
                         skipped += 1
                         self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_or_existing_contact")
-            self.repo.complete_lead_search_task(task["id"], query_count=len(queries), result_count=len(all_results), promoted_count=promoted, skipped_count=skipped)
+            self.repo.complete_lead_search_task(
+                task["id"],
+                query_count=len(queries) + provider_queries,
+                result_count=len(all_results),
+                promoted_count=promoted,
+                skipped_count=skipped,
+            )
         except Exception as exc:
-            self.repo.complete_lead_search_task(task["id"], query_count=len(queries), result_count=len(all_results), promoted_count=promoted, skipped_count=skipped, error=str(exc))
+            self.repo.complete_lead_search_task(task["id"], query_count=len(queries) + provider_queries, result_count=len(all_results), promoted_count=promoted, skipped_count=skipped, error=str(exc))
             raise
         log("linkedin_public_search.completed", task_id=task["id"], results=len(all_results), promoted=promoted, skipped=skipped)
         return {"task_id": task["id"], "results": len(all_results), "promoted": promoted, "skipped": skipped}
@@ -290,11 +413,41 @@ class LinkedInPublicSearchService:
         for seed in seeds:
             phone_candidates = list(seed.get("phone_candidates") or [])
             seed_domain = self.domain_resolver.resolve(
-                seed.get("company_name"),
+                None,
                 seed.get("company_domain") or seed.get("website"),
                 location=seed.get("location"),
                 category=seed.get("category") or seed.get("industry"),
             )
+            seed_domain = seed_domain or mapped_middle_east_domain(
+                seed.get("company_name"),
+                location=seed.get("location"),
+                category=seed.get("category") or seed.get("industry"),
+            )
+            if not seed_domain and self.config.apis.get("hunter_key") and seed.get("company_name"):
+                try:
+                    domains = HunterClient(self.config.apis["hunter_key"]).find_company_domains(
+                        str(seed["company_name"]),
+                        limit=3,
+                        perfect_match=True,
+                    )
+                    seed_domain = self._select_hunter_domain(seed, domains)
+                    self.repo.record_email_provider_stat(
+                        "hunter_domain_finder",
+                        calls=1,
+                        candidates=1 if seed_domain else 0,
+                        valid_candidates=0,
+                        selected=1 if seed_domain else 0,
+                        credits_used=0,
+                    )
+                except Exception as exc:
+                    log("hunter.domain_finder.failed", company=seed.get("company_name"), error=str(exc))
+            if not seed_domain:
+                seed_domain = self.domain_resolver.resolve(
+                    seed.get("company_name"),
+                    None,
+                    location=seed.get("location"),
+                    category=seed.get("category") or seed.get("industry"),
+                )
             if seed_domain:
                 seed["company_domain"] = seed_domain
             channels = find_public_company_channels(seed.get("company_domain") or seed.get("website") or "")
@@ -317,6 +470,31 @@ class LinkedInPublicSearchService:
                     phone_candidates=phone_candidates,
                 )
         return {"companies": len(seeds), "tasks": tasks, "results": totals["results"], "promoted": totals["promoted"], "skipped": totals["skipped"], "phone_attached": totals["phone_attached"], "auto_queue": auto_queue}
+
+    def _select_hunter_domain(self, seed: dict[str, Any], domains: list[dict[str, Any]]) -> str | None:
+        company_name = _clean(seed.get("company_name"))
+        location = _clean(seed.get("location"))
+        for item in domains:
+            domain = _domain_from_website(item.get("domain") or "")
+            resolved_name = _clean(item.get("company_name"))
+            if not domain or _is_blocked_domain(domain) or is_low_quality_domain(domain):
+                continue
+            if not _company_names_match(company_name, resolved_name):
+                continue
+            if not self.client or not location:
+                return domain
+            query = f'"{company_name}" "{location}" "{domain}"'
+            options = search_options({"location": location})[0]
+            try:
+                results = self.client.search(query, limit=5, **options)
+            except Exception:
+                continue
+            for result in results:
+                result_domain = _domain_from_website(result.get("link") or "")
+                text = " ".join(str(result.get(key) or "") for key in ("title", "snippet", "link"))
+                if result_domain == domain and _company_names_match(company_name, text):
+                    return domain
+        return None
 
     def promote_result(self, result_id: int, *, user: dict[str, Any]) -> dict[str, Any]:
         result = self.repo.get_lead_search_result_for_user(result_id, user)
@@ -452,6 +630,234 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "auto_generate_email_candidates": True,
         "high_confidence_verify": True,
     }
+
+
+def parse_hunter_domain_email(
+    item: dict[str, Any],
+    criteria: dict[str, Any],
+    domain_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    email = str(item.get("value") or item.get("email") or "").strip().lower()
+    if not is_full_email(email) or str(item.get("type") or "personal").lower() != "personal":
+        return None
+    status = _hunter_verification_status(item)
+    if status not in {"valid", "accept_all"}:
+        return None
+    domain = _domain_from_website(domain_result.get("domain") or criteria.get("company_website") or email.split("@", 1)[1])
+    if not domain or not email.endswith(f"@{domain}"):
+        return None
+    first_name = _clean(item.get("first_name"))
+    last_name = _clean(item.get("last_name"))
+    position = _clean(item.get("position") or item.get("position_raw"))
+    company_name = _clean(domain_result.get("organization") or criteria.get("company_keyword"))
+    linkedin_url = _normalize_linkedin_url(item.get("linkedin") or item.get("linkedin_url") or "")
+    if not linkedin_url:
+        digest = hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+        linkedin_url = f"urn:hunter:{digest}"
+    confidence = max(0, min(100, int(item.get("confidence") or 0)))
+    candidate = EmailCandidate.build(
+        email,
+        "hunter_domain_search",
+        status,
+        confidence,
+        "personal_work",
+    )
+    lead_score = max(75 if status == "valid" else 60, min(95, confidence))
+    return {
+        "raw_title": " - ".join(part for part in [f"{first_name} {last_name}".strip(), position, company_name] if part),
+        "raw_snippet": f"Hunter Domain Search: {position or 'employee'} at {company_name or domain}",
+        "raw_url": linkedin_url if linkedin_url.startswith("http") else "",
+        "linkedin_url": linkedin_url,
+        "first_name": first_name or None,
+        "last_name": last_name or None,
+        "job_title": position or criteria.get("role") or criteria.get("title"),
+        "company_name": company_name or domain,
+        "company_domain": domain,
+        "observed_company_domain": domain,
+        "industry": _clean(criteria.get("industry")),
+        "location": _clean(criteria.get("location")),
+        "phone": _clean(item.get("phone_number")) or None,
+        "lead_score": lead_score,
+        "match_confidence": lead_score,
+        "match_status": "confirmed" if status == "valid" and confidence >= 70 else "likely",
+        "match_evidence": [
+            {
+                "field": "company_domain",
+                "expected": domain,
+                "observed": domain,
+                "matched": True,
+                "weight": 25,
+            },
+            {
+                "field": "email_verification",
+                "expected": "valid",
+                "observed": status,
+                "matched": status == "valid",
+                "weight": 30,
+            },
+        ],
+        "email_candidates": [asdict(candidate)],
+        "source_context": _source_context_from_criteria(criteria),
+        "source": "hunter_domain_search",
+    }
+
+
+def _hunter_verification_status(item: dict[str, Any]) -> str:
+    verification = item.get("verification")
+    if isinstance(verification, dict):
+        return str(verification.get("status") or "unknown").lower()
+    return str(item.get("verification_status") or verification or "unknown").lower()
+
+
+def parse_prospeo_company_person(
+    person: dict[str, Any],
+    criteria: dict[str, Any],
+    enriched: dict[str, Any],
+) -> dict[str, Any] | None:
+    email, email_status = _prospeo_email(enriched)
+    if not is_full_email(email) or email_status not in {"verified", "valid"}:
+        return None
+    domain = _domain_from_website(person.get("company_domain") or criteria.get("company_website") or "")
+    if not domain or not str(email).lower().endswith(f"@{domain}"):
+        return None
+    if not _location_matches(criteria.get("location"), person.get("location")):
+        return None
+    first_name = _clean(person.get("first_name"))
+    last_name = _clean(person.get("last_name"))
+    position = _clean(person.get("job_title"))
+    company_name = _clean(person.get("company_name") or criteria.get("company_keyword") or domain)
+    linkedin_url = _normalize_linkedin_url(person.get("linkedin_url") or "")
+    if not linkedin_url:
+        digest = hashlib.sha256(str(email).lower().encode("utf-8")).hexdigest()[:24]
+        linkedin_url = f"urn:prospeo:{digest}"
+    score = min(95, max(75, 70 + _decision_maker_score(person, criteria) // 5))
+    candidate = EmailCandidate.build(
+        str(email).lower(),
+        "prospeo_company_search",
+        "valid",
+        95,
+        "personal_work",
+    )
+    return {
+        "raw_title": " - ".join(part for part in [f"{first_name} {last_name}".strip(), position, company_name] if part),
+        "raw_snippet": f"Prospeo company search: {position or 'decision maker'} at {company_name or domain}",
+        "raw_url": linkedin_url if linkedin_url.startswith("http") else "",
+        "linkedin_url": linkedin_url,
+        "first_name": first_name or None,
+        "last_name": last_name or None,
+        "job_title": position or criteria.get("role") or criteria.get("title"),
+        "company_name": company_name or domain,
+        "company_domain": domain,
+        "observed_company_domain": domain,
+        "industry": _clean(person.get("industry") or criteria.get("industry")),
+        "location": _clean(person.get("location") or criteria.get("location")),
+        "lead_score": score,
+        "match_confidence": score,
+        "match_status": "confirmed",
+        "match_evidence": [
+            {"field": "company_domain", "expected": domain, "observed": domain, "matched": True, "weight": 25},
+            {"field": "email_verification", "expected": "valid", "observed": "valid", "matched": True, "weight": 30},
+            {"field": "title", "expected": criteria.get("role") or "decision maker", "observed": position, "matched": True, "weight": 15},
+        ],
+        "email_candidates": [asdict(candidate)],
+        "source_context": _source_context_from_criteria(criteria),
+        "source": "prospeo_company_search",
+    }
+
+
+def _prospeo_email(payload: dict[str, Any]) -> tuple[str | None, str]:
+    person = payload.get("person") if isinstance(payload.get("person"), dict) else payload
+    email_obj = person.get("email") or person.get("work_email")
+    if isinstance(email_obj, dict):
+        email = email_obj.get("email") or email_obj.get("value")
+        status = email_obj.get("status") or email_obj.get("verification_status") or ""
+    else:
+        email = email_obj
+        status = person.get("email_status") or person.get("verification_status") or ""
+    normalized = str(email or "").strip().lower()
+    if not is_full_email(normalized):
+        return None, str(status or "unknown").lower()
+    return normalized, str(status or "verified").lower()
+
+
+def _prospeo_role_filters(criteria: dict[str, Any]) -> list[str]:
+    requested = criteria.get("role_keywords") or []
+    if isinstance(requested, str):
+        requested = re.split(r"[,;，；]", requested)
+    roles = [
+        criteria.get("role") or criteria.get("title"),
+        *requested,
+        "CEO",
+        "Chief Executive Officer",
+        "Founder",
+        "Co-Founder",
+        "Owner",
+        "Managing Director",
+        "General Manager",
+        "Commercial Director",
+        "Business Development Director",
+        "Sales Director",
+        "Marketing Director",
+        "Retail Director",
+        "Head of Business Development",
+        "Head of Sales",
+        "Head of Marketing",
+    ]
+    return list(dict.fromkeys(str(item).strip() for item in roles if str(item or "").strip()))[:25]
+
+
+def _decision_maker_score(person: dict[str, Any], criteria: dict[str, Any]) -> int:
+    title = _clean(person.get("job_title")).casefold()
+    if not title:
+        return 0
+    if any(term in title for term in ("intern", "assistant", "recruit", "human resources", "hr manager", "maintenance", "engineer", "developer", "supervisor")):
+        return -50
+    score = 0
+    requested = _prospeo_role_filters(criteria)
+    if any(term.casefold() in title or title in term.casefold() for term in requested[:10]):
+        score += 80
+    weighted_terms = (
+        ("chief executive", 100), ("ceo", 100), ("founder", 95), ("owner", 95),
+        ("managing director", 90), ("general manager", 85), ("commercial director", 80),
+        ("business development", 75), ("vice president", 75), ("sales director", 75),
+        ("marketing director", 70), ("retail director", 70), ("director", 55),
+        ("head of", 50), ("brand manager", 45), ("manager", 25),
+    )
+    score += max((weight for term, weight in weighted_terms if term in title), default=0)
+    if any(term in title for term in ("finance", "accounting", "legal", "technology", "warehouse")):
+        score -= 40
+    if score <= 0:
+        return score
+    if str(person.get("email_lookup_status") or "").casefold() == "verified":
+        score += 20
+    return score
+
+
+def _location_matches(expected: Any, observed: Any) -> bool:
+    expected_text = _clean(expected).casefold()
+    observed_text = _clean(observed).casefold()
+    if not expected_text or not observed_text:
+        return True
+    aliases = {
+        "伊朗": ("iran", "tehran"),
+        "阿联酋": ("united arab emirates", "uae", "dubai", "abu dhabi"),
+        "沙特": ("saudi arabia", "riyadh", "jeddah"),
+        "俄罗斯": ("russia", "moscow", "saint petersburg"),
+        "哈萨克斯坦": ("kazakhstan", "almaty", "astana"),
+        "印度": ("india",),
+        "新加坡": ("singapore",),
+        "马来西亚": ("malaysia",),
+        "印度尼西亚": ("indonesia",),
+        "泰国": ("thailand",),
+        "越南": ("vietnam",),
+        "菲律宾": ("philippines",),
+    }
+    expected_terms = (expected_text,)
+    for local_name, country_terms in aliases.items():
+        if local_name in expected_text or any(term in expected_text for term in country_terms):
+            expected_terms = country_terms
+            break
+    return any(term in observed_text for term in expected_terms)
 
 
 def parse_linkedin_search_item(item: dict[str, Any], criteria: dict[str, Any]) -> dict[str, Any] | None:
@@ -657,6 +1063,9 @@ def pick_public_channel_candidates(text: str, *, source_url: str = "", company_d
         normalized = email.lower().strip(".,;:")
         if not is_full_email(normalized):
             continue
+        local_part = normalized.split("@", 1)[0]
+        if local_part in {"example", "test", "yourname", "your.name", "email", "name", "user"}:
+            continue
         email_domain = normalized.rsplit("@", 1)[-1]
         expected_domain = _domain_from_website(company_domain or "")
         if expected_domain and email_domain not in PUBLIC_MAILBOX_DOMAINS and email_domain != expected_domain and not email_domain.endswith(f".{expected_domain}"):
@@ -708,7 +1117,17 @@ def pick_public_phone_candidates(text: str, *, source_url: str = "") -> list[dic
 
 def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[str, Any]:
     source_context = parsed.get("source_context") if isinstance(parsed.get("source_context"), dict) else {}
-    return {
+    candidates = parsed.get("email_candidates") or []
+    selected = next(
+        (
+            item for item in sorted(candidates, key=lambda row: int(row.get("confidence") or 0), reverse=True)
+            if item.get("category") == "personal_work"
+            and item.get("status") == "valid"
+            and is_full_email(item.get("email"))
+        ),
+        None,
+    )
+    contact = {
         "linkedin_url": parsed["linkedin_url"],
         "first_name": parsed.get("first_name"),
         "last_name": parsed.get("last_name"),
@@ -717,16 +1136,25 @@ def _contact_from_search_result(parsed: dict[str, Any], task_id: int) -> dict[st
         "company_domain": parsed.get("company_domain"),
         "industry": parsed.get("industry") or source_context.get("seed_category"),
         "location": parsed.get("location"),
-        "email_candidates": parsed.get("email_candidates") or [],
+        "email_candidates": candidates,
         "lead_score": parsed.get("lead_score"),
         "identity_confidence": parsed.get("match_confidence") or parsed.get("lead_score"),
         "identity_status": parsed.get("match_status") or "review",
         "identity_evidence": parsed.get("match_evidence") or [],
         "search_task_id": task_id,
         "source_context": source_context,
-        "source": "linkedin_public_search",
-        "status": "new",
+        "source": parsed.get("source") or "linkedin_public_search",
+        "phone": parsed.get("phone"),
+        "status": "enriched" if selected else "new",
     }
+    if selected:
+        contact.update(
+            email=selected["email"],
+            email_status="valid",
+            email_source=selected.get("source"),
+            email_confidence=int(selected.get("confidence") or 0),
+        )
+    return contact
 
 
 def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, Any]:

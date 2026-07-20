@@ -687,7 +687,7 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/enrich":
                 self._json_audit(
                     "enrich",
-                    lambda: _result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
+                    lambda: _batch_result("enriched", EnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
                     summary="批量富化邮箱",
                     metadata=lambda data: {"enriched": data.get("enriched"), "limit": int(payload.get("limit", 25))},
                 )
@@ -706,7 +706,7 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/social-enrich":
                 self._json_audit(
                     "social_enrich",
-                    lambda: _result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
+                    lambda: _batch_result("social_enriched", SocialEnrichmentService(config, repo).enrich(int(payload.get("limit", 25)), user=self._current_user())),
                     summary="批量富化社媒",
                     metadata=lambda data: {"social_enriched": data.get("social_enriched"), "limit": int(payload.get("limit", 25))},
                 )
@@ -1404,6 +1404,11 @@ def make_handler(config, repo: Repository):
 
 def _result(label: str, value: Any) -> dict[str, Any]:
     return {label: value}
+
+
+def _batch_result(label: str, value: tuple[int, int]) -> dict[str, int]:
+    succeeded, failed = value
+    return {label: int(succeeded), "failed": int(failed), "processed": int(succeeded) + int(failed)}
 
 
 def _activity_channel(activity_type: str) -> str:

@@ -49,3 +49,18 @@ def test_parse_company_seed_csv_maps_research_workbook_headers():
     assert seeds[0]["company_domain"] == "mercury.ru"
     assert seeds[0]["job_titles"] == ["Founder", "CEO"]
 
+
+def test_parse_company_seed_csv_maps_iran_company_headers_without_website():
+    seeds = parse_company_seed_csv(
+        "国家,城市,行业类别,公司名,体量,官网,联系人,联系人title,领英,邮箱,WhatsApp,Vertu为什么跟他合作\n"
+        "Iran,Tehran,Luxury retail,Example Luxury Group,Large,,,CEO,,,,Premium retail fit\n"
+    )
+
+    assert len(seeds) == 1
+    assert seeds[0]["company_name"] == "Example Luxury Group"
+    assert seeds[0]["category"] == "Luxury retail"
+    assert seeds[0]["industry"] == "Luxury retail"
+    assert seeds[0]["location"] == "Iran"
+    assert seeds[0]["job_titles"] == ["CEO"]
+    assert seeds[0]["reason"] == "Premium retail fit"
+
