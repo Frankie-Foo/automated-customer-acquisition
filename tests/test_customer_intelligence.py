@@ -55,3 +55,21 @@ def test_outreach_framework_has_five_parts():
     })
 
     assert set(framework) == {"intent", "business_match", "our_value", "low_barrier_ask", "close"}
+
+
+def test_russia_hiring_signal_improves_account_context_and_why_now():
+    signal = "Public hh.ru hiring activity suggests Mercury is building its retail team in Moscow."
+    profile = build_customer_profile({
+        "company_name": "Mercury",
+        "job_title": "Commercial Director",
+        "industry": "luxury retail",
+        "location": "Moscow, Russia",
+        "source_context": {
+            "hiring_signal_summary": signal,
+            "expansion_score": 85,
+        },
+    })
+
+    assert profile["fit_score_breakdown"]["account_context"] >= 18
+    assert profile["why_now"] == signal
+    assert "public hiring signal" in profile["pain_point_strategy"]["message_hook"]

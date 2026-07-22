@@ -160,6 +160,24 @@ def test_company_seed_to_search_criteria_expands_job_titles():
     assert any('"owner"' in query and '"Luxepolis"' in query for query in queries)
 
 
+def test_company_seed_to_search_criteria_keeps_automatic_hiring_evidence():
+    criteria = company_seed_to_search_criteria({
+        "company_name": "Mercury",
+        "company_domain": "mercury.ru",
+        "location": "Moscow, Russia",
+        "hiring_signal_checked": True,
+        "hiring_signal_summary": "Public hiring activity suggests retail expansion.",
+        "hiring_signals": [{"source": "hh.ru", "source_url": "https://hh.ru/vacancy/1"}],
+        "expansion_score": 85,
+        "signal_source": "hh.ru_public_vacancies",
+    })
+
+    assert criteria["hiring_signal_checked"] is True
+    assert criteria["hiring_signal_summary"].startswith("Public hiring")
+    assert criteria["hiring_signals"][0]["source"] == "hh.ru"
+    assert criteria["expansion_score"] == 85
+
+
 def test_parse_linkedin_profile_filters_non_profile_urls():
     item = {
         "title": "Darwin Lee - Brand Manager - ROLEX | LinkedIn",

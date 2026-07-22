@@ -59,8 +59,13 @@ _CENTRAL_ASIA_CHANNELS = ("официальный сайт", "контакты",
 _RUSSIA_ROLES = (
     "owner", "founder", "general director", "commercial director", "retail director",
     "владелец", "основатель", "генеральный директор", "коммерческий директор", "директор по рознице",
+    "директор магазина", "байер", "категорийный менеджер", "директор по развитию",
+    "руководитель розничной сети", "директор по закупкам", "buyer", "category manager",
 )
-_RUSSIA_CHANNELS = ("официальный сайт", "контакты", "дистрибьютор", "дилер", "магазин", "Telegram")
+_RUSSIA_CHANNELS = (
+    "официальный сайт", "контакты", "дистрибьютор", "дилер", "магазин", "Telegram",
+    "франшиза", "готовый бизнес", "партнер",
+)
 _SOUTHEAST_ASIA_ROLES = (
     "owner", "founder", "managing director", "general manager", "commercial director", "retail director",
     "pemilik", "pendiri", "giám đốc", "chủ sở hữu", "กรรมการผู้จัดการ", "เจ้าของ",

@@ -112,6 +112,9 @@ def score_customer(contact: dict[str, Any]) -> dict[str, int]:
     parts["vertical_fit"] = min(24, hits * 6)
     if source_context.get("seed_category") or source_context.get("seed_reason"):
         parts["account_context"] = 14
+    if source_context.get("hiring_signal_summary"):
+        signal_score = _safe_int(source_context.get("expansion_score"))
+        parts["account_context"] = max(parts["account_context"], 14) + min(10, max(4, signal_score // 10))
     if contact.get("email_status") == "valid" and contact.get("email"):
         parts["contactability"] += 16
     elif contact.get("email_candidates"):
@@ -179,7 +182,7 @@ def pain_point_strategy(contact: dict[str, Any]) -> dict[str, str]:
         "suspected_pain": f"{company} {pain}.",
         "outreach_angle": angle,
         "message_hook": _message_hook(contact, pain),
-        "evidence_to_use": context.get("seed_reason") or proof,
+        "evidence_to_use": context.get("hiring_signal_summary") or context.get("seed_reason") or proof,
         "question_to_ask": f"Would it be relevant to explore whether Vertu fits {company}'s current customer base or channel plans?",
         "avoid": f"Do not claim {company} has a confirmed problem unless it appears in source notes; frame it as a practical fit question for {role}.",
     }
@@ -219,6 +222,8 @@ def followup_plan(contact: dict[str, Any], strategy: dict[str, str] | None = Non
 def _message_hook(contact: dict[str, Any], pain: str) -> str:
     company = contact.get("company_name") or "your company"
     context = _source_context(contact)
+    if context.get("hiring_signal_summary"):
+        return f"I noticed a public hiring signal relevant to {company}: {context['hiring_signal_summary']}"
     if context.get("seed_reason"):
         return f"I noticed {company} in our account research: {context['seed_reason']}"
     category = context.get("seed_category") or contact.get("industry")
@@ -228,6 +233,8 @@ def _message_hook(contact: dict[str, Any], pain: str) -> str:
 
 
 def _business_match_sentence(company: str, role: str, source_context: dict[str, str], industry: Any) -> str:
+    if source_context.get("hiring_signal_summary"):
+        return f"I noticed recent public hiring activity around {company}; your role as {role} looks relevant to a selective channel discussion."
     if source_context.get("seed_reason"):
         return f"I noticed {company} in our market research: {source_context['seed_reason']}"
     category = source_context.get("seed_category") or str(industry or "").strip()
@@ -326,6 +333,8 @@ def inferred_risks(contact: dict[str, Any]) -> list[str]:
 
 def why_now(contact: dict[str, Any], score: int) -> str:
     source_context = _source_context(contact)
+    if source_context.get("hiring_signal_summary"):
+        return source_context["hiring_signal_summary"][:260]
     if source_context.get("seed_reason"):
         return source_context["seed_reason"][:260]
     if score >= 70:
@@ -342,3 +351,10 @@ def _source_context(contact: dict[str, Any]) -> dict[str, str]:
 
 def _joined_text(*items: Any) -> str:
     return " ".join(str(item or "").lower() for item in items)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

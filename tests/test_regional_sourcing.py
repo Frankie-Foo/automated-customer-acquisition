@@ -32,6 +32,8 @@ def test_detects_russia_and_prioritizes_russian_search():
     assert profile.country == "RU"
     assert profile.search_languages == ("ru", "en")
     assert "генеральный директор" in terms
+    assert "директор магазина" in terms
+    assert "байер" in terms
 
 
 def test_detects_southeast_asia_and_uses_local_language():

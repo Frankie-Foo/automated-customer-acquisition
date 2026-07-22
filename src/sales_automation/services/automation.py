@@ -78,7 +78,7 @@ class AutomationRunService:
         result = dict(run.get("result") or {})
         result.setdefault("companies", len(seeds))
         result.setdefault("tasks", [])
-        for field in ("results", "promoted", "skipped", "phone_attached"):
+        for field in ("results", "promoted", "skipped", "phone_attached", "hiring_signals"):
             result.setdefault(field, 0)
 
         try:
@@ -96,7 +96,7 @@ class AutomationRunService:
                     auto_queue=False,
                 )
                 result["tasks"].extend(batch.get("tasks") or [])
-                for field in ("results", "promoted", "skipped", "phone_attached"):
+                for field in ("results", "promoted", "skipped", "phone_attached", "hiring_signals"):
                     result[field] = int(result.get(field) or 0) + int(batch.get(field) or 0)
                 used = int(batch.get("results") or 0)
                 if used:

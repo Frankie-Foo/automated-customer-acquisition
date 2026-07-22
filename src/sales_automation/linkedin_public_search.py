@@ -18,6 +18,7 @@ from .http import HttpClient
 from .logging_utils import log
 from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
 from .regional_sourcing import detect_regional_profile, regional_role_terms, search_options
+from .russia_hiring_signals import RussiaHiringSignalService
 
 BLOCKED_DOMAINS = {
     "linkedin.com",
@@ -193,8 +194,10 @@ class LinkedInPublicSearchService:
         self.cfg = config.raw.get("sourcing", {}).get("linkedin_public_search", {})
         self.client = build_search_client(config)
         self.domain_resolver = CompanyDomainResolver(self.client)
+        self.russia_hiring_signals = RussiaHiringSignalService(config, public_search=self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
+        criteria = self.russia_hiring_signals.enrich_criteria(criteria)
         hunter_key = self.config.apis.get("hunter_key", "")
         prospeo_key = self.config.apis.get("prospeo_key", "")
         hunter = HunterClient(hunter_key) if hunter_key else None
@@ -396,7 +399,14 @@ class LinkedInPublicSearchService:
             self.repo.complete_lead_search_task(task["id"], query_count=len(queries) + provider_queries, result_count=len(all_results), promoted_count=promoted, skipped_count=skipped, error=str(exc))
             raise
         log("linkedin_public_search.completed", task_id=task["id"], results=len(all_results), promoted=promoted, skipped=skipped)
-        return {"task_id": task["id"], "results": len(all_results), "promoted": promoted, "skipped": skipped}
+        return {
+            "task_id": task["id"],
+            "results": len(all_results),
+            "promoted": promoted,
+            "skipped": skipped,
+            "hiring_signals": len(criteria.get("hiring_signals") or []),
+            "expansion_score": int(criteria.get("expansion_score") or 0),
+        }
 
     def run_company_seeds(
         self,
@@ -412,6 +422,7 @@ class LinkedInPublicSearchService:
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
         for seed in seeds:
             phone_candidates = list(seed.get("phone_candidates") or [])
+            seed = self.russia_hiring_signals.enrich_seed(seed)
             seed_domain = self.domain_resolver.resolve(
                 None,
                 seed.get("company_domain") or seed.get("website"),
@@ -463,13 +474,23 @@ class LinkedInPublicSearchService:
             totals["results"] += int(result.get("results") or 0)
             totals["promoted"] += int(result.get("promoted") or 0)
             totals["skipped"] += int(result.get("skipped") or 0)
+            totals["hiring_signals"] = int(totals.get("hiring_signals") or 0) + int(result.get("hiring_signals") or 0)
             if seed.get("phone") or phone_candidates:
                 totals["phone_attached"] += self.repo.update_contacts_phone_from_search_task(
                     int(result["task_id"]),
                     phone=seed.get("phone"),
                     phone_candidates=phone_candidates,
                 )
-        return {"companies": len(seeds), "tasks": tasks, "results": totals["results"], "promoted": totals["promoted"], "skipped": totals["skipped"], "phone_attached": totals["phone_attached"], "auto_queue": auto_queue}
+        return {
+            "companies": len(seeds),
+            "tasks": tasks,
+            "results": totals["results"],
+            "promoted": totals["promoted"],
+            "skipped": totals["skipped"],
+            "phone_attached": totals["phone_attached"],
+            "hiring_signals": int(totals.get("hiring_signals") or 0),
+            "auto_queue": auto_queue,
+        }
 
     def _select_hunter_domain(self, seed: dict[str, Any], domains: list[dict[str, Any]]) -> str | None:
         company_name = _clean(seed.get("company_name"))
@@ -625,6 +646,11 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "seed_category": seed.get("category") or "",
         "public_channels": seed.get("public_channels") or {},
         "company_email_candidates": seed.get("company_email_candidates") or [],
+        "hiring_signal_checked": bool(seed.get("hiring_signal_checked")),
+        "hiring_signals": seed.get("hiring_signals") or [],
+        "hiring_signal_summary": seed.get("hiring_signal_summary") or "",
+        "expansion_score": int(seed.get("expansion_score") or 0),
+        "signal_source": seed.get("signal_source") or "",
         "regional_profile": detect_regional_profile(seed.get("location"), seed.get("category"), seed.get("industry")).key,
         "auto_domain_lookup": True,
         "auto_generate_email_candidates": True,
@@ -1167,11 +1193,17 @@ def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
         "target_role": criteria.get("role") or criteria.get("title"),
         "target_name": _target_name(criteria),
         "regional_profile": criteria.get("regional_profile"),
+        "hiring_signal_summary": criteria.get("hiring_signal_summary"),
+        "expansion_score": criteria.get("expansion_score"),
+        "signal_source": criteria.get("signal_source"),
     }
     context: dict[str, Any] = {key: _clean(value) for key, value in mapping.items() if _clean(value)}
     channels = criteria.get("public_channels")
     if isinstance(channels, dict) and any(channels.values()):
         context["public_channels"] = channels
+    signals = criteria.get("hiring_signals")
+    if isinstance(signals, list) and signals:
+        context["hiring_signals"] = signals[:10]
     return context
 
 

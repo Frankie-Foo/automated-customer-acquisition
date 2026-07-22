@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-22 - Automatic Russia hiring-signal enrichment
+
+- Detect Russian accounts automatically from country/location and `.ru`/`.рф` domains; no new sales-facing switch or workflow step is required.
+- Add public hh.ru vacancy discovery through the existing Brave/Tavily/Google search fallback chain, with an optional official HeadHunter API client kept disabled by default.
+- Treat hiring activity as company-level expansion evidence, strictly match the employer, reject archived vacancies, and preserve role, city, publication date, source URL, and an explainable expansion score in contact context.
+- Expand Russian decision-role queries for store directors, buyers, category managers, procurement, retail-network, and business-development leaders.
+- Feed grounded hiring evidence into customer scoring, `why now`, profile strategy, and personalized email context without automatically sending messages.
+- Keep provider failures non-blocking so bulk imports continue through existing domain, LinkedIn, Hunter, Prospeo, and public-site enrichment paths; 183 tests pass.
+
 ## 2026-07-20 - Reliable regional contact discovery and review UX
 
 - Add Hunter domain discovery/search and bounded Prospeo company-person enrichment as fallbacks for company seeds and public LinkedIn searches, while only promoting verified personal work emails.
