@@ -178,6 +178,16 @@ def test_company_seed_to_search_criteria_keeps_automatic_hiring_evidence():
     assert criteria["expansion_score"] == 85
 
 
+def test_company_seed_to_search_criteria_keeps_southeast_asia_signal_check_state():
+    criteria = company_seed_to_search_criteria({
+        "company_name": "Apple",
+        "location": "Singapore",
+        "southeast_asia_hiring_signal_checked": True,
+    })
+
+    assert criteria["southeast_asia_hiring_signal_checked"] is True
+
+
 def test_parse_linkedin_profile_filters_non_profile_urls():
     item = {
         "title": "Darwin Lee - Brand Manager - ROLEX | LinkedIn",
@@ -389,6 +399,19 @@ def test_brave_search_forwards_regional_options_and_extra_snippets():
     items = BraveSearchClient("brave-test", Http()).search("متجر فاخر", country="SA", search_lang="ar", extra_snippets=True)
 
     assert items[0]["snippet"] == "وصف واتساب"
+
+
+def test_brave_search_maps_unsupported_indonesian_language_without_losing_country():
+    class Http:
+        def request(self, method, url, *, headers=None, json_body=None):
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            assert params["country"] == ["ID"]
+            assert params["search_lang"] == ["en"]
+            return {"web": {"results": []}}
+
+    assert BraveSearchClient("brave-test", Http()).search("Erajaya", country="ID", search_lang="id") == []
 
 
 def test_brave_search_falls_back_to_all_for_unsupported_country():

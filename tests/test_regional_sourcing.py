@@ -48,6 +48,24 @@ def test_detects_southeast_asia_and_uses_local_language():
     ]
 
 
+def test_detects_each_supported_southeast_asia_country():
+    assert detect_regional_profile("Singapore").country == "SG"
+    assert detect_regional_profile("Kuala Lumpur, Malaysia").country == "MY"
+    assert detect_regional_profile("Bangkok, Thailand").country == "TH"
+    assert detect_regional_profile("Jakarta, Indonesia").country == "ID"
+    assert detect_regional_profile("Manila, Philippines").country == "PH"
+
+
+def test_southeast_asia_decision_roles_are_country_specific():
+    vietnam_terms = regional_role_terms({"role": "owner", "location": "Vietnam"})
+    thailand_terms = regional_role_terms({"role": "owner", "location": "Thailand"})
+
+    assert "giám đốc điều hành" in vietnam_terms
+    assert "กรรมการผู้จัดการ" not in vietnam_terms
+    assert "กรรมการผู้จัดการ" in thailand_terms
+    assert "pemilik" not in thailand_terms
+
+
 def test_unknown_location_uses_global_fallback():
     profile = detect_regional_profile("United States")
 

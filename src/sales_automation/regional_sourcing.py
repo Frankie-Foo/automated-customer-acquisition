@@ -66,13 +66,26 @@ _RUSSIA_CHANNELS = (
     "официальный сайт", "контакты", "дистрибьютор", "дилер", "магазин", "Telegram",
     "франшиза", "готовый бизнес", "партнер",
 )
-_SOUTHEAST_ASIA_ROLES = (
+_SOUTHEAST_ASIA_ENGLISH_ROLES = (
     "owner", "founder", "managing director", "general manager", "commercial director", "retail director",
-    "pemilik", "pendiri", "giám đốc", "chủ sở hữu", "กรรมการผู้จัดการ", "เจ้าของ",
+    "business development director", "head of retail", "buyer", "procurement manager", "store manager",
 )
-_SOUTHEAST_ASIA_CHANNELS = (
-    "official website", "authorized dealer", "distributor", "contact", "WhatsApp", "Instagram", "Facebook", "Zalo",
-)
+_SOUTHEAST_ASIA_LOCAL_ROLES = {
+    "SG": (),
+    "MY": ("pemilik", "pengasas", "pengarah urusan", "pengurus besar", "pengarah komersial", "pengurus runcit", "pengurus jualan"),
+    "TH": ("เจ้าของ", "กรรมการผู้จัดการ", "ผู้จัดการทั่วไป", "ผู้อำนวยการฝ่ายขาย", "ผู้อำนวยการค้าปลีก", "ผู้จัดการร้าน", "ฝ่ายจัดซื้อ"),
+    "ID": ("pemilik", "pendiri", "direktur utama", "direktur komersial", "direktur ritel", "kepala penjualan", "manajer toko"),
+    "VN": ("chủ sở hữu", "nhà sáng lập", "giám đốc điều hành", "giám đốc thương mại", "giám đốc bán lẻ", "trưởng phòng kinh doanh", "quản lý cửa hàng", "thu mua"),
+    "PH": (),
+}
+_SOUTHEAST_ASIA_CHANNELS = {
+    "SG": ("official website", "authorized dealer", "distributor", "contact"),
+    "MY": ("official website", "pengedar sah", "pengedar", "hubungi"),
+    "TH": ("เว็บไซต์ทางการ", "ตัวแทนจำหน่าย", "ผู้จัดจำหน่าย", "ติดต่อ"),
+    "ID": ("situs resmi", "dealer resmi", "distributor", "kontak"),
+    "VN": ("trang web chính thức", "đại lý ủy quyền", "nhà phân phối", "liên hệ"),
+    "PH": ("official website", "authorized dealer", "distributor", "contact"),
+}
 _SOUTH_ASIA_ROLES = ("owner", "founder", "managing director", "business head", "purchase head", "director")
 _SOUTH_ASIA_CHANNELS = ("official website", "contact", "authorized dealer", "distributor", "Instagram", "WhatsApp")
 
@@ -131,8 +144,8 @@ for aliases, country, languages in (
         label="Southeast Asia enhanced",
         country=country,
         languages=languages,
-        role_terms=_SOUTHEAST_ASIA_ROLES,
-        channel_terms=_SOUTHEAST_ASIA_CHANNELS,
+        role_terms=(*_SOUTHEAST_ASIA_LOCAL_ROLES.get(country, ()), *_SOUTHEAST_ASIA_ENGLISH_ROLES),
+        channel_terms=_SOUTHEAST_ASIA_CHANNELS.get(country, _SOUTHEAST_ASIA_CHANNELS["SG"]),
     )
 
 for aliases, country in (

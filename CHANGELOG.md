@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-22 - Automatic Southeast Asia hiring intelligence
+
+- Detect Singapore, Malaysia, Thailand, Indonesia, Vietnam, and the Philippines automatically; no sales-facing region switch or extra workflow step is added.
+- Route public company hiring searches to country-specific sources such as JobStreet, MyCareersFuture, JobThai, Glints, Dealls, TopCV, VietnamWorks, and Kalibrr.
+- Separate local decision-maker terms for Malay, Indonesian, Thai, and Vietnamese searches instead of mixing all Southeast Asian languages into one limited query list.
+- Convert current job pages and company job-list volumes into explainable expansion evidence while rejecting expired, closed, review, and unrelated pages.
+- Feed evidence into account scoring, customer profiles, `why now`, and personalized email drafts without collecting candidate resumes or automatically sending messages.
+- Normalize unsupported Brave language codes while preserving country targeting, fixing an existing Indonesian public-search 422 failure.
+- Keep the existing sourcing, enrichment, outreach, and customer-pool behavior covered by 195 passing tests.
+
 ## 2026-07-22 - Automatic Russia hiring-signal enrichment
 
 - Detect Russian accounts automatically from country/location and `.ru`/`.рф` domains; no new sales-facing switch or workflow step is required.

@@ -19,6 +19,7 @@ from .logging_utils import log
 from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
 from .regional_sourcing import detect_regional_profile, regional_role_terms, search_options
 from .russia_hiring_signals import RussiaHiringSignalService
+from .southeast_asia_hiring_signals import SoutheastAsiaHiringSignalService
 
 BLOCKED_DOMAINS = {
     "linkedin.com",
@@ -39,6 +40,15 @@ BRAVE_SUPPORTED_COUNTRIES = {
     "AR", "AU", "AT", "BE", "BR", "CA", "CL", "DK", "FI", "FR", "DE", "GR", "HK", "IN", "ID",
     "IT", "JP", "KR", "MY", "MX", "NL", "NZ", "NO", "CN", "PL", "PT", "PH", "RU", "SA", "ZA", "ES",
     "SE", "CH", "TW", "TR", "GB", "US", "ALL",
+}
+
+BRAVE_SEARCH_LANGUAGE_ALIASES = {
+    "id": "en",
+    "tl": "en",
+    "km": "en",
+    "lo": "en",
+    "my": "en",
+    "fa": "en",
 }
 
 PUBLIC_MAILBOX_DOMAINS = {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "mail.ru", "yandex.ru", "proton.me"}
@@ -103,10 +113,11 @@ class BraveSearchClient:
         self.http = http or HttpClient(timeout=30)
 
     def search(self, query: str, *, limit: int = 10, **options: Any) -> list[dict[str, Any]]:
+        requested_language = str(options.get("search_lang") or "en").casefold()
         params = {
             "q": query,
             "count": max(1, min(20, int(limit or 10))),
-            "search_lang": options.get("search_lang") or "en",
+            "search_lang": BRAVE_SEARCH_LANGUAGE_ALIASES.get(requested_language, requested_language),
             "safesearch": "moderate",
             "text_decorations": "false",
             "extra_snippets": "true" if options.get("extra_snippets") else "false",
@@ -195,9 +206,11 @@ class LinkedInPublicSearchService:
         self.client = build_search_client(config)
         self.domain_resolver = CompanyDomainResolver(self.client)
         self.russia_hiring_signals = RussiaHiringSignalService(config, public_search=self.client)
+        self.southeast_asia_hiring_signals = SoutheastAsiaHiringSignalService(config, public_search=self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
         criteria = self.russia_hiring_signals.enrich_criteria(criteria)
+        criteria = self.southeast_asia_hiring_signals.enrich_criteria(criteria)
         hunter_key = self.config.apis.get("hunter_key", "")
         prospeo_key = self.config.apis.get("prospeo_key", "")
         hunter = HunterClient(hunter_key) if hunter_key else None
@@ -417,12 +430,13 @@ class LinkedInPublicSearchService:
         auto_queue: bool = False,
     ) -> dict[str, Any]:
         if not seeds:
-            return {"companies": 0, "tasks": [], "results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0, "auto_queue": auto_queue}
+            return {"companies": 0, "tasks": [], "results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0, "hiring_signals": 0, "auto_queue": auto_queue}
         tasks: list[dict[str, Any]] = []
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
         for seed in seeds:
             phone_candidates = list(seed.get("phone_candidates") or [])
             seed = self.russia_hiring_signals.enrich_seed(seed)
+            seed = self.southeast_asia_hiring_signals.enrich_seed(seed)
             seed_domain = self.domain_resolver.resolve(
                 None,
                 seed.get("company_domain") or seed.get("website"),
@@ -647,6 +661,7 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "public_channels": seed.get("public_channels") or {},
         "company_email_candidates": seed.get("company_email_candidates") or [],
         "hiring_signal_checked": bool(seed.get("hiring_signal_checked")),
+        "southeast_asia_hiring_signal_checked": bool(seed.get("southeast_asia_hiring_signal_checked")),
         "hiring_signals": seed.get("hiring_signals") or [],
         "hiring_signal_summary": seed.get("hiring_signal_summary") or "",
         "expansion_score": int(seed.get("expansion_score") or 0),

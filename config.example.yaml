@@ -108,6 +108,11 @@ sourcing:
     enabled: true
     official_api_enabled: false
     max_vacancies_per_company: 10
+  southeast_asia_hiring_signals:
+    enabled: true
+    max_queries_per_company: 3
+    max_results_per_query: 5
+    stop_after_first_match: true
 
 email_discovery:
   providers:
