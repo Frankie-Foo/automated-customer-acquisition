@@ -25,6 +25,17 @@ def test_validate_email_body_rejects_truncated_or_unresolved_content():
         validate_email_body("Subject", "Hi [Name], this is a long enough message body for testing.", min_chars=30)
 
 
+def test_validate_email_body_rejects_internal_crm_fields():
+    body = (
+        "Hi Amy,\n\nI noticed DirectD in our research. "
+        "触达优先级:P0 | 核实状态:LinkedIn verified | 是否回复:否. "
+        "Would a short discussion be relevant?"
+    )
+
+    with pytest.raises(ValueError, match="internal CRM"):
+        validate_email_body("Possible partnership", body, min_chars=30)
+
+
 def test_delivery_failure_classification_and_annotation():
     payload = {"type": "email.bounced", "data": {"reason": "Address not found"}}
     assert classify_delivery_failure("bounced", payload) == "bounced: address_not_found"

@@ -14,6 +14,7 @@ from ..clients import SlackClient
 from ..config import AppConfig
 from ..db import Repository
 from ..logging_utils import log
+from ..mailbox_accounts import configured_imap_mailboxes
 from .webhooks import WebhookService
 
 
@@ -39,10 +40,19 @@ class MailboxReplyService:
         self.webhook_service = webhook_service or WebhookService(repo, notifier, config=config)
 
     def poll_once(self, limit: int = 100) -> dict[str, int]:
-        settings = _mailbox_settings(self.config)
-        if not settings["host"] or not settings["username"] or not settings["password"]:
+        mailboxes = configured_imap_mailboxes(self.config)
+        if not mailboxes:
             raise RuntimeError("IMAP_HOST, IMAP_USER and IMAP_PASSWORD are required")
 
+        stats = {"scanned": 0, "matched": 0, "recorded": 0, "duplicates": 0, "ignored": 0}
+        for settings in mailboxes:
+            mailbox_stats = self._poll_mailbox(settings, limit=limit)
+            for key in stats:
+                stats[key] += mailbox_stats[key]
+        log("mailbox.poll_completed", mailboxes=len(mailboxes), **stats)
+        return stats
+
+    def _poll_mailbox(self, settings: dict[str, Any], *, limit: int) -> dict[str, int]:
         stats = {"scanned": 0, "matched": 0, "recorded": 0, "duplicates": 0, "ignored": 0}
         client = self.imap_factory(settings["host"], settings["port"], timeout=settings["timeout"])
         try:
@@ -87,6 +97,7 @@ class MailboxReplyService:
                     "message_id": incoming_message_id,
                     "in_reply_to": outbound_message_id,
                     "source": "imap_mailbox",
+                    "mailbox_key": settings.get("mailbox_key"),
                 }
                 if not self.repo.record_webhook_delivery("imap", "replied", payload, external_id):
                     stats["duplicates"] += 1
@@ -103,7 +114,6 @@ class MailboxReplyService:
                 client.logout()
             except Exception:
                 pass
-        log("mailbox.poll_completed", **stats)
         return stats
 
     def _match_contact(self, message: Message, sender: str) -> tuple[int | None, str | None]:

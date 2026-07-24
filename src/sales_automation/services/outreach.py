@@ -11,7 +11,14 @@ from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
 from ..logging_utils import log
+from ..mailbox_accounts import sender_identity_user, sender_transport_for_user
 from ..outbound_identity import outbound_sender, signed_reply_address
+from ..outreach_copy import (
+    clean_public_research_item,
+    contains_internal_outreach_data,
+    customer_visible_contact,
+    customer_visible_source_context,
+)
 from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
@@ -35,12 +42,13 @@ class PersonalizedEmailService:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found or not claimed")
+        sender_user = sender_identity_user(self.repo, contact, user)
         if mode == "custom":
             result = {
                 "subject": custom_subject or f"Quick question about {contact.get('company_name') or 'your business'}",
                 "body": _normalize_sender_signature(
                     custom_body or "",
-                    user,
+                    sender_user,
                     fallback_name=self.config.sender.get("name", ""),
                     unsubscribe_value="{{unsubscribe_url}}",
                 )
@@ -49,12 +57,12 @@ class PersonalizedEmailService:
             }
             self._save_draft(contact, result, mode=mode, user=user)
             return result
-        draft = self._ai_draft(contact, user=user)
+        draft = self._ai_draft(contact, user=sender_user)
         result = {
             "subject": draft["subject"],
             "body": _normalize_sender_signature(
                 draft["body"],
-                user,
+                sender_user,
                 fallback_name=self.config.sender.get("name", ""),
                 unsubscribe_value="{{unsubscribe_url}}",
             ),
@@ -66,6 +74,9 @@ class PersonalizedEmailService:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found or not claimed")
+        sender_user = sender_identity_user(self.repo, contact, user)
+        sender_user_id = int(sender_user["id"]) if sender_user else None
+        actor_user_id = int(user["id"]) if user else None
         readiness = send_readiness(contact)
         if not readiness["ok"]:
             raise ValueError(f"Contact is not ready to send: {', '.join(readiness['reasons'])}")
@@ -78,13 +89,18 @@ class PersonalizedEmailService:
                 raise ValueError("Email content changed after approval; approve the draft again")
         sender_pool = SenderPoolManager(self.config, self.repo)
         transport_sender = sender_pool.pick_sender()
-        sender = outbound_sender(self.config, user, transport_sender)
+        transport_sender, smtp_config = sender_transport_for_user(
+            self.config,
+            sender_user,
+            transport_sender,
+        )
+        sender = outbound_sender(self.config, sender_user, transport_sender)
         api_key = self.config.apis.get(f"{transport_sender.get('provider', 'resend')}_key", "")
         mailer = MailClient(
             transport_sender.get("provider", "resend"),
             api_key,
             sender,
-            smtp_config=self.config.raw.get("smtp", {}),
+            smtp_config=smtp_config,
         )
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
         tracking_secret = _tracking_secret(self.config)
@@ -92,20 +108,20 @@ class PersonalizedEmailService:
         reply_to = signed_reply_address(
             self.config,
             contact_id=int(contact["id"]),
-            user_id=int(user["id"]) if user else None,
+            user_id=sender_user_id,
             sequence_step=step,
-        ) or _reply_to_email(user) or sender.get("email")
+        ) or _reply_to_email(sender_user) or sender.get("email")
         values = {
             **contact,
-            "sender_name": _sender_signature_name(user, sender.get("name", "")),
-            "sender_signature": _sender_signature(user, sender.get("name", "")),
+            "sender_name": _sender_signature_name(sender_user, sender.get("name", "")),
+            "sender_signature": _sender_signature(sender_user, sender.get("name", "")),
             "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
         }
         text = render_string(body, values)
-        text = _normalize_sender_signature(text, user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
+        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
         if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
@@ -115,7 +131,7 @@ class PersonalizedEmailService:
         attempt = self.repo.reserve_send_attempt(
             int(contact["id"]),
             step,
-            user_id=int(user["id"]) if user else None,
+            user_id=sender_user_id,
             provider=str(transport_sender.get("provider") or "resend"),
             sender_email=sender.get("email"),
             idempotency_key=idempotency_key,
@@ -128,7 +144,7 @@ class PersonalizedEmailService:
                 subject,
                 html_body,
                 text,
-                metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": user.get("id") if user else None},
+                metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
             )
@@ -137,7 +153,7 @@ class PersonalizedEmailService:
             if approved and hasattr(self.repo, "record_outreach_message"):
                 self.repo.record_outreach_message(
                     contact_id=int(contact["id"]),
-                    user_id=int(user["id"]) if user else None,
+                    user_id=sender_user_id,
                     draft_id=int(approved["id"]),
                     channel="email",
                     sequence_step=step,
@@ -155,8 +171,9 @@ class PersonalizedEmailService:
             "sender_email": sender.get("email"),
             "transport_sender_email": transport_sender.get("email"),
             "reply_to_email": reply_to,
-            "reply_notification_email": _reply_to_email(user),
-            "user_id": user.get("id") if user else None,
+            "reply_notification_email": _reply_to_email(sender_user),
+            "user_id": sender_user_id,
+            "actor_user_id": actor_user_id,
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
         self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
@@ -165,7 +182,7 @@ class PersonalizedEmailService:
         if hasattr(self.repo, "record_outreach_message"):
             self.repo.record_outreach_message(
                 contact_id=int(contact["id"]),
-                user_id=int(user["id"]) if user else None,
+                user_id=sender_user_id,
                 draft_id=int(approved["id"]) if approved else None,
                 channel="email",
                 sequence_step=step,
@@ -184,7 +201,7 @@ class PersonalizedEmailService:
         if hasattr(self.repo, "record_interaction"):
             self.repo.record_interaction(
                 contact_id=int(contact["id"]),
-                user_id=int(user["id"]) if user else None,
+                user_id=sender_user_id,
                 interaction_type="email_sent",
                 direction="outbound",
                 channel="email",
@@ -198,7 +215,7 @@ class PersonalizedEmailService:
             self.repo.close_open_followup_tasks(int(contact["id"]))
             LeadWorkflowService(self.repo).ensure_next_task(
                 int(contact["id"]),
-                owner_user_id=int(user["id"]) if user else contact.get("owner_user_id"),
+                owner_user_id=sender_user_id or contact.get("owner_user_id"),
             )
         if recorded:
             sender_pool.record_send(transport_sender)
@@ -261,33 +278,25 @@ class PersonalizedEmailService:
             )
 
     def _ai_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
-        fallback = self._fallback_draft(contact, user=user)
+        copy_contact = customer_visible_contact(contact)
+        fallback = self._fallback_draft(copy_contact, user=user)
         llm_cfg = self.config.raw.get("llm", {})
         provider = llm_cfg.get("provider", "deepseek")
         api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
         if not api_key:
             return fallback
-        insights = contact.get("profile_insights") if isinstance(contact.get("profile_insights"), dict) else {}
-        if not insights:
-            insights = build_customer_profile(contact)
-        source_context = _source_context(contact)
-        account_context = _account_context(contact)
-        framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(contact)
+        insights = build_customer_profile(copy_contact)
+        source_context = _source_context(copy_contact)
+        account_context = _account_context(copy_contact)
+        framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(copy_contact)
         pain_strategy = insights.get("pain_point_strategy") if isinstance(insights.get("pain_point_strategy"), dict) else {}
         followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
-        activities = self.repo.list_lifecycle_activities(int(contact["id"]), limit=5)
-        history = "\n".join(f"- {item.get('content')}" for item in activities if item.get("content"))
         research = self.repo.get_contact_research(int(contact["id"])) or {}
-        research_sources = [
-            {
-                "index": index + 1,
-                "title": item.get("title"),
-                "snippet": item.get("snippet"),
-                "published_at": item.get("published_at"),
-                "url": item.get("url"),
-            }
-            for index, item in enumerate((research.get("sources") or [])[:6])
-        ]
+        research_sources = []
+        for item in (research.get("sources") or [])[:6]:
+            cleaned = clean_public_research_item(item)
+            if cleaned:
+                research_sources.append({"index": len(research_sources) + 1, **cleaned})
         prompt = (
             "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
             "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
@@ -301,14 +310,13 @@ class PersonalizedEmailService:
             "4) ask one low-barrier qualification question, "
             "5) close briefly. "
             "Avoid generic claims such as 'we are a leading brand' or 'high quality and good price'. "
-            f"Recipient: {contact.get('first_name')} {contact.get('last_name')}; role: {contact.get('job_title')}; "
-            f"company: {contact.get('company_name')}; industry: {contact.get('industry')}; location: {contact.get('location')}; "
-            f"lifecycle stage: {contact.get('lifecycle_stage')}; profile insights: {insights}; recent notes: {history}; "
-            f"imported account context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
+            "Never expose CRM fields, lead scores, verification status, follow-up status, owners, source IDs, or internal notes. "
+            f"Recipient: {copy_contact.get('first_name')} {copy_contact.get('last_name')}; role: {copy_contact.get('job_title')}; "
+            f"company: {copy_contact.get('company_name')}; industry: {copy_contact.get('industry')}; location: {copy_contact.get('location')}; "
+            f"approved public context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
             f"five-part framework: {json.dumps(framework, ensure_ascii=False)}; "
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
             f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
-            f"research summary: {research.get('summary') or 'No fresh research available'}; "
             f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
             f"sender: {self.config.sender.get('name')}."
         )
@@ -341,12 +349,16 @@ class PersonalizedEmailService:
             draft = json.loads(text)
             subject = str(draft.get("subject") or fallback["subject"])[:160]
             body = str(draft.get("body") or fallback["body"])[:3000]
+            if contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
+                log("email_draft.rejected_internal_data", contact_id=contact.get("id"))
+                return fallback
             return {"subject": subject, "body": body}
         except Exception as exc:
             log("email_draft.failed", contact_id=contact.get("id"), error=str(exc))
             return fallback
 
     def _fallback_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
+        contact = customer_visible_contact(contact)
         company = contact.get("company_name") or "your business"
         first = contact.get("first_name") or "there"
         profile = build_customer_profile(contact)
@@ -421,6 +433,9 @@ class OutreachService:
             log("send.skipped_not_due", contact_id=contact.get("id"))
             return False
         contact = fresh
+        sender_user = sender_identity_user(self.repo, contact, user)
+        sender_user_id = int(sender_user["id"]) if sender_user else None
+        actor_user_id = int(user["id"]) if user else None
         readiness = send_readiness(contact)
         if not readiness["ok"]:
             log("send.skipped_quality_gate", contact_id=contact.get("id"), email=contact.get("email"), reasons=readiness["reasons"], score=readiness["score"])
@@ -430,21 +445,26 @@ class OutreachService:
             return False
         sender_pool = SenderPoolManager(self.config, self.repo)
         transport_sender = sender_pool.pick_sender()
-        sender = outbound_sender(self.config, user, transport_sender)
+        transport_sender, smtp_config = sender_transport_for_user(
+            self.config,
+            sender_user,
+            transport_sender,
+        )
+        sender = outbound_sender(self.config, sender_user, transport_sender)
         api_key = self.config.apis.get(f"{transport_sender.get('provider', 'resend')}_key", "")
         mailer = MailClient(
             transport_sender.get("provider", "resend"),
             api_key,
             sender,
-            smtp_config=self.config.raw.get("smtp", {}),
+            smtp_config=smtp_config,
         )
         subject = render_string(step_cfg["subject"], contact)
         base_url = self.config.raw.get("app", {}).get("public_base_url", "http://127.0.0.1:8765")
         tracking_secret = _tracking_secret(self.config)
         values = {
             **contact,
-            "sender_name": _sender_signature_name(user, sender.get("name", "")),
-            "sender_signature": _sender_signature(user, sender.get("name", "")),
+            "sender_name": _sender_signature_name(sender_user, sender.get("name", "")),
+            "sender_signature": _sender_signature(sender_user, sender.get("name", "")),
             "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
@@ -453,7 +473,7 @@ class OutreachService:
         }
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
-        text = _normalize_sender_signature(text, user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
+        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
         html_body = "<br>".join(html.escape(line) for line in text.splitlines())
         validate_email_body(subject, text)
         html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url, tracking_secret)}" width="1" height="1" alt="" />'
@@ -461,14 +481,14 @@ class OutreachService:
         reply_to = signed_reply_address(
             self.config,
             contact_id=int(contact["id"]),
-            user_id=int(user["id"]) if user else None,
+            user_id=sender_user_id,
             sequence_step=step,
-        ) or _reply_to_email(user) or sender.get("email")
+        ) or _reply_to_email(sender_user) or sender.get("email")
         idempotency_key = f"contact-{contact['id']}-step-{step}"
         attempt = self.repo.reserve_send_attempt(
             int(contact["id"]),
             step,
-            user_id=int(user["id"]) if user else None,
+            user_id=sender_user_id,
             provider=str(transport_sender.get("provider") or "resend"),
             sender_email=sender.get("email"),
             idempotency_key=idempotency_key,
@@ -482,7 +502,7 @@ class OutreachService:
                 subject,
                 html_body,
                 text,
-                metadata={"contact_id": contact["id"], "sequence_step": step, "user_id": user.get("id") if user else None},
+                metadata={"contact_id": contact["id"], "sequence_step": step, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
             )
@@ -495,8 +515,9 @@ class OutreachService:
             "sender_email": sender.get("email"),
             "transport_sender_email": transport_sender.get("email"),
             "reply_to_email": reply_to,
-            "reply_notification_email": _reply_to_email(user),
-            "user_id": user.get("id") if user else None,
+            "reply_notification_email": _reply_to_email(sender_user),
+            "user_id": sender_user_id,
+            "actor_user_id": actor_user_id,
         }
         sent = self.repo.record_sent(contact["id"], step, subject, message_id, metadata)
         self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
@@ -524,10 +545,7 @@ class OutreachService:
 
 
 def _source_context(contact: dict[str, Any]) -> dict[str, str]:
-    context = contact.get("source_context")
-    if not isinstance(context, dict):
-        return {}
-    return {str(key): str(value).strip() for key, value in context.items() if str(value or "").strip()}
+    return customer_visible_source_context(contact)
 
 
 def _contact_name(contact: dict[str, Any]) -> str:
@@ -542,16 +560,18 @@ def _account_context(contact: dict[str, Any]) -> str:
         parts.append(f"category: {context['seed_category']}")
     if context.get("seed_location"):
         parts.append(f"market: {context['seed_location']}")
-    if context.get("seed_reason"):
-        parts.append(f"research note: {context['seed_reason']}")
+    signal = context.get("public_signal") or context.get("seed_reason")
+    if signal:
+        parts.append(f"public signal: {signal}")
     return "; ".join(parts)
 
 
 def _fallback_opening(contact: dict[str, Any]) -> str:
     company = contact.get("company_name") or "your company"
     context = _source_context(contact)
-    if context.get("seed_reason"):
-        return f"I noticed {company} in our account research: {context['seed_reason']}"
+    signal = context.get("public_signal") or context.get("seed_reason")
+    if signal:
+        return f"I noticed this public signal about {company}: {signal}"
     if context.get("seed_category"):
         return f"I noticed {company} is relevant to {context['seed_category']} and thought this might be worth a quick conversation."
     return f"I noticed your work as {contact.get('job_title') or 'a leader'} at {company} and thought this might be relevant."

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-24 - Personal sales mailboxes and safe outreach content
+
+- Route foreground email generation and sending through the logged-in salesperson's configured SMTP identity, while background jobs fall back to the contact owner.
+- Poll the global mailbox and every active personal IMAP mailbox with deduplication so replies can return to the correct salesperson and customer record.
+- Add deployable mailbox profiles for Ivan, Haiwen, April, Viki, Kim, and Vivi; incomplete or inactive declared mailboxes now fail closed instead of silently sending from the shared account.
+- Sanitize AI and fallback email context so internal CRM fields, research notes, scoring labels, and workflow metadata cannot leak into customer-visible copy.
+- Improve public LinkedIn result scoring and work-queue consistency while preserving owner isolation and guarded contact progression.
+- Pass the full Python suite (`211 passed`), frontend production build, isolated PostgreSQL Docker smoke test, and production SMTP/IMAP acceptance checks.
+
 ## 2026-07-22 - Automatic Southeast Asia hiring intelligence
 
 - Detect Singapore, Malaysia, Thailand, Indonesia, Vietnam, and the Philippines automatically; no sales-facing region switch or extra workflow step is added.

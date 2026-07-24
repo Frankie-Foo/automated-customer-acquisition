@@ -8,6 +8,7 @@ from email.utils import formataddr, make_msgid
 from typing import Any
 
 from .http import HttpClient
+from .outreach_copy import contains_internal_outreach_data, customer_visible_source_context
 
 
 class ProxycurlClient:
@@ -593,10 +594,7 @@ def _extract_chat_text(data: dict[str, Any]) -> str:
 
 
 def _contact_source_context(contact: dict[str, Any]) -> dict[str, str]:
-    context = contact.get("source_context")
-    if not isinstance(context, dict):
-        return {}
-    return {str(key): str(value).strip() for key, value in context.items() if str(value or "").strip()}
+    return customer_visible_source_context(contact)
 
 
 def _fallback_opener(contact: dict[str, Any], *, reason: str = "", category: str = "") -> str:
@@ -619,6 +617,6 @@ def _guard_opener(text: str, fallback: str) -> str:
         "uses ", "case study", "recent", "i'm the founder", "i am the founder", "our saas",
         "our platform", "our approach",
     ]
-    if not text or any(token.lower() in text.lower() for token in risky):
+    if not text or contains_internal_outreach_data(text) or any(token.lower() in text.lower() for token in risky):
         return fallback
     return text

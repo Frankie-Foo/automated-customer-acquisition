@@ -339,6 +339,18 @@ class Repository:
                 """
             ).fetchall()
 
+    def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, username, display_name, role, daily_source_limit, daily_send_limit,
+                       reply_to_email, sender_alias_localpart, active, must_change_password, created_at
+                FROM sales_users
+                WHERE id = %s
+                """,
+                (user_id,),
+            ).fetchone()
+
     def update_user(
         self,
         user_id: int,

@@ -237,6 +237,72 @@ class LinkedInPublicSearchService:
         try:
             seen_urls: set[str] = set()
             company_domain = _domain_from_website(criteria.get("company_website") or "")
+            known_profile_url = _normalize_linkedin_url(criteria.get("known_profile_url"))
+            if known_profile_url and _target_name(criteria):
+                parsed = parse_linkedin_search_item(
+                    {
+                        "title": " - ".join(
+                            part
+                            for part in (
+                                _target_name(criteria),
+                                _clean(criteria.get("role") or criteria.get("title")),
+                                _clean(criteria.get("company_keyword")),
+                            )
+                            if part
+                        ),
+                        "snippet": " ".join(
+                            part
+                            for part in (
+                                _clean(criteria.get("role") or criteria.get("title")),
+                                f"at {_clean(criteria.get('company_keyword'))}" if criteria.get("company_keyword") else "",
+                                _clean(criteria.get("location")),
+                            )
+                            if part
+                        ),
+                        "link": known_profile_url,
+                    },
+                    criteria,
+                )
+                if parsed:
+                    parsed["company_domain"] = company_domain
+                    parsed["observed_company_domain"] = company_domain
+                    parsed["lead_score"], parsed["match_evidence"] = score_lead_details(parsed, criteria)
+                    parsed["match_confidence"] = parsed["lead_score"]
+                    parsed["match_status"] = classify_identity_match(parsed, criteria)
+                    if auto_generate_candidates:
+                        generated = [asdict(item) for item in generate_public_search_email_candidates(parsed, self.repo)]
+                        parsed["email_candidates"] = _merge_email_candidates(
+                            generated,
+                            criteria.get("company_email_candidates") or [],
+                        )
+                    seen_urls.add(known_profile_url)
+                    result = self.repo.create_lead_search_result(task["id"], parsed, status="candidate")
+                    all_results.append(result)
+                    contact = _contact_from_search_result(parsed, task["id"])
+                    duplicate = self.repo.find_duplicate_contact(contact)
+                    if duplicate:
+                        skipped += 1
+                        self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
+                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
+                    else:
+                        inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                        if inserted:
+                            promoted += 1
+                            promoted_contact = self.repo.get_contact_by_linkedin_url(known_profile_url)
+                            if promoted_contact:
+                                self.repo.mark_lead_search_result_promoted(result["id"], promoted_contact["id"])
+                                if bool(criteria.get("high_confidence_verify", True)):
+                                    self._verify_high_confidence_candidates(
+                                        promoted_contact,
+                                        parsed.get("email_candidates") or [],
+                                    )
+                        else:
+                            skipped += 1
+                            self.repo.update_lead_search_result_status(
+                                result["id"],
+                                "duplicate",
+                                "duplicate_or_existing_contact",
+                            )
             if hunter and (company_domain or criteria.get("company_keyword")):
                 provider_queries += 1
                 hunter_result = hunter.search_domain_emails(
@@ -253,7 +319,7 @@ class LinkedInPublicSearchService:
                     selected=0,
                     credits_used=1 if hunter_rows else 0,
                 )
-                for item in hunter_rows[:limit]:
+                for item in hunter_rows[:max(0, limit - len(all_results))]:
                     parsed = parse_hunter_domain_email(item, criteria, hunter_result)
                     if not parsed or parsed["linkedin_url"] in seen_urls:
                         continue
@@ -434,6 +500,7 @@ class LinkedInPublicSearchService:
         tasks: list[dict[str, Any]] = []
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
         for seed in seeds:
+            seed = normalize_company_seed_identity(seed)
             phone_candidates = list(seed.get("phone_candidates") or [])
             seed = self.russia_hiring_signals.enrich_seed(seed)
             seed = self.southeast_asia_hiring_signals.enrich_seed(seed)
@@ -479,7 +546,10 @@ class LinkedInPublicSearchService:
             if not seed.get("phone") and not phone_candidates:
                 phone_candidates = channels["phones"]
             seed["public_channels"] = channels
-            seed["company_email_candidates"] = channels["emails"]
+            seed["company_email_candidates"] = _merge_email_candidates(
+                list(seed.get("email_candidates") or []),
+                channels["emails"],
+            )
             criteria = company_seed_to_search_criteria(seed)
             result = self.run(criteria, per_company_limit, user=user)
             result["company_name"] = seed.get("company_name")
@@ -618,6 +688,11 @@ def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
         queries.append(f'site:linkedin.com/in "{role}" "{location}"')
     if role and company:
         queries.append(f'site:linkedin.com/in "{role}" "{company}"')
+    if company:
+        queries.append(f'site:linkedin.com/in "{company}"')
+    for title in role_keywords[:6]:
+        if title and company:
+            queries.append(f'site:linkedin.com/in "{title}" "{company}"')
     for title in role_keywords[:10]:
         title_parts = [part for part in [title, industry, location, company] if part]
         if title_parts:
@@ -643,6 +718,7 @@ def build_search_client(config: AppConfig) -> FallbackSearchClient | None:
 
 
 def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
+    seed = normalize_company_seed_identity(seed)
     titles = seed.get("job_titles") or []
     if isinstance(titles, str):
         titles = [item.strip() for item in re.split(r"[,;，；]", titles) if item.strip()]
@@ -656,6 +732,8 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "location": seed.get("location") or "",
         "company_keyword": seed.get("company_name") or seed.get("company_domain") or "",
         "company_website": seed.get("company_domain") or seed.get("website") or "",
+        "person_name": seed.get("person_name") or "",
+        "known_profile_url": seed.get("known_profile_url") or "",
         "seed_reason": seed.get("reason") or "",
         "seed_category": seed.get("category") or "",
         "public_channels": seed.get("public_channels") or {},
@@ -1220,6 +1298,67 @@ def _source_context_from_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     if isinstance(signals, list) and signals:
         context["hiring_signals"] = signals[:10]
     return context
+
+
+def normalize_company_seed_identity(seed: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(seed)
+    website = _clean(seed.get("website"))
+    parsed_url = urllib.parse.urlparse(website)
+    host = parsed_url.netloc.casefold().removeprefix("www.").removeprefix("my.")
+    company_name = _clean(seed.get("company_name"))
+    is_linkedin_profile = host == "linkedin.com" and parsed_url.path.casefold().startswith("/in/")
+    has_named_profile_source = is_linkedin_profile or (
+        host == "theorg.com" and bool(re.search(r"\s+-\s+", company_name))
+    )
+    if not has_named_profile_source:
+        return normalized
+
+    name = ""
+    parent_company = company_name
+    parts = re.split(r"\s+-\s+", company_name, maxsplit=1)
+    if len(parts) == 2:
+        parent_company, name = parts
+    elif is_linkedin_profile:
+        slug = parsed_url.path.strip("/").split("/")[-1]
+        slug_tokens = [
+            token
+            for token in re.split(r"[-_]+", slug)
+            if token and not any(char.isdigit() for char in token)
+        ]
+        name = " ".join(token.title() for token in slug_tokens[:4])
+
+    if name:
+        normalized["person_name"] = name
+    if parent_company:
+        normalized["company_name"] = parent_company
+        normalized["source_company_name"] = company_name
+    if is_linkedin_profile:
+        normalized["known_profile_url"] = website
+
+    candidates = [dict(item) for item in seed.get("email_candidates") or []]
+    email = _clean(seed.get("email"))
+    if email and not candidates:
+        candidates.append(
+            asdict(EmailCandidate.build(email, "company_seed", "provided", 50, "company_generic"))
+        )
+    person_tokens = _identity_tokens(name)
+    for candidate in candidates:
+        candidate_email = str(candidate.get("email") or candidate.get("value") or "").strip().lower()
+        if not is_full_email(candidate_email):
+            continue
+        local, email_domain = candidate_email.split("@", 1)
+        local_tokens = _identity_tokens(local.replace(".", " ").replace("_", " ").replace("-", " "))
+        if person_tokens and len(person_tokens & local_tokens) >= min(2, len(person_tokens)):
+            candidate.update(category="personal_work", confidence=max(90, int(candidate.get("confidence") or 0)))
+        if email_domain not in PUBLIC_MAILBOX_DOMAINS:
+            normalized["company_domain"] = email_domain
+            normalized["website"] = f"https://{email_domain}"
+    normalized["email_candidates"] = candidates
+    normalized["company_email_candidates"] = _merge_email_candidates(
+        list(seed.get("company_email_candidates") or []),
+        candidates,
+    )
+    return normalized
 
 
 def _target_name(criteria: dict[str, Any]) -> str:

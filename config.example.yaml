@@ -68,6 +68,128 @@ imap:
   timeout: 20
   lookback_days: ${IMAP_LOOKBACK_DAYS}
 
+sales_mailboxes:
+  ivan:
+    active: ${IVAN_MAILBOX_ACTIVE}
+    email: ${IVAN_MAILBOX_EMAIL}
+    smtp:
+      host: ${IVAN_SMTP_HOST}
+      port: ${IVAN_SMTP_PORT}
+      username: ${IVAN_SMTP_USER}
+      password: ${IVAN_SMTP_PASSWORD}
+      security: ${IVAN_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${IVAN_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${IVAN_IMAP_HOST}
+      port: ${IVAN_IMAP_PORT}
+      username: ${IVAN_IMAP_USER}
+      password: ${IVAN_IMAP_PASSWORD}
+      folder: ${IVAN_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+  april:
+    active: ${APRIL_MAILBOX_ACTIVE}
+    email: ${APRIL_MAILBOX_EMAIL}
+    smtp:
+      host: ${APRIL_SMTP_HOST}
+      port: ${APRIL_SMTP_PORT}
+      username: ${APRIL_SMTP_USER}
+      password: ${APRIL_SMTP_PASSWORD}
+      security: ${APRIL_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${APRIL_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${APRIL_IMAP_HOST}
+      port: ${APRIL_IMAP_PORT}
+      username: ${APRIL_IMAP_USER}
+      password: ${APRIL_IMAP_PASSWORD}
+      folder: ${APRIL_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+  haiwen:
+    active: ${HAIWEN_MAILBOX_ACTIVE}
+    email: ${HAIWEN_MAILBOX_EMAIL}
+    smtp:
+      host: ${HAIWEN_SMTP_HOST}
+      port: ${HAIWEN_SMTP_PORT}
+      username: ${HAIWEN_SMTP_USER}
+      password: ${HAIWEN_SMTP_PASSWORD}
+      security: ${HAIWEN_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${HAIWEN_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${HAIWEN_IMAP_HOST}
+      port: ${HAIWEN_IMAP_PORT}
+      username: ${HAIWEN_IMAP_USER}
+      password: ${HAIWEN_IMAP_PASSWORD}
+      folder: ${HAIWEN_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+  viki:
+    active: ${VIKI_MAILBOX_ACTIVE}
+    email: ${VIKI_MAILBOX_EMAIL}
+    smtp:
+      host: ${VIKI_SMTP_HOST}
+      port: ${VIKI_SMTP_PORT}
+      username: ${VIKI_SMTP_USER}
+      password: ${VIKI_SMTP_PASSWORD}
+      security: ${VIKI_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${VIKI_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${VIKI_IMAP_HOST}
+      port: ${VIKI_IMAP_PORT}
+      username: ${VIKI_IMAP_USER}
+      password: ${VIKI_IMAP_PASSWORD}
+      folder: ${VIKI_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+  kim:
+    active: ${KIM_MAILBOX_ACTIVE}
+    email: ${KIM_MAILBOX_EMAIL}
+    smtp:
+      host: ${KIM_SMTP_HOST}
+      port: ${KIM_SMTP_PORT}
+      username: ${KIM_SMTP_USER}
+      password: ${KIM_SMTP_PASSWORD}
+      security: ${KIM_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${KIM_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${KIM_IMAP_HOST}
+      port: ${KIM_IMAP_PORT}
+      username: ${KIM_IMAP_USER}
+      password: ${KIM_IMAP_PASSWORD}
+      folder: ${KIM_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+  vivi:
+    active: ${VIVI_MAILBOX_ACTIVE}
+    email: ${VIVI_MAILBOX_EMAIL}
+    smtp:
+      host: ${VIVI_SMTP_HOST}
+      port: ${VIVI_SMTP_PORT}
+      username: ${VIVI_SMTP_USER}
+      password: ${VIVI_SMTP_PASSWORD}
+      security: ${VIVI_SMTP_SECURITY}
+      timeout: 30
+      envelope_from: ${VIVI_SMTP_USER}
+      allow_from_alias: false
+    imap:
+      host: ${VIVI_IMAP_HOST}
+      port: ${VIVI_IMAP_PORT}
+      username: ${VIVI_IMAP_USER}
+      password: ${VIVI_IMAP_PASSWORD}
+      folder: ${VIVI_IMAP_FOLDER}
+      timeout: 20
+      lookback_days: ${IMAP_LOOKBACK_DAYS}
+
 sender_pool:
   strategy: round_robin
   accounts:

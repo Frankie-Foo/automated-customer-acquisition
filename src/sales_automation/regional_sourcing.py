@@ -144,7 +144,11 @@ for aliases, country, languages in (
         label="Southeast Asia enhanced",
         country=country,
         languages=languages,
-        role_terms=(*_SOUTHEAST_ASIA_LOCAL_ROLES.get(country, ()), *_SOUTHEAST_ASIA_ENGLISH_ROLES),
+        role_terms=(
+            *_SOUTHEAST_ASIA_ENGLISH_ROLES[:6],
+            *_SOUTHEAST_ASIA_LOCAL_ROLES.get(country, ()),
+            *_SOUTHEAST_ASIA_ENGLISH_ROLES[6:],
+        ),
         channel_terms=_SOUTHEAST_ASIA_CHANNELS.get(country, _SOUTHEAST_ASIA_CHANNELS["SG"]),
     )
 

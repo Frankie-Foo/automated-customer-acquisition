@@ -158,6 +158,101 @@ def test_company_seed_to_search_criteria_expands_job_titles():
     assert criteria["role"] == "founder"
     assert criteria["role_keywords"] == ["founder", "owner", "partner"]
     assert any('"owner"' in query and '"Luxepolis"' in query for query in queries)
+    assert 'site:linkedin.com/in "owner" "Luxepolis"' in queries
+
+
+def test_company_seed_to_search_criteria_extracts_known_linkedin_identity():
+    criteria = company_seed_to_search_criteria({
+        "company_name": "CG Computers / Switch - Lawrence Seng",
+        "website": "https://my.linkedin.com/in/lawrence-seng",
+        "company_domain": "my.linkedin.com",
+        "job_titles": ["Business Relations General Manager"],
+        "location": "Malaysia",
+        "email": "feedback@switch.com.my",
+        "email_candidates": [{
+            "email": "feedback@switch.com.my",
+            "source": "company_seed",
+            "status": "provided",
+            "category": "company_generic",
+            "confidence": 50,
+        }],
+    })
+
+    assert criteria["person_name"] == "Lawrence Seng"
+    assert criteria["company_keyword"] == "CG Computers / Switch"
+    assert criteria["company_website"] == "switch.com.my"
+    assert criteria["known_profile_url"] == "https://my.linkedin.com/in/lawrence-seng"
+
+
+def test_company_seed_to_search_criteria_marks_matching_provided_email_as_personal():
+    criteria = company_seed_to_search_criteria({
+        "company_name": "Machines Sdn Bhd",
+        "website": "https://www.linkedin.com/in/andrew-cheng-7b13864/",
+        "job_titles": ["CEO"],
+        "location": "Malaysia",
+        "email": "andrew.cheng@machines.com.my",
+        "email_candidates": [{
+            "email": "andrew.cheng@machines.com.my",
+            "source": "company_seed",
+            "status": "provided",
+            "category": "company_generic",
+            "confidence": 50,
+        }],
+    })
+
+    assert criteria["person_name"] == "Andrew Cheng"
+    assert criteria["company_website"] == "machines.com.my"
+    assert criteria["company_email_candidates"][0]["category"] == "personal_work"
+    assert criteria["company_email_candidates"][0]["confidence"] == 90
+
+
+def test_run_company_seeds_keeps_provided_company_email_candidates(monkeypatch):
+    class Config:
+        apis = {}
+        raw = {"sourcing": {"linkedin_public_search": {}}}
+
+    class Repo:
+        pass
+
+    service = LinkedInPublicSearchService(Config(), Repo())
+    monkeypatch.setattr(
+        "sales_automation.linkedin_public_search.find_public_company_channels",
+        lambda domain: {"phones": [], "emails": [], "socials": []},
+    )
+    service.russia_hiring_signals.enrich_seed = lambda seed: seed
+    service.southeast_asia_hiring_signals.enrich_seed = lambda seed: seed
+    service.domain_resolver.resolve = lambda *args, **kwargs: "example.com"
+    service.run = lambda criteria, limit, user: {
+        "task_id": 1,
+        "results": 0,
+        "promoted": 0,
+        "skipped": 0,
+        "company_email_candidates": criteria["company_email_candidates"],
+    }
+
+    result = service.run_company_seeds(
+        [{
+            "company_name": "Example",
+            "company_domain": "example.com",
+            "email_candidates": [{
+                "email": "contact@example.com",
+                "source": "company_seed",
+                "status": "provided",
+                "category": "company_generic",
+                "confidence": 50,
+            }],
+        }],
+        per_company_limit=1,
+        user={"id": 1, "role": "admin"},
+    )
+
+    assert result["tasks"][0]["company_email_candidates"] == [{
+        "email": "contact@example.com",
+        "source": "company_seed",
+        "status": "provided",
+        "category": "company_generic",
+        "confidence": 50,
+    }]
 
 
 def test_company_seed_to_search_criteria_keeps_automatic_hiring_evidence():

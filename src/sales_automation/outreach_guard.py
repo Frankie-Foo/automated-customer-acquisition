@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from .clients import is_full_email
+from .outreach_copy import contains_internal_outreach_data
 
 
 ROLE_BASED_PREFIXES = {
@@ -140,6 +141,8 @@ def validate_email_body(subject: str, text: str, *, min_chars: int = 80) -> None
         raise ValueError(f"Email body too short: {len(stripped)} chars")
     if re.search(r"\{\{[^}]+\}\}|\[[A-Za-z_ ]+\]", stripped):
         raise ValueError("Email body still contains unresolved placeholders")
+    if contains_internal_outreach_data(stripped):
+        raise ValueError("Email body contains internal CRM or research fields")
 
 
 def send_delay_seconds(config: Any) -> float:

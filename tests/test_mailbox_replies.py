@@ -7,13 +7,15 @@ from sales_automation.services.mailbox import MailboxReplyService
 
 
 class FakeImap:
-    def __init__(self, messages):
+    def __init__(self, messages, *, username="frank.fu@vertu.com", password="client-password"):
         self.messages = messages
         self.fetch_queries = []
+        self.username = username
+        self.password = password
 
     def login(self, username, password):
-        assert username == "frank.fu@vertu.com"
-        assert password == "client-password"
+        assert username == self.username
+        assert password == self.password
         return "OK", []
 
     def select(self, folder, readonly=False):
@@ -145,3 +147,45 @@ def test_mailbox_poll_ignores_automated_messages():
 
     assert stats["ignored"] == 1
     assert not webhook.payloads
+
+
+def test_mailbox_poll_aggregates_global_and_sales_mailboxes():
+    global_mailbox = FakeImap(
+        [reply_message(message_id="<global-reply@example.com>")],
+    )
+    ivan_mailbox = FakeImap(
+        [reply_message(message_id="<ivan-reply@example.com>")],
+        username="ivan.yu@vertu.com",
+        password="ivan-password",
+    )
+    mailboxes = iter([global_mailbox, ivan_mailbox])
+    cfg = config()
+    cfg.raw["sales_mailboxes"] = {
+        "ivan": {
+            "active": True,
+            "smtp": {
+                "username": "ivan.yu@vertu.com",
+                "password": "ivan-password",
+            },
+            "imap": {
+                "host": "imap.exmail.qq.com",
+                "username": "ivan.yu@vertu.com",
+                "password": "ivan-password",
+                "folder": "INBOX",
+            },
+        }
+    }
+    repo = Repo()
+    webhook = Webhook()
+    service = MailboxReplyService(
+        cfg,
+        repo,
+        imap_factory=lambda *args, **kwargs: next(mailboxes),
+        webhook_service=webhook,
+    )
+
+    stats = service.poll_once(10)
+
+    assert stats == {"scanned": 2, "matched": 2, "recorded": 2, "duplicates": 0, "ignored": 0}
+    assert webhook.payloads[0][1]["mailbox_key"] is None
+    assert webhook.payloads[1][1]["mailbox_key"] == "ivan"
