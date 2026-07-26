@@ -9,6 +9,24 @@ def test_detects_middle_east_country_and_languages():
     assert profile.search_languages == ("en", "ar")
 
 
+def test_detects_iran_and_adds_persian_roles_and_channels():
+    profile = detect_regional_profile("Tehran, Iran")
+    terms = regional_role_terms({"role": "owner", "location": "Tehran, Iran"})
+    options = search_options({"location": "Tehran, Iran"})
+
+    assert profile.key == "mena"
+    assert profile.label == "Iran enhanced"
+    assert profile.country == "IR"
+    assert profile.search_languages == ("fa", "en")
+    assert "مدیر فروش" in terms
+    assert "IranTalent" in profile.channel_terms
+    assert "Telegram" in profile.channel_terms
+    assert options == [
+        {"country": "IR", "search_lang": "fa", "extra_snippets": True},
+        {"country": "IR", "search_lang": "en", "extra_snippets": True},
+    ]
+
+
 def test_detects_central_asia_and_adds_russian_roles():
     profile = detect_regional_profile("Almaty, Kazakhstan")
     terms = regional_role_terms({"role": "owner", "location": "Almaty, Kazakhstan"})
@@ -19,8 +37,13 @@ def test_detects_central_asia_and_adds_russian_roles():
 
 
 def test_detects_south_asia_and_keeps_country_targeting():
+    profile = detect_regional_profile("Mumbai, India")
     options = search_options({"location": "India", "industry": "five star hotels"})
+    terms = regional_role_terms({"role": "owner", "location": "Mumbai, India"})
 
+    assert profile.label == "India enhanced"
+    assert "category head" in terms
+    assert "Naukri" in profile.channel_terms
     assert options == [{"country": "IN", "search_lang": "en", "extra_snippets": True}]
 
 

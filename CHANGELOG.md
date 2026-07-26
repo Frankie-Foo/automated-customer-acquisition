@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-07-27 - India and Iran regional intelligence
+
+- Detect Indian and Iranian accounts automatically from country, location, local aliases, and company domains without adding sales-facing switches.
+- Add India-specific decision-maker and channel searches, with public hiring signals from Naukri, Indeed India, and Foundit.
+- Add Persian decision-maker, sales, marketing, retail, procurement, product, and design terms, with public hiring signals from IranTalent, JobVision, Jobinja, Divar, Sheypoor, and e-estekhdam.
+- Accept Persian URL paths and company names, reject expired listings, and require individual vacancy titles to contain the matched role so noisy snippets do not inflate account scores.
+- Feed explainable hiring evidence into account context, expansion scoring, LinkedIn discovery, and personalized outreach while keeping optional provider failures non-blocking.
+- Stop after the first credible hiring platform by default to limit public-search cost, with bounded query and result limits available in configuration.
+
 ## 2026-07-24 - Personal sales mailboxes and safe outreach content
 
 - Route foreground email generation and sending through the logged-in salesperson's configured SMTP identity, while background jobs fall back to the contact owner.

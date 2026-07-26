@@ -70,14 +70,15 @@ VERTICAL_TERMS = {
     "luxury": (
         "luxury", "premium", "boutique", "client advisor", "beauty advisor", "jewellery",
         "jewelry", "watch", "fashion", "high-end", "mewah", "cao cấp", "หรู",
+        "لوکس", "جواهر", "طلا", "ساعت",
     ),
     "electronics": (
         "consumer electronics", "electronics", "smartphone", "mobile phone", "telecom",
-        "gadget", "digital retail", "3c", "điện tử", "elektronik",
+        "gadget", "digital retail", "3c", "điện tử", "elektronik", "موبایل", "تلفن همراه",
     ),
     "automotive": (
         "automotive", "automobile", "car dealer", "dealership", "vehicle", "sales mobil",
-        "sale xe ô tô", "ô tô", "otomotif", "รถยนต์",
+        "sale xe ô tô", "ô tô", "otomotif", "รถยนต์", "خودرو",
     ),
 }
 
@@ -99,12 +100,17 @@ ARCHIVE_MARKERS = (
     "ปิดรับสมัคร",
     "หมดเขตรับสมัคร",
     "jawatan telah ditutup",
+    "آگهی منقضی شده",
+    "این آگهی منقضی شده",
+    "پایان مهلت استخدام",
+    "فرصت شغلی بسته شده",
 )
 
 LEGAL_FORM_NOISE = {
     "berhad", "company", "corporation", "inc", "joint", "limited", "llc", "ltd", "plc",
     "pte", "pt", "sdn", "tbk", "the", "and", "co", "corp", "company", "บริษัท",
     "công", "ty", "cổ", "phần",
+    "شرکت", "گروه", "صنایع", "هلدینگ",
 }
 
 
@@ -307,6 +313,8 @@ def parse_platform_hiring_signals(
     platform: HiringPlatform,
     country: str,
     location: Any = "",
+    role_terms: tuple[str, ...] = HIRING_ROLE_TERMS,
+    decision_role_terms: tuple[str, ...] = DECISION_ROLE_TERMS,
 ) -> list[dict[str, Any]]:
     signals: list[dict[str, Any]] = []
     expected = _company_tokens(company_name)
@@ -326,7 +334,7 @@ def parse_platform_hiring_signals(
             continue
         if not _company_names_match(expected, _company_tokens(evidence_text)):
             continue
-        role_match = next((term for term in HIRING_ROLE_TERMS if term in evidence_text), "")
+        role_match = next((term for term in role_terms if term in evidence_text), "")
         openings_count = _extract_openings_count(evidence_text)
         if not role_match and openings_count >= 2:
             role_match = "multiple_openings"
@@ -346,7 +354,7 @@ def parse_platform_hiring_signals(
             "location": str(location or "").strip(),
             "published_at": str(row.get("published_at") or row.get("date") or ""),
             "role_match": role_match,
-            "decision_role": role_match in DECISION_ROLE_TERMS,
+            "decision_role": role_match in decision_role_terms,
             "vertical_match": vertical_match,
             "location_match": bool(location_text and location_text in evidence_text),
             "platform_priority": platform.priority,
@@ -404,10 +412,11 @@ def summarize_hiring_signals(
 
 
 def _looks_like_job_page(path: str) -> bool:
-    normalized = str(path or "").casefold()
+    normalized = urllib.parse.unquote(str(path or "")).casefold()
     markers = (
         "/job", "/jobs", "-jobs", "/opportunities/", "/explore/", "/lowongan",
-        "/viec-lam", "/tuyen-dung", "/career",
+        "/viec-lam", "/tuyen-dung", "/career", "/viewjob", "/employment",
+        "/vacancy", "/استخدام", "/فرصت-شغلی",
     )
     return any(marker in normalized for marker in markers)
 
@@ -442,7 +451,11 @@ def _company_names_match(expected: set[str], observed: set[str]) -> bool:
 def _company_tokens(value: Any) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-z0-9\u00c0-\u024f\u0e00-\u0e7f\u1e00-\u1eff]+", _normalize(value), flags=re.I)
+        for token in re.findall(
+            r"[a-z0-9\u00c0-\u024f\u0600-\u06ff\u0e00-\u0e7f\u1e00-\u1eff]+",
+            _normalize(value),
+            flags=re.I,
+        )
         if len(token) > 1 and token not in LEGAL_FORM_NOISE
     }
 

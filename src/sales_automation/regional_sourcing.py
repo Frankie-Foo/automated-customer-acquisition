@@ -51,6 +51,45 @@ _MENA_ROLES = (
     "مدير عام", "المدير التجاري", "مالك",
 )
 _MENA_CHANNELS = ("official website", "contact", "WhatsApp", "Instagram", "وكيل", "موزع", "متجر فاخر")
+_IRAN_ROLES = (
+    "مدیرعامل",
+    "مدیر بازرگانی",
+    "مدیر فروش",
+    "مدیر خرده فروشی",
+    "مدیر فروشگاه",
+    "مدیر توسعه کسب و کار",
+    "مدیر بازاریابی",
+    "مدیر خرید",
+    "مدیر محصول",
+    "مدیر طراحی",
+    "طراح صنعتی",
+    "کارشناس فروش",
+    "owner",
+    "founder",
+    "managing director",
+    "commercial director",
+    "retail director",
+    "store manager",
+    "business development director",
+    "marketing director",
+    "procurement manager",
+    "product director",
+    "design director",
+)
+_IRAN_CHANNELS = (
+    "وب‌سایت رسمی",
+    "official website",
+    "تماس با ما",
+    "نمایندگی رسمی",
+    "توزیع‌کننده",
+    "فروشگاه لوکس",
+    "IranTalent",
+    "JobVision",
+    "Jobinja",
+    "Divar",
+    "Telegram",
+    "Instagram",
+)
 _CENTRAL_ASIA_ROLES = (
     "owner", "founder", "general director", "commercial director",
     "владелец", "основатель", "генеральный директор", "коммерческий директор",
@@ -88,6 +127,34 @@ _SOUTHEAST_ASIA_CHANNELS = {
 }
 _SOUTH_ASIA_ROLES = ("owner", "founder", "managing director", "business head", "purchase head", "director")
 _SOUTH_ASIA_CHANNELS = ("official website", "contact", "authorized dealer", "distributor", "Instagram", "WhatsApp")
+_INDIA_ROLES = (
+    "owner",
+    "founder",
+    "managing director",
+    "country head",
+    "business head",
+    "commercial director",
+    "retail head",
+    "category head",
+    "purchase head",
+    "procurement head",
+    "channel sales head",
+    "regional sales manager",
+    "franchise development head",
+    "store operations head",
+    "luxury retail buyer",
+)
+_INDIA_CHANNELS = (
+    "official website",
+    "contact",
+    "authorized dealer",
+    "distributor",
+    "Naukri",
+    "Indeed India",
+    "Foundit",
+    "Instagram",
+    "WhatsApp",
+)
 
 for aliases, country, languages in (
     (("united arab emirates", "uae", "dubai", "abu dhabi", "الإمارات"), "AE", ("en", "ar")),
@@ -100,9 +167,18 @@ for aliases, country, languages in (
     (("jordan", "amman", "الأردن"), "JO", ("en", "ar")),
     (("lebanon", "beirut", "لبنان"), "LB", ("en", "ar")),
     (("egypt", "cairo", "مصر"), "EG", ("en", "ar")),
-    (("iran", "tehran", "ایران"), "IR", ("en", "fa")),
 ):
     _register(aliases, key="mena", label="Middle East enhanced", country=country, languages=languages, role_terms=_MENA_ROLES, channel_terms=_MENA_CHANNELS)
+
+_register(
+    ("iran", "islamic republic of iran", "tehran", "ایران", "تهران"),
+    key="mena",
+    label="Iran enhanced",
+    country="IR",
+    languages=("fa", "en"),
+    role_terms=_IRAN_ROLES,
+    channel_terms=_IRAN_CHANNELS,
+)
 
 for aliases, country in (
     (("kazakhstan", "almaty", "astana", "қазақстан", "казахстан"), "KZ"),
@@ -152,8 +228,33 @@ for aliases, country, languages in (
         channel_terms=_SOUTHEAST_ASIA_CHANNELS.get(country, _SOUTHEAST_ASIA_CHANNELS["SG"]),
     )
 
+_register(
+    (
+        "india",
+        "bharat",
+        "new delhi",
+        "delhi",
+        "mumbai",
+        "bengaluru",
+        "bangalore",
+        "hyderabad",
+        "chennai",
+        "pune",
+        "kolkata",
+        "gurugram",
+        "gurgaon",
+        "noida",
+        "भारत",
+    ),
+    key="south_asia",
+    label="India enhanced",
+    country="IN",
+    languages=("en",),
+    role_terms=_INDIA_ROLES,
+    channel_terms=_INDIA_CHANNELS,
+)
+
 for aliases, country in (
-    (("india", "भारत"), "IN"),
     (("pakistan", "پاکستان"), "PK"),
     (("bangladesh", "বাংলাদেশ"), "BD"),
     (("sri lanka", "ශ්‍රී ලංකාව"), "LK"),

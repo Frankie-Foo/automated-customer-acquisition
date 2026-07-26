@@ -15,6 +15,8 @@ from .config import AppConfig
 from .db import Repository
 from .email_discovery import EmailCandidate, guess_email_candidates
 from .http import HttpClient
+from .india_hiring_signals import IndiaHiringSignalService
+from .iran_hiring_signals import IranHiringSignalService
 from .logging_utils import log
 from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
 from .regional_sourcing import detect_regional_profile, regional_role_terms, search_options
@@ -205,10 +207,14 @@ class LinkedInPublicSearchService:
         self.cfg = config.raw.get("sourcing", {}).get("linkedin_public_search", {})
         self.client = build_search_client(config)
         self.domain_resolver = CompanyDomainResolver(self.client)
+        self.india_hiring_signals = IndiaHiringSignalService(config, public_search=self.client)
+        self.iran_hiring_signals = IranHiringSignalService(config, public_search=self.client)
         self.russia_hiring_signals = RussiaHiringSignalService(config, public_search=self.client)
         self.southeast_asia_hiring_signals = SoutheastAsiaHiringSignalService(config, public_search=self.client)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
+        criteria = self.india_hiring_signals.enrich_criteria(criteria)
+        criteria = self.iran_hiring_signals.enrich_criteria(criteria)
         criteria = self.russia_hiring_signals.enrich_criteria(criteria)
         criteria = self.southeast_asia_hiring_signals.enrich_criteria(criteria)
         hunter_key = self.config.apis.get("hunter_key", "")
@@ -502,6 +508,8 @@ class LinkedInPublicSearchService:
         for seed in seeds:
             seed = normalize_company_seed_identity(seed)
             phone_candidates = list(seed.get("phone_candidates") or [])
+            seed = self.india_hiring_signals.enrich_seed(seed)
+            seed = self.iran_hiring_signals.enrich_seed(seed)
             seed = self.russia_hiring_signals.enrich_seed(seed)
             seed = self.southeast_asia_hiring_signals.enrich_seed(seed)
             seed_domain = self.domain_resolver.resolve(
@@ -739,6 +747,8 @@ def company_seed_to_search_criteria(seed: dict[str, Any]) -> dict[str, Any]:
         "public_channels": seed.get("public_channels") or {},
         "company_email_candidates": seed.get("company_email_candidates") or [],
         "hiring_signal_checked": bool(seed.get("hiring_signal_checked")),
+        "india_hiring_signal_checked": bool(seed.get("india_hiring_signal_checked")),
+        "iran_hiring_signal_checked": bool(seed.get("iran_hiring_signal_checked")),
         "southeast_asia_hiring_signal_checked": bool(seed.get("southeast_asia_hiring_signal_checked")),
         "hiring_signals": seed.get("hiring_signals") or [],
         "hiring_signal_summary": seed.get("hiring_signal_summary") or "",

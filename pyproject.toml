@@ -1,6 +1,6 @@
 [project]
 name = "linkedin-sales-automation"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted LinkedIn lead sourcing, enrichment, CRM, and email outreach CLI."
 requires-python = ">=3.11"
 dependencies = [
