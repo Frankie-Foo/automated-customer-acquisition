@@ -11,6 +11,7 @@ from ..quotas import QuotaService
 from .ai_agents import ProfileAgentService
 from .outreach import PersonalizedEmailService
 from .pdca import LeadWorkflowService
+from .quality import OutboundQualityService
 from .research import AccountResearchService
 
 
@@ -153,6 +154,9 @@ class AutomationRunService:
         )
         result["workflow_linked"] = workflow["linked"]
         result["tasks_created"] = workflow["tasks_created"]
+        result["quality_scorecard"] = OutboundQualityService(self.repo).score_list(
+            self.repo.list_contacts_for_search_tasks(task_ids)
+        )
         if not payload.get("auto_prepare_drafts", True) or not assignment.get("assigned"):
             self.repo.update_automation_run_progress(
                 run_id,

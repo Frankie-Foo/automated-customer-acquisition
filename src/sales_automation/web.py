@@ -20,10 +20,11 @@ from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
 from .linkedin_public_search import LinkedInPublicSearchService
 from .outbound_identity import parse_signed_reply_route
+from .outbound_quality import calibration_summary
 from .quotas import QuotaService
 from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
-from .services import AccountResearchService, AutomationRunService, EnrichmentService, LeadWorkflowService, LifecycleService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .services import AccountResearchService, AutomationRunService, EnrichmentService, LeadWorkflowService, LifecycleService, OutboundQualityService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 from .vps_sso import VpsSsoError, VpsSsoService
 from .pdca_sso import PdcaSsoError, PdcaSsoService
 
@@ -208,6 +209,9 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/ops-report":
                 self._json(lambda: repo.operations_report(user=self._current_user()))
+                return
+            if parsed.path == "/api/outbound-quality":
+                self._json(lambda: repo.outbound_quality_dashboard(user=self._current_user()))
                 return
             if parsed.path == "/api/search-tasks":
                 self._json(lambda: {"tasks": repo.list_lead_search_tasks(user=self._current_user())})
@@ -935,12 +939,66 @@ def make_handler(config, repo: Repository):
                     user=self._current_user(),
                 ), target_type="contact", target_id=payload.get("contact_id"), summary="生成邮件草稿", metadata={"mode": payload.get("mode") or "ai"})
                 return
+            if parsed.path == "/api/icp-feedback":
+                user = self._current_user()
+                contact_id = int(payload["contact_id"])
+                if not self._require_private_contact_access(contact_id):
+                    return
+                def submit_icp_feedback() -> dict[str, Any]:
+                    feedback = repo.record_icp_feedback(
+                        contact_id,
+                        reviewer_user_id=int(user["id"]),
+                        expected_qualified=_truthy(payload.get("expected_qualified")),
+                        reason=str(payload.get("reason") or "")[:500] or None,
+                    )
+                    owner_user_id = int(user["id"]) if user.get("role") != "admin" else None
+                    profile = repo.get_active_icp_profile(owner_user_id=owner_user_id)
+                    with repo.db.connect() as conn:
+                        recent = conn.execute(
+                            """
+                            SELECT predicted_qualified, expected_qualified
+                            FROM icp_feedback
+                            ORDER BY created_at DESC
+                            LIMIT 200
+                            """,
+                        ).fetchall()
+                    calibration = calibration_summary(
+                        recent,
+                        current_threshold=int(profile.get("qualified_threshold") or 70),
+                    )
+                    return {
+                        "feedback": feedback,
+                        "calibration": calibration,
+                    }
+                self._json_audit(
+                    "icp_feedback",
+                    submit_icp_feedback,
+                    target_type="contact",
+                    target_id=contact_id,
+                    summary="Review ICP qualification",
+                )
+                return
             if parsed.path == "/api/email-draft/approve":
                 def approve_email_draft() -> dict[str, Any]:
                     user = self._current_user()
                     contact_id = int(payload["contact_id"])
                     if not repo.get_private_contact_for_user(contact_id, user):
                         raise RuntimeError("Contact not found")
+                    pending = repo.get_latest_email_draft(contact_id, user_id=int(user["id"]))
+                    if not pending:
+                        raise RuntimeError("No draft is available for approval")
+                    review = pending.get("quality_review") if isinstance(pending.get("quality_review"), dict) else {}
+                    if not review:
+                        review = OutboundQualityService(repo).review_draft(
+                            pending.get("subject") or "",
+                            pending.get("body") or "",
+                        )
+                    if review.get("status") == "blocked":
+                        codes = ", ".join(
+                            item.get("code", "quality_error")
+                            for item in review.get("blocking_issues") or []
+                        )
+                        raise RuntimeError(f"Draft failed quality review: {codes}")
                     draft = repo.approve_latest_email_draft(contact_id, user_id=int(user["id"]))
                     if not draft:
                         raise RuntimeError("No draft is available for approval")
@@ -992,6 +1050,60 @@ def make_handler(config, repo: Repository):
                     summary="发送自定义邮件",
                     metadata=lambda data: {"sent": data.get("sent"), "mode": payload.get("mode") or "custom"},
                 )
+                return
+            if parsed.path == "/api/admin/icp-profile":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                profile_id = int(payload["profile_id"])
+                self._json_audit(
+                    "update_icp_profile",
+                    lambda: {
+                        "profile": repo.update_icp_profile_threshold(
+                            profile_id,
+                            qualified_threshold=int(payload["qualified_threshold"]),
+                        )
+                    },
+                    target_type="icp_profile",
+                    target_id=profile_id,
+                    summary="Apply calibrated ICP threshold",
+                )
+                return
+            if parsed.path == "/api/admin/experiments":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                action = str(payload.get("action") or "create")
+                if action == "create":
+                    self._json_audit(
+                        "create_outbound_experiment",
+                        lambda: {
+                            "experiment": repo.create_outbound_experiment(
+                                name=payload.get("name") or "Outbound experiment",
+                                hypothesis=payload.get("hypothesis") or "",
+                                variable_name=payload.get("variable_name") or "subject",
+                                variants=list(payload.get("variants") or []),
+                                owner_user_id=payload.get("owner_user_id"),
+                                campaign_id=payload.get("campaign_id"),
+                                status=payload.get("status") or "draft",
+                            )
+                        },
+                        target_type="experiment",
+                        summary="Create outbound experiment",
+                    )
+                else:
+                    self._json_audit(
+                        "update_outbound_experiment",
+                        lambda: {
+                            "experiment": repo.update_outbound_experiment(
+                                int(payload["experiment_id"]),
+                                status=str(payload.get("status") or "completed"),
+                            )
+                        },
+                        target_type="experiment",
+                        target_id=payload.get("experiment_id"),
+                        summary="Update outbound experiment",
+                    )
                 return
             if parsed.path == "/api/admin/users":
                 admin = self._require_admin()
@@ -1142,6 +1254,8 @@ def make_handler(config, repo: Repository):
                         if hasattr(repo, "route_inbound_reply"):
                             route_state = repo.route_inbound_reply(contact_id, route.get("user_id") if route else None)
                         event_payload = {
+                            "type": "email.replied",
+                            "contact_id": contact_id,
                             "source": "inbound_email_webhook",
                             "from": data.get("from") or data.get("sender") or payload.get("from") or payload.get("sender"),
                             "to": data.get("to") or payload.get("to"),
@@ -1150,21 +1264,14 @@ def make_handler(config, repo: Repository):
                             "message_id": external_id,
                             "in_reply_to": in_reply_to,
                             "reply_route": route,
+                            "reply_routed": True,
                             "reply_owner_user_id": route_state.get("owner_user_id"),
                             "reply_assignment_pending": route_state.get("reply_assignment_pending", False),
                         }
-                        repo.record_event(contact_id, "replied", event_payload)
-                        repo.add_lifecycle_activity(
-                            contact_id,
-                            lifecycle_stage="replied",
-                            activity_type="reply",
-                            title=str(payload.get("subject") or "Email reply")[:300],
-                            content=event_payload["text"] or "Reply received",
-                            created_by="inbound_email",
-                        )
+                        event = WebhookService(repo, config=None).process_payload("inbound_email", event_payload)
                         if external_id and hasattr(repo, "mark_webhook_delivery_processed"):
                             repo.mark_webhook_delivery_processed("inbound_email", str(external_id))
-                        return {"event_type": "replied", "contact_id": contact_id}
+                        return {"event_type": event, "contact_id": contact_id}
                     self._json(inbound_email)
                     return
                 def public_webhook() -> dict[str, Any]:

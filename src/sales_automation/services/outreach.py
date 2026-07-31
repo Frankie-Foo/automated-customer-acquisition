@@ -23,6 +23,7 @@ from ..outreach_guard import send_readiness, sleep_between_sends, validate_email
 from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 from .pdca import LeadWorkflowService
+from .quality import OutboundQualityService
 
 
 class PersonalizedEmailService:
@@ -38,11 +39,16 @@ class PersonalizedEmailService:
         custom_subject: str | None = None,
         custom_body: str | None = None,
         user: dict[str, Any] | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found or not claimed")
         sender_user = sender_identity_user(self.repo, contact, user)
+        quality_service = OutboundQualityService(self.repo)
+        experiment = quality_service.experiment_assignment(
+            contact_id=int(contact["id"]),
+            owner_user_id=int(sender_user["id"]) if sender_user else contact.get("owner_user_id"),
+        )
         if mode == "custom":
             result = {
                 "subject": custom_subject or f"Quick question about {contact.get('company_name') or 'your business'}",
@@ -55,9 +61,11 @@ class PersonalizedEmailService:
                 if custom_body
                 else "",
             }
+            result["quality_review"] = quality_service.review_draft(result["subject"], result["body"])
+            result["experiment"] = experiment
             self._save_draft(contact, result, mode=mode, user=user)
             return result
-        draft = self._ai_draft(contact, user=sender_user)
+        draft = self._ai_draft(contact, user=sender_user, experiment=experiment)
         result = {
             "subject": draft["subject"],
             "body": _normalize_sender_signature(
@@ -67,6 +75,8 @@ class PersonalizedEmailService:
                 unsubscribe_value="{{unsubscribe_url}}",
             ),
         }
+        result["quality_review"] = quality_service.review_draft(result["subject"], result["body"])
+        result["experiment"] = experiment
         self._save_draft(contact, result, mode=mode, user=user)
         return result
 
@@ -87,6 +97,10 @@ class PersonalizedEmailService:
                 raise ValueError("Email draft must be approved before sending")
             if approved.get("subject") != subject or approved.get("body") != body:
                 raise ValueError("Email content changed after approval; approve the draft again")
+        quality_review = OutboundQualityService(self.repo).review_draft(subject, body)
+        if quality_review["status"] == "blocked":
+            codes = ", ".join(item["code"] for item in quality_review["blocking_issues"])
+            raise ValueError(f"Email quality check failed: {codes}")
         sender_pool = SenderPoolManager(self.config, self.repo)
         transport_sender = sender_pool.pick_sender()
         transport_sender, smtp_config = sender_transport_for_user(
@@ -162,6 +176,9 @@ class PersonalizedEmailService:
                     status="failed",
                     provider=str(transport_sender.get("provider") or "resend"),
                     error=str(exc)[:1000],
+                    quality_review=quality_review,
+                    experiment_id=approved.get("experiment_id"),
+                    experiment_variant=approved.get("experiment_variant"),
                 )
             raise
         metadata = {
@@ -191,6 +208,9 @@ class PersonalizedEmailService:
                 status="sent",
                 provider=provider,
                 provider_message_id=message_id,
+                quality_review=quality_review,
+                experiment_id=approved.get("experiment_id") if approved else None,
+                experiment_variant=approved.get("experiment_variant") if approved else None,
                 metadata=metadata,
             )
             self.repo.update_outreach_message_event(
@@ -228,7 +248,7 @@ class PersonalizedEmailService:
             "reply_to_email": reply_to,
         }
 
-    def _save_draft(self, contact: dict[str, Any], draft: dict[str, str], *, mode: str, user: dict[str, Any] | None) -> None:
+    def _save_draft(self, contact: dict[str, Any], draft: dict[str, Any], *, mode: str, user: dict[str, Any] | None) -> None:
         if not hasattr(self.repo, "save_email_draft"):
             return
         research = self.repo.get_contact_research(int(contact["id"])) or {}
@@ -244,6 +264,9 @@ class PersonalizedEmailService:
                 "sources": (research.get("sources") or [])[:6],
                 "researched_at": str(research.get("researched_at") or ""),
             },
+            quality_review=draft.get("quality_review") or {},
+            experiment_id=(draft.get("experiment") or {}).get("experiment_id"),
+            experiment_variant=(draft.get("experiment") or {}).get("variant"),
         )
         if saved and hasattr(self.repo, "record_outreach_message"):
             research_snapshot = saved.get("research_snapshot") if isinstance(saved.get("research_snapshot"), dict) else {}
@@ -259,6 +282,9 @@ class PersonalizedEmailService:
                 ai_model=str(self.config.raw.get("llm", {}).get("provider") or "fallback"),
                 personalization_evidence=list(research_snapshot.get("sources") or []),
                 status="draft",
+                quality_review=saved.get("quality_review") or draft.get("quality_review") or {},
+                experiment_id=saved.get("experiment_id"),
+                experiment_variant=saved.get("experiment_variant"),
                 metadata={"mode": mode},
             )
         if saved and hasattr(self.repo, "close_open_followup_tasks") and hasattr(self.repo, "ensure_followup_task"):
@@ -277,7 +303,13 @@ class PersonalizedEmailService:
                 metadata={"draft_id": saved["id"], "generated_by": "email_draft"},
             )
 
-    def _ai_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
+    def _ai_draft(
+        self,
+        contact: dict[str, Any],
+        *,
+        user: dict[str, Any] | None = None,
+        experiment: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         copy_contact = customer_visible_contact(contact)
         fallback = self._fallback_draft(copy_contact, user=user)
         llm_cfg = self.config.raw.get("llm", {})
@@ -298,18 +330,17 @@ class PersonalizedEmailService:
             if cleaned:
                 research_sources.append({"index": len(research_sources) + 1, **cleaned})
         prompt = (
-            "You are a B2B overseas sales email assistant. Generate one concise English email from only the provided facts. "
-            "Output strict JSON only with fields: subject, body. Body must be plain text, 80-140 words, natural, and specific. "
+            "You are a VERTU global-headquarters channel-development representative. Generate one concise English first-touch email from only the provided facts. "
+            "The commercial purpose is to identify a credible local partner who could open and operate a VERTU boutique or develop selective local distribution. "
+            "Frame the value as a differentiated luxury category and potential commercial upside for the partner's high-value customer base; never promise revenue, margin, returns, or an outcome. "
+            "Output strict JSON only with fields: subject, body. Body must be plain text, 100-120 prospect-facing words before the signature, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
             "You may use at most one current signal from research_sources, only when its title and snippet directly support the wording. "
             "Treat undated or ambiguous sources as weak evidence and phrase them as an observation, not a confirmed business fact. "
-            "Use this fixed pain-led five-part structure without headings: "
-            "1) state the observed account signal or research reason, "
-            "2) name the likely business pain as a hypothesis, not a fact, "
-            "3) connect Vertu to that pain with a practical channel value, "
-            "4) ask one low-barrier qualification question, "
-            "5) close briefly. "
-            "Avoid generic claims such as 'we are a leading brand' or 'high quality and good price'. "
+            "Use a peer-to-peer commercial tone, not a sales script. Every sentence must add a fact, business observation, or practical partner value. "
+            "Use this structure without headings: observed account context; local boutique/distribution opportunity; why VERTU may fit the partner's customer base; exactly one low-friction permission question; brief close. "
+            "The only CTA should ask whether you may send a one-page local-market partnership outline. Do not request a meeting, call, calendar invite, or attachment in the first email. "
+            "Avoid generic claims such as 'we are a leading brand', 'exclusive opportunity', 'hope this email finds you well', or 'high quality and good price'. "
             "Never expose CRM fields, lead scores, verification status, follow-up status, owners, source IDs, or internal notes. "
             f"Recipient: {copy_contact.get('first_name')} {copy_contact.get('last_name')}; role: {copy_contact.get('job_title')}; "
             f"company: {copy_contact.get('company_name')}; industry: {copy_contact.get('industry')}; location: {copy_contact.get('location')}; "
@@ -318,6 +349,8 @@ class PersonalizedEmailService:
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
             f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
             f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
+            f"experiment instruction: {str((experiment or {}).get('instruction') or 'none')}; "
+            "The experiment instruction may change only the stated experiment variable and must not weaken factual accuracy. "
             f"sender: {self.config.sender.get('name')}."
         )
         try:
@@ -370,19 +403,16 @@ class PersonalizedEmailService:
         match = strategy.get("message_hook") or framework.get("business_match") or _fallback_opening(contact)
         if not match or match.startswith("Reference the recipient"):
             match = f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."
-        pain = strategy.get("suspected_pain") or f"For partners in {category}, the challenge is usually finding premium categories that add margin without adding heavy operational complexity."
-        question = strategy.get("question_to_ask") or f"Would it be useful to explore whether Vertu could fit {company}'s current customer base?"
-        value = (
-            framework.get("our_value")
-            or "Vertu is a premium mobile and luxury technology brand for selective high-end retail and distributor channels."
-        )
+        pain = strategy.get("suspected_pain") or f"For partners in {category}, the practical question is whether a new luxury category can fit their customer base and local operating model."
         subject = f"Possible Vertu channel fit for {company}"
         body = (
             f"Hi {first},\n\n"
-            f"{match}\n\n"
-            f"My guess is that {pain[0].lower() + pain[1:] if pain else 'the right premium category must be easy to explain and low-friction to test.'}\n\n"
-            f"{value} The practical angle is a selective, lightweight cooperation discussion rather than a heavy proposal upfront.\n\n"
-            f"{question} A brief reply is enough to tell me whether this is relevant.\n\n"
+            f"{match.rstrip('.')}. "
+            f"From VERTU headquarters, I work with prospective local partners on whether a VERTU boutique or selective distribution model could suit their market.\n\n"
+            f"{pain[0].upper() + pain[1:] if pain else 'The relevant question is whether the category can fit the local customer base and operating model.'} "
+            "VERTU combines luxury mobile products, accessories and a differentiated retail experience for high-value customers. "
+            "For the right local operator, this can create a distinct premium category alongside an existing luxury portfolio, subject to a practical market plan.\n\n"
+            f"May I send a one-page view of how a VERTU channel partnership could be assessed for {company}'s market?\n\n"
             f"{_sender_signature(user, self.config.sender.get('name', ''))}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )

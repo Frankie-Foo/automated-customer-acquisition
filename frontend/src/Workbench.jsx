@@ -230,6 +230,7 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
           const percent = total ? Math.round((current / total) * 100) : 0;
           const result = run.result || {};
           const assignment = result.assignment || {};
+          const scorecard = result.quality_scorecard || {};
           const promoted = Number(result.promoted || 0);
           const drafted = Number(result.drafted || 0);
           return (
@@ -237,6 +238,7 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
               <div className="automation-run-title"><strong>#{run.id} 公司批量获客</strong><span>{automationStatus(run.status)}</span></div>
               <div className="automation-progress"><span style={{ width: `${percent}%` }} /></div>
               <div className="automation-run-stats"><span>{current}/{total} 家</span><span>待核验 {promoted}</span><span>跳过 {result.skipped || 0}</span><span>画像 {result.profiled || 0}</span><span>可发送草稿 {drafted}</span><span>{percent}%</span></div>
+              {scorecard.score != null && <p className="automation-run-note quality-note">名单质量 <strong>{scorecard.grade || "-"}</strong> · {scorecard.score} 分 · 符合 ICP {scorecard.qualified || 0} · 可发送 {scorecard.sendable || 0}</p>}
               {assignment.owner && <p className="automation-run-note">已归属：<strong>{assignment.owner}</strong>，可在“我的客户”中核验。</p>}
               {run.status === "awaiting_approval" && promoted > 0 && drafted === 0 && <p className="automation-run-note is-warning">尚未找到已验证邮箱，需先核对身份并补齐邮箱，系统不会直接发送。</p>}
               {run.error && <p className="error-text">{run.error}</p>}

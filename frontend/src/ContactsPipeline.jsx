@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
+import { openContactWorkspace } from "./workspaceNavigation.js";
 
 const statuses = ["new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied", "bounced", "unsubscribed"];
 const filters = [
@@ -178,14 +179,12 @@ function ContactsPipeline() {
     }
     try {
       if (action === "detail") {
-        window.location.hash = "outreach";
-        window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } })), 0);
+        openContactWorkspace(contact.id);
         return;
       }
       if (action === "claim-open") {
         await api("/api/customer-pool/claim", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
-        window.location.hash = "outreach";
-        window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: contact.id } })), 50);
+        openContactWorkspace(contact.id, 50);
         return;
       }
       if (action === "claim") {
@@ -270,8 +269,7 @@ function ContactsPipeline() {
   }
 
   function openContact(contactId) {
-    window.location.hash = "outreach";
-    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId } })), 0);
+    openContactWorkspace(contactId);
   }
 
   if (!sessionUser) return null;

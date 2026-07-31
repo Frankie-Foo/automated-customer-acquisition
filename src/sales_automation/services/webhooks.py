@@ -9,6 +9,7 @@ from ..clients import HttpClient, SlackClient
 from ..db import Repository
 from ..logging_utils import log
 from ..outbound_identity import parse_signed_reply_route
+from ..outbound_quality import classify_reply
 from ..outreach_guard import annotate_delivery_payload
 from .pdca import LeadWorkflowService
 
@@ -38,7 +39,7 @@ class WebhookService:
                 contact_id = self.repo.find_contact_id_by_email(lookup_email)
         if not contact_id:
             raise ValueError("Webhook payload does not include contact_id metadata or a known message id")
-        if event_type == "replied" and hasattr(self.repo, "route_inbound_reply"):
+        if event_type == "replied" and not payload.get("reply_routed") and hasattr(self.repo, "route_inbound_reply"):
             route_state = self.repo.route_inbound_reply(contact_id, reply_route.get("user_id") if reply_route else None)
             payload = {
                 **payload,
@@ -46,6 +47,15 @@ class WebhookService:
                 "reply_owner_user_id": route_state.get("owner_user_id"),
                 "reply_assignment_pending": route_state.get("reply_assignment_pending", False),
             }
+        reply_classification = (
+            classify_reply(_extract_subject(payload), _extract_message_text(payload))
+            if event_type == "replied"
+            else None
+        )
+        if reply_classification:
+            payload = {**payload, "reply_classification": reply_classification}
+            if hasattr(self.repo, "update_icp_from_reply"):
+                self.repo.update_icp_from_reply(contact_id, reply_classification)
         payload = annotate_delivery_payload(event_type, payload)
         self.repo.record_event(contact_id, event_type, payload)
         message_id = _extract_message_id(payload)
@@ -71,7 +81,11 @@ class WebhookService:
                 trigger_rule="opened_no_reply",
                 metadata={"provider": provider, "message_id": message_id},
             )
-        if event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"} and contact:
+        actionable_reply = bool(reply_classification and reply_classification.get("should_advance"))
+        if contact and (
+            event_type in {"bounced", "failed", "unsubscribed", "complained"}
+            or (event_type == "replied" and actionable_reply)
+        ):
             if hasattr(self.repo, "close_open_followup_tasks"):
                 self.repo.close_open_followup_tasks(contact_id)
             LeadWorkflowService(self.repo).ensure_next_task(
@@ -87,11 +101,11 @@ class WebhookService:
                 channel="email",
                 subject=_extract_subject(payload),
                 content=_extract_message_text(payload),
-                outcome=event_type,
+                outcome=reply_classification.get("label") if reply_classification else event_type,
                 source_ref=message_id,
-                metadata={"provider": provider},
+                metadata={"provider": provider, "reply_classification": reply_classification or {}},
             )
-        if event_type == "replied" and hasattr(self.repo, "add_lifecycle_activity"):
+        if event_type == "replied" and actionable_reply and hasattr(self.repo, "add_lifecycle_activity"):
             self.repo.add_lifecycle_activity(
                 contact_id,
                 lifecycle_stage="replied",
@@ -101,7 +115,8 @@ class WebhookService:
                 created_by=f"{provider}_webhook",
             )
         if event_type == "replied" and self.notifier:
-            self.notifier.notify(f"Lead replied: contact #{contact_id}")
+            label = reply_classification.get("label") if reply_classification else "other"
+            self.notifier.notify(f"Lead replied ({label}): contact #{contact_id}")
         log("webhook.processed", provider=provider, contact_id=contact_id, event_type=event_type)
         return event_type
 
@@ -170,7 +185,7 @@ def _extract_event_type(provider: str, payload: dict[str, Any]) -> str:
         return "failed"
     if "unsubscribe" in raw:
         return "unsubscribed"
-    if "reply" in raw or "received" in raw:
+    if "reply" in raw or "repl" in raw or "received" in raw:
         return "replied"
     if "click" in raw:
         return "clicked"

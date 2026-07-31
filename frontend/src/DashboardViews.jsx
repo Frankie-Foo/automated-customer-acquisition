@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
+import { openContactWorkspace } from "./workspaceNavigation.js";
 
 const lifecycleStages = [
   ["lead", "陌生线索"],
@@ -405,8 +406,11 @@ function TodayTaskQueue({ tasks, reload }) {
   }
 
   function open(task) {
-    window.location.hash = task.task_type === "enrich_contact" ? "research" : "outreach";
-    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId: task.contact_id } })), 50);
+    if (task.task_type === "enrich_contact") {
+      window.location.hash = "research";
+      return;
+    }
+    openContactWorkspace(task.contact_id, 50);
   }
 
   return (
@@ -449,8 +453,7 @@ function formatTaskDue(due, overdue) {
 
 function FollowupCard({ title, hint, tone, contacts }) {
   function openContact(contactId) {
-    window.location.hash = "outreach";
-    window.setTimeout(() => window.dispatchEvent(new CustomEvent("salesbot:open-contact", { detail: { contactId } })), 0);
+    openContactWorkspace(contactId);
   }
   return (
     <article className={`followup-card ${tone}`}>

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from .auth import hash_password, new_session_token, session_expires_at, verify_password
 from .config import AppConfig
 from .customer_intelligence import build_customer_profile
+from .outbound_quality import assess_icp, calibration_summary, default_icp_profile, summarize_experiment
 from .sabcd import stage_from_payload
 from .status import validate_status
 
@@ -2556,6 +2557,395 @@ class Repository:
                 (summary, json.dumps(insights) if insights is not None else None, contact_id),
             )
 
+    def get_active_icp_profile(self, *, owner_user_id: int | None = None) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM icp_profiles
+                WHERE status = 'active' AND (owner_user_id = %s OR owner_user_id IS NULL)
+                ORDER BY (owner_user_id IS NOT NULL) DESC, version DESC, id DESC
+                LIMIT 1
+                """,
+                (owner_user_id,),
+            ).fetchone()
+        if not row:
+            return default_icp_profile()
+        criteria = row.get("criteria") if isinstance(row.get("criteria"), dict) else {}
+        return {
+            **default_icp_profile(),
+            **criteria,
+            "id": int(row["id"]),
+            "name": row["name"],
+            "version": int(row.get("version") or 1),
+            "qualified_threshold": int(row.get("qualified_threshold") or 70),
+            "review_threshold": int(row.get("review_threshold") or 50),
+            "disqualifiers": row.get("disqualifiers") or [],
+        }
+
+    def update_contact_icp_assessment(
+        self,
+        contact_id: int,
+        assessment: dict[str, Any],
+        *,
+        profile_id: int | None = None,
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET icp_profile_id = COALESCE(%s, icp_profile_id),
+                    icp_assessment = %s::jsonb,
+                    lead_score = COALESCE(%s, lead_score),
+                    customer_profile_snapshot = customer_profile_snapshot || %s::jsonb
+                WHERE id = %s
+                """,
+                (
+                    profile_id,
+                    json.dumps(assessment, ensure_ascii=False),
+                    assessment.get("score"),
+                    json.dumps({"icp_assessment": assessment}, ensure_ascii=False),
+                    contact_id,
+                ),
+            )
+
+    def record_icp_feedback(
+        self,
+        contact_id: int,
+        *,
+        reviewer_user_id: int,
+        expected_qualified: bool,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        contact = self.get_contact(contact_id)
+        if not contact:
+            raise ValueError("Contact not found")
+        profile = self.get_active_icp_profile(owner_user_id=contact.get("owner_user_id"))
+        profile_id = profile.get("id")
+        if not profile_id:
+            raise RuntimeError("Active ICP profile is not persisted")
+        assessment = contact.get("icp_assessment") if isinstance(contact.get("icp_assessment"), dict) else {}
+        predicted = bool(assessment.get("qualified"))
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO icp_feedback(
+                    profile_id, contact_id, reviewer_user_id,
+                    predicted_qualified, expected_qualified, reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (profile_id, contact_id, reviewer_user_id)
+                DO UPDATE SET
+                    predicted_qualified = EXCLUDED.predicted_qualified,
+                    expected_qualified = EXCLUDED.expected_qualified,
+                    reason = EXCLUDED.reason,
+                    created_at = NOW()
+                RETURNING *
+                """,
+                (profile_id, contact_id, reviewer_user_id, predicted, expected_qualified, reason),
+            ).fetchone()
+
+    def update_icp_profile_threshold(
+        self,
+        profile_id: int,
+        *,
+        qualified_threshold: int,
+    ) -> dict[str, Any] | None:
+        threshold = max(40, min(90, int(qualified_threshold)))
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE icp_profiles
+                SET qualified_threshold = %s,
+                    review_threshold = LEAST(review_threshold, %s - 5),
+                    version = version + 1,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (threshold, threshold, profile_id),
+            ).fetchone()
+
+    def create_outbound_experiment(
+        self,
+        *,
+        name: str,
+        hypothesis: str,
+        variable_name: str,
+        variants: list[dict[str, Any]],
+        owner_user_id: int | None,
+        campaign_id: int | None = None,
+        status: str = "draft",
+    ) -> dict[str, Any]:
+        if len(variants) < 2:
+            raise ValueError("An experiment requires at least two variants")
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO outbound_experiments(
+                    name, hypothesis, variable_name, variants, owner_user_id,
+                    campaign_id, status, started_at
+                )
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s,
+                        CASE WHEN %s = 'active' THEN NOW() ELSE NULL END)
+                RETURNING *
+                """,
+                (
+                    name.strip(),
+                    hypothesis.strip(),
+                    variable_name.strip(),
+                    json.dumps(variants, ensure_ascii=False),
+                    owner_user_id,
+                    campaign_id,
+                    status,
+                    status,
+                ),
+            ).fetchone()
+
+    def get_active_outbound_experiment(self, *, owner_user_id: int | None = None) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM outbound_experiments
+                WHERE status = 'active' AND (owner_user_id = %s OR owner_user_id IS NULL)
+                ORDER BY (owner_user_id IS NOT NULL) DESC, started_at DESC NULLS LAST, id DESC
+                LIMIT 1
+                """,
+                (owner_user_id,),
+            ).fetchone()
+
+    def update_outbound_experiment(self, experiment_id: int, *, status: str) -> dict[str, Any] | None:
+        if status not in {"draft", "active", "completed", "cancelled"}:
+            raise ValueError("Unsupported experiment status")
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE outbound_experiments
+                SET status = %s,
+                    started_at = CASE WHEN %s = 'active' THEN COALESCE(started_at, NOW()) ELSE started_at END,
+                    ended_at = CASE WHEN %s IN ('completed', 'cancelled') THEN NOW() ELSE NULL END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (status, status, status, experiment_id),
+            ).fetchone()
+
+    def update_icp_from_reply(
+        self,
+        contact_id: int,
+        reply_classification: dict[str, Any],
+    ) -> None:
+        """Feed reply classification signals back into ICP assessment to close the learning loop."""
+        contact = self.get_contact(contact_id)
+        if not contact:
+            return
+        current = contact.get("icp_assessment") or {}
+        if not isinstance(current, dict):
+            current = {}
+        label = reply_classification.get("label", "")
+        positive = reply_classification.get("positive", False)
+        score_shift = 0
+        tags = list(current.get("reply_signals") or [])
+        new_signals: dict[str, Any] = {}
+        if label in ("positive_interested", "positive_soft", "positive_referral"):
+            score_shift = 10
+            tags.append("reply_validated")
+            new_signals = {"last_reply_signal": "positive", "validated_at": datetime.now().isoformat()}
+            if not current.get("qualified"):
+                current["tier"] = "review"
+                current["qualified"] = True
+                current["score"] = max(60, (current.get("score") or 0) + score_shift)
+        elif label in ("negative_notfit", "negative_hostile"):
+            score_shift = -15
+            tags.append("reply_not_fit")
+            new_signals = {"last_reply_signal": "negative", "notfit_at": datetime.now().isoformat()}
+            current["tier"] = "disqualified"
+            current["qualified"] = False
+            current["score"] = min(current.get("score") or 40, 35)
+        elif label == "negative_notnow":
+            score_shift = -5
+            tags.append("reply_not_now")
+            new_signals = {"last_reply_signal": "notnow", "notnow_at": datetime.now().isoformat()}
+        else:
+            return
+        current["score"] = max(0, min(100, (current.get("score") or 0) + score_shift))
+        current["reply_signals"] = tags
+        current["reply_signal_detail"] = new_signals
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE contacts
+                SET icp_assessment = %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(current, ensure_ascii=False), contact_id),
+            )
+
+    def outbound_quality_dashboard(self, *, user: dict[str, Any]) -> dict[str, Any]:
+        is_admin = user.get("role") == "admin"
+        owner_id = None if is_admin else int(user["id"])
+        owner_sql = "TRUE" if is_admin else "c.owner_user_id = %s"
+        owner_params: tuple[Any, ...] = () if is_admin else (owner_id,)
+        with self.db.connect() as conn:
+            lead_quality = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*)::integer AS total,
+                  COUNT(*) FILTER (WHERE c.icp_assessment->>'tier' = 'priority')::integer AS priority,
+                  COUNT(*) FILTER (WHERE c.icp_assessment->>'qualified' = 'true')::integer AS qualified,
+                  COUNT(*) FILTER (WHERE c.icp_assessment->>'tier' = 'review')::integer AS review,
+                  COUNT(*) FILTER (WHERE c.icp_assessment->>'tier' = 'disqualified')::integer AS disqualified,
+                  ROUND(COALESCE(AVG(NULLIF(c.icp_assessment->>'score', '')::numeric), 0), 1) AS average_score
+                FROM contacts c
+                WHERE {owner_sql}
+                """,
+                owner_params,
+            ).fetchone()
+            copy_quality = conn.execute(
+                f"""
+                SELECT
+                  COUNT(d.id) FILTER (
+                    WHERE d.quality_review->>'status' IS NOT NULL
+                  )::integer AS reviewed,
+                  COUNT(d.id) FILTER (WHERE d.quality_review->>'status' = 'ready')::integer AS ready,
+                  COUNT(d.id) FILTER (WHERE d.quality_review->>'status' = 'revise')::integer AS revise,
+                  COUNT(d.id) FILTER (WHERE d.quality_review->>'status' = 'blocked')::integer AS blocked,
+                  ROUND(COALESCE(AVG(NULLIF(d.quality_review->>'score', '')::numeric), 0), 1) AS average_score
+                FROM email_drafts d
+                JOIN contacts c ON c.id = d.contact_id
+                WHERE {owner_sql}
+                """,
+                owner_params,
+            ).fetchone()
+            sent_total = conn.execute(
+                f"""
+                SELECT COUNT(om.id)::integer AS total
+                FROM outreach_messages om
+                JOIN contacts c ON c.id = om.contact_id
+                WHERE om.sent_at IS NOT NULL AND {owner_sql}
+                """,
+                owner_params,
+            ).fetchone()
+            replies = conn.execute(
+                f"""
+                SELECT
+                  COUNT(i.id)::integer AS total,
+                  COUNT(i.id) FILTER (
+                    WHERE i.metadata->'reply_classification'->>'positive' = 'true'
+                  )::integer AS positive,
+                  COUNT(i.id) FILTER (
+                    WHERE i.metadata->'reply_classification'->>'label' LIKE 'negative%%'
+                  )::integer AS negative,
+                  COUNT(i.id) FILTER (
+                    WHERE i.metadata->'reply_classification'->>'label' = 'ooo'
+                  )::integer AS ooo,
+                  COUNT(i.id) FILTER (
+                    WHERE i.metadata->'reply_classification'->>'label' = 'unsubscribe'
+                  )::integer AS unsubscribe
+                FROM interactions i
+                JOIN contacts c ON c.id = i.contact_id
+                WHERE i.interaction_type = 'email_reply' AND {owner_sql}
+                """,
+                owner_params,
+            ).fetchone()
+            feedback = conn.execute(
+                """
+                SELECT f.predicted_qualified, f.expected_qualified
+                FROM icp_feedback f
+                JOIN contacts c ON c.id = f.contact_id
+                WHERE %s::bigint IS NULL OR c.owner_user_id = %s
+                ORDER BY f.created_at DESC
+                LIMIT 500
+                """,
+                (owner_id, owner_id),
+            ).fetchall()
+            experiments = conn.execute(
+                """
+                SELECT e.*,
+                       COALESCE(jsonb_agg(
+                         jsonb_build_object(
+                           'name', d.experiment_variant,
+                           'sent', COALESCE(m.sent, 0),
+                           'delivered', COALESCE(m.delivered, 0),
+                           'opened', COALESCE(m.opened, 0),
+                           'replies', COALESCE(m.replies, 0),
+                           'positive_replies', COALESCE(m.positive_replies, 0),
+                           'bounced', COALESCE(m.bounced, 0),
+                           'unsubscribed', COALESCE(m.unsubscribed, 0)
+                         )
+                       ) FILTER (WHERE d.experiment_variant IS NOT NULL), '[]'::jsonb) AS measured_variants
+                FROM outbound_experiments e
+                LEFT JOIN (
+                  SELECT DISTINCT experiment_id, experiment_variant
+                  FROM email_drafts
+                  WHERE experiment_id IS NOT NULL
+                ) d ON d.experiment_id = e.id
+                LEFT JOIN LATERAL (
+                  SELECT
+                    COUNT(*) FILTER (WHERE om.sent_at IS NOT NULL)::integer AS sent,
+                    COUNT(*) FILTER (WHERE om.delivered_at IS NOT NULL)::integer AS delivered,
+                    COUNT(*) FILTER (WHERE om.opened_at IS NOT NULL)::integer AS opened,
+                    COUNT(*) FILTER (WHERE om.replied_at IS NOT NULL)::integer AS replies,
+                    COUNT(*) FILTER (
+                      WHERE i.metadata->'reply_classification'->>'positive' = 'true'
+                    )::integer AS positive_replies,
+                    COUNT(*) FILTER (WHERE om.bounced_at IS NOT NULL)::integer AS bounced,
+                    COUNT(*) FILTER (
+                      WHERE i.metadata->'reply_classification'->>'label' = 'unsubscribe'
+                    )::integer AS unsubscribed
+                  FROM outreach_messages om
+                  LEFT JOIN interactions i
+                    ON i.contact_id = om.contact_id
+                   AND i.interaction_type = 'email_reply'
+                   AND i.occurred_at >= COALESCE(om.sent_at, om.created_at)
+                  WHERE om.experiment_id = e.id
+                    AND om.experiment_variant = d.experiment_variant
+                ) m ON TRUE
+                WHERE %s::bigint IS NULL OR e.owner_user_id = %s
+                GROUP BY e.id
+                ORDER BY e.created_at DESC
+                LIMIT 20
+                """,
+                (owner_id, owner_id),
+            ).fetchall()
+
+        profile = self.get_active_icp_profile(owner_user_id=owner_id)
+        experiment_rows = []
+        for experiment in experiments:
+            measured = experiment.get("measured_variants") or experiment.get("variants") or []
+            experiment_rows.append({**experiment, "analysis": summarize_experiment(measured)})
+        sent_count = int(sent_total.get("total") or 0)
+        positive = int(replies.get("positive") or 0)
+        return {
+            "lead_quality": lead_quality,
+            "copy_quality": copy_quality,
+            "replies": {
+                **replies,
+                "positive_reply_rate": round(100 * positive / sent_count, 2) if sent_count else 0.0,
+                "sent_total": sent_count,
+            },
+            "icp_profile": profile,
+            "icp_calibration": calibration_summary(
+                feedback,
+                current_threshold=int(profile.get("qualified_threshold") or 70),
+            ),
+            "experiments": experiment_rows,
+        }
+
+    def _campaign_metric_rows(self, *, owner_user_id: int | None) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT m.*
+                FROM campaign_metrics m
+                JOIN campaigns c ON c.id = m.campaign_id
+                WHERE %s::bigint IS NULL OR c.owner_user_id = %s
+                """,
+                (owner_user_id, owner_user_id),
+            ).fetchall()
+
     def contact_detail(self, contact_id: int, *, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
         contact = self.get_contact_for_user(contact_id, user) if user else self.get_contact(contact_id)
         if not contact:
@@ -2634,16 +3024,34 @@ class Repository:
         subject: str,
         body: str,
         research_snapshot: dict[str, Any] | None = None,
+        quality_review: dict[str, Any] | None = None,
+        experiment_id: int | None = None,
+        experiment_variant: str | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
             return conn.execute(
                 """
-                INSERT INTO email_drafts(contact_id, user_id, sequence_step, mode, subject, body, research_snapshot)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                INSERT INTO email_drafts(
+                    contact_id, user_id, sequence_step, mode, subject, body, research_snapshot,
+                    quality_review, experiment_id, experiment_variant
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
                 RETURNING id, contact_id, user_id, sequence_step, mode, subject, body,
-                          research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                          research_snapshot, quality_review, experiment_id, experiment_variant,
+                          status, created_at, sent_at, approved_at, approved_by_user_id
                 """,
-                (contact_id, user_id, sequence_step, mode, subject, body, json.dumps(research_snapshot or {}, ensure_ascii=False)),
+                (
+                    contact_id,
+                    user_id,
+                    sequence_step,
+                    mode,
+                    subject,
+                    body,
+                    json.dumps(research_snapshot or {}, ensure_ascii=False),
+                    json.dumps(quality_review or {}, ensure_ascii=False),
+                    experiment_id,
+                    experiment_variant,
+                ),
             ).fetchone()
 
     def get_latest_email_draft(self, contact_id: int, *, user_id: int | None = None) -> dict[str, Any] | None:
@@ -2656,7 +3064,8 @@ class Repository:
             return conn.execute(
                 f"""
                 SELECT id, contact_id, user_id, sequence_step, mode, subject, body,
-                       research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                       research_snapshot, quality_review, experiment_id, experiment_variant,
+                       status, created_at, sent_at, approved_at, approved_by_user_id
                 FROM email_drafts
                 WHERE {' AND '.join(clauses)}
                 ORDER BY created_at DESC, id DESC
@@ -2678,7 +3087,8 @@ class Repository:
                     LIMIT 1
                 )
                 RETURNING id, contact_id, user_id, sequence_step, mode, subject, body,
-                          research_snapshot, status, created_at, sent_at, approved_at, approved_by_user_id
+                          research_snapshot, quality_review, experiment_id, experiment_variant,
+                          status, created_at, sent_at, approved_at, approved_by_user_id
                 """,
                 (user_id, contact_id, user_id),
             ).fetchone()
@@ -3150,7 +3560,13 @@ class Repository:
                 """,
                 (contact_id, contact["sequence_step"] or 0, terminal.get(event_type, event_type), json.dumps(payload)),
             )
-            if event_type in terminal:
+            reply_classification = (
+                payload.get("reply_classification")
+                if isinstance(payload, dict) and isinstance(payload.get("reply_classification"), dict)
+                else {}
+            )
+            should_advance = event_type != "replied" or not reply_classification or bool(reply_classification.get("should_advance"))
+            if event_type in terminal and should_advance:
                 delivery_reason = payload.get("delivery_reason") if isinstance(payload, dict) else None
                 private_days = _private_pool_days(self.db.config.raw)
                 conn.execute(
@@ -3280,6 +3696,19 @@ class Repository:
                     COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'sent')::integer AS sent_count,
                     COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'opened')::integer AS opened_count,
                     COUNT(DISTINCT c.id) FILTER (WHERE e.event_type = 'replied' OR c.status = 'replied')::integer AS replied_count,
+                    COUNT(DISTINCT c.id) FILTER (
+                      WHERE i.metadata->'reply_classification'->>'positive' = 'true'
+                    )::integer AS positive_replied_count,
+                    COUNT(DISTINCT c.id) FILTER (
+                      WHERE i.metadata->'reply_classification'->>'label' LIKE 'negative%'
+                    )::integer AS negative_replied_count,
+                    COUNT(DISTINCT c.id) FILTER (
+                      WHERE i.metadata->'reply_classification'->>'label' = 'ooo'
+                    )::integer AS ooo_count,
+                    COUNT(DISTINCT c.id) FILTER (
+                      WHERE e.event_type = 'unsubscribed'
+                         OR i.metadata->'reply_classification'->>'label' = 'unsubscribe'
+                    )::integer AS unsubscribe_count,
                     COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('meeting', 'business_plan', 'store_visit', 'trial_order', 'agency_agreement', 'hq_visit', 'signed', 'maintenance'))::integer AS meeting_count,
                     COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('business_plan', 'trial_order', 'agency_agreement', 'signed', 'maintenance'))::integer AS quoted_count,
                     COUNT(DISTINCT c.id) FILTER (WHERE c.lifecycle_stage IN ('signed', 'maintenance') OR c.disposition = 'won')::integer AS won_count,
@@ -3287,14 +3716,18 @@ class Repository:
                   FROM leads l
                   LEFT JOIN contacts c ON c.id = l.contact_id
                   LEFT JOIN email_events e ON e.contact_id = c.id
+                  LEFT JOIN interactions i
+                    ON i.contact_id = c.id AND i.interaction_type = 'email_reply'
                   WHERE l.campaign_id = %s
                 )
                 INSERT INTO campaign_metrics(
                     campaign_id, metric_date, leads_count, valid_contacts_count, sent_count,
-                    opened_count, replied_count, meeting_count, quoted_count, won_count, lost_count
+                    opened_count, replied_count, positive_replied_count, negative_replied_count,
+                    ooo_count, unsubscribe_count, meeting_count, quoted_count, won_count, lost_count
                 )
                 SELECT %s, CURRENT_DATE, leads_count, valid_contacts_count, sent_count,
-                       opened_count, replied_count, meeting_count, quoted_count, won_count, lost_count
+                       opened_count, replied_count, positive_replied_count, negative_replied_count,
+                       ooo_count, unsubscribe_count, meeting_count, quoted_count, won_count, lost_count
                 FROM metric
                 ON CONFLICT (campaign_id, metric_date)
                 DO UPDATE SET
@@ -3303,6 +3736,10 @@ class Repository:
                     sent_count = EXCLUDED.sent_count,
                     opened_count = EXCLUDED.opened_count,
                     replied_count = EXCLUDED.replied_count,
+                    positive_replied_count = EXCLUDED.positive_replied_count,
+                    negative_replied_count = EXCLUDED.negative_replied_count,
+                    ooo_count = EXCLUDED.ooo_count,
+                    unsubscribe_count = EXCLUDED.unsubscribe_count,
                     meeting_count = EXCLUDED.meeting_count,
                     quoted_count = EXCLUDED.quoted_count,
                     won_count = EXCLUDED.won_count,
@@ -3641,6 +4078,9 @@ class Repository:
         provider: str | None = None,
         provider_message_id: str | None = None,
         error: str | None = None,
+        quality_review: dict[str, Any] | None = None,
+        experiment_id: int | None = None,
+        experiment_variant: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -3663,9 +4103,12 @@ class Repository:
                 INSERT INTO outreach_messages(
                     contact_id, lead_id, campaign_id, user_id, draft_id, channel, sequence_step,
                     subject, body, language, ai_model, personalization_evidence, status, provider,
-                    provider_message_id, error, metadata
+                    provider_message_id, error, quality_review, experiment_id, experiment_variant, metadata
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+                    %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb
+                )
                 ON CONFLICT (draft_id) WHERE draft_id IS NOT NULL
                 DO UPDATE SET
                     lead_id = COALESCE(EXCLUDED.lead_id, outreach_messages.lead_id),
@@ -3679,6 +4122,9 @@ class Repository:
                     provider = COALESCE(EXCLUDED.provider, outreach_messages.provider),
                     provider_message_id = COALESCE(EXCLUDED.provider_message_id, outreach_messages.provider_message_id),
                     error = EXCLUDED.error,
+                    quality_review = EXCLUDED.quality_review,
+                    experiment_id = COALESCE(EXCLUDED.experiment_id, outreach_messages.experiment_id),
+                    experiment_variant = COALESCE(EXCLUDED.experiment_variant, outreach_messages.experiment_variant),
                     metadata = outreach_messages.metadata || EXCLUDED.metadata,
                     updated_at = NOW()
                 RETURNING *
@@ -3700,6 +4146,9 @@ class Repository:
                     provider,
                     provider_message_id,
                     error,
+                    json.dumps(quality_review or {}),
+                    experiment_id,
+                    experiment_variant,
                     json.dumps(metadata or {}),
                 ),
             ).fetchone()
@@ -3838,6 +4287,8 @@ def _with_customer_intelligence(contact: dict[str, Any] | None) -> dict[str, Any
         contact = {**contact, "profile_insights": insights}
         if not contact.get("profile_summary"):
             contact["profile_summary"] = fallback["summary"]
+    if not isinstance(contact.get("icp_assessment"), dict) or not contact.get("icp_assessment"):
+        contact = {**contact, "icp_assessment": assess_icp(contact)}
     return contact
 
 

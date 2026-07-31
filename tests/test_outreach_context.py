@@ -45,8 +45,8 @@ def test_personalized_fallback_draft_uses_imported_account_context():
 
     assert draft["subject"] == "Possible Vertu channel fit for Luxepolis"
     assert "curated luxury resale marketplace in India" in draft["body"]
-    assert "premium mobile and luxury technology brand" in draft["body"]
-    assert "brief reply" in draft["body"]
+    assert "VERTU headquarters" in draft["body"]
+    assert "one-page view" in draft["body"]
 
 
 def test_internal_import_notes_are_never_exposed_in_fallback_draft():

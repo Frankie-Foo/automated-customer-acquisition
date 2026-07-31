@@ -31,3 +31,15 @@ def test_pdca_workflow_guards_prevent_duplicate_open_work() -> None:
     assert "uq_followup_tasks_open_rule" in sql
     assert "WHERE status = 'open' AND trigger_rule IS NOT NULL" in sql
     assert "uq_outreach_messages_draft" in sql
+
+
+def test_outbound_quality_migration_declares_feedback_and_experiment_storage() -> None:
+    sql = Path("migrations/030_outbound_quality_loop.sql").read_text(encoding="utf-8")
+
+    for table in ("icp_profiles", "icp_feedback", "outbound_experiments"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
+
+    assert "ADD COLUMN IF NOT EXISTS icp_assessment JSONB" in sql
+    assert "ADD COLUMN IF NOT EXISTS quality_review JSONB" in sql
+    assert "ADD COLUMN IF NOT EXISTS experiment_id BIGINT" in sql
+    assert "ADD COLUMN IF NOT EXISTS positive_replied_count INTEGER" in sql

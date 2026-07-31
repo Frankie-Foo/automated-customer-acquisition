@@ -30,6 +30,7 @@ function AdminConsole() {
   const [auditLogs, setAuditLogs] = useState([]);
   const [automationRuns, setAutomationRuns] = useState([]);
   const [regionRules, setRegionRules] = useState([]);
+  const [qualityData, setQualityData] = useState(null);
   const [newUser, setNewUser] = useState(emptyNewUser);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -49,13 +50,15 @@ function AdminConsole() {
         api("/api/admin/audit-logs?limit=100"),
         api("/api/automation-runs"),
         api("/api/admin/region-rules"),
+        api("/api/outbound-quality"),
       ]);
-      const [userResult, senderResult, auditResult, runResult, ruleResult] = results;
+      const [userResult, senderResult, auditResult, runResult, ruleResult, qualityResult] = results;
       if (userResult.status === "fulfilled") setUsers(userResult.value.users || []);
       if (senderResult.status === "fulfilled") setSenders(senderResult.value.senders || []);
       if (auditResult.status === "fulfilled") setAuditLogs(auditResult.value.logs || []);
       if (runResult.status === "fulfilled") setAutomationRuns(runResult.value.runs || []);
       if (ruleResult.status === "fulfilled") setRegionRules(ruleResult.value.rules || []);
+      if (qualityResult.status === "fulfilled") setQualityData(qualityResult.value || null);
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length) setError(failures.map((result) => result.reason?.message || "管理数据加载失败").join("；"));
     } catch (err) {
@@ -209,6 +212,7 @@ function AdminConsole() {
           ["users", "账号与配额"],
           ["senders", "发件账号"],
           ["automation", "获客任务"],
+          ["quality", "质量与实验"],
           ["assignment", "地区分配"],
           ["audit", "操作记录"],
         ].map(([value, label]) => <button key={value} type="button" className={activeSection === value ? "active" : ""} onClick={() => setActiveSection(value)}>{label}</button>)}
@@ -267,6 +271,7 @@ function AdminConsole() {
           <div className="card-title-row"><h3>后台获客任务</h3><button type="button" onClick={loadAdminData}>刷新任务</button></div>
           <AutomationRunTable runs={automationRuns} onAction={updateAutomationRun} />
         </section>}
+        {activeSection === "quality" && <QualityExperimentPanel data={qualityData} onRefresh={loadAdminData} />}
         {activeSection === "assignment" && <section className="admin-card automation-admin-card">
           <div className="card-title-row"><div><h3>地区自动分配</h3><p className="muted">获客任务完成后，按国家/地区关键词首次分配到销售私人池。</p></div><button type="button" onClick={() => setRegionRules((current) => [...current, { owner: "", match: [] }])}>新增规则</button></div>
           <RegionRulesEditor rules={regionRules} users={users} onChange={setRegionRules} onSave={saveRegionRules} />
@@ -281,6 +286,194 @@ function AdminConsole() {
       </div>
     </>
   );
+}
+
+function QualityExperimentPanel({ data, onRefresh }) {
+  const [form, setForm] = useState({
+    name: "",
+    hypothesis: "",
+    variable_name: "subject",
+    variant_a: "",
+    variant_b: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const lead = data?.lead_quality || {};
+  const copy = data?.copy_quality || {};
+  const replies = data?.replies || {};
+  const calibration = data?.icp_calibration || {};
+  const profile = data?.icp_profile || {};
+  const experiments = data?.experiments || [];
+
+  async function createExperiment() {
+    if (!form.name.trim() || !form.hypothesis.trim() || !form.variant_a.trim() || !form.variant_b.trim()) {
+      setNotice("请填写实验名称、假设和两个版本的差异。");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await api("/api/admin/experiments", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "create",
+          name: form.name.trim(),
+          hypothesis: form.hypothesis.trim(),
+          variable_name: form.variable_name,
+          variants: [
+            { name: "A", instruction: form.variant_a.trim() },
+            { name: "B", instruction: form.variant_b.trim() },
+          ],
+          status: "active",
+        }),
+      });
+      setForm({ name: "", hypothesis: "", variable_name: "subject", variant_a: "", variant_b: "" });
+      setNotice("实验已启动。新生成的邮件会按联系人稳定分组。");
+      await onRefresh();
+    } catch (err) {
+      setNotice(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateExperiment(experimentId, status) {
+    setBusy(true);
+    setNotice("");
+    try {
+      await api("/api/admin/experiments", {
+        method: "POST",
+        body: JSON.stringify({ action: "update", experiment_id: experimentId, status }),
+      });
+      setNotice(status === "completed" ? "实验已结束，结果已保留。" : "实验状态已更新。");
+      await onRefresh();
+    } catch (err) {
+      setNotice(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyIcpThreshold() {
+    if (!profile.id || calibration.proposed_threshold == null) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await api("/api/admin/icp-profile", {
+        method: "POST",
+        body: JSON.stringify({
+          profile_id: profile.id,
+          qualified_threshold: calibration.proposed_threshold,
+        }),
+      });
+      setNotice(`ICP 合格线已调整为 ${calibration.proposed_threshold} 分。`);
+      await onRefresh();
+    } catch (err) {
+      setNotice(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="admin-card quality-admin-card">
+      <div className="card-title-row">
+        <div>
+          <h3>出站质量闭环</h3>
+          <p className="muted">用人工反馈校准 ICP，用有效回复而不是打开率评估名单和文案。</p>
+        </div>
+        <button type="button" onClick={onRefresh}>刷新</button>
+      </div>
+      {notice && <div className="admin-alert">{notice}</div>}
+      <div className="quality-dashboard-grid">
+        <QualityMetric label="平均 ICP" value={`${lead.average_score || 0} 分`} hint={`高优先 ${lead.priority || 0} / 合格 ${lead.qualified || 0}`} />
+        <QualityMetric label="名单待复核" value={lead.review || 0} hint={`不建议 ${lead.disqualified || 0}`} />
+        <QualityMetric label="文案通过" value={copy.ready || 0} hint={`需改 ${copy.revise || 0} / 拦截 ${copy.blocked || 0}`} />
+        <QualityMetric label="有效回复率" value={`${replies.positive_reply_rate || 0}%`} hint={`有效 ${replies.positive || 0} / 总回复 ${replies.total || 0}`} />
+        <QualityMetric label="负向回复" value={replies.negative || 0} hint={`自动回复 ${replies.ooo || 0} / 退订 ${replies.unsubscribe || 0}`} />
+      </div>
+
+      <div className="quality-admin-columns">
+        <section className="quality-panel">
+          <div className="quality-panel-title">
+            <div><strong>ICP 调优</strong><span>{profile.name || "默认客户画像"}</span></div>
+            <b>{calibration.accuracy || 0}% 准确</b>
+          </div>
+          <dl className="quality-definition-list">
+            <div><dt>人工复核</dt><dd>{calibration.reviewed || 0} 条</dd></div>
+            <div><dt>误判为合格</dt><dd>{calibration.false_positive || 0}</dd></div>
+            <div><dt>漏掉好线索</dt><dd>{calibration.false_negative || 0}</dd></div>
+            <div><dt>当前 / 建议合格线</dt><dd>{calibration.current_threshold || 70} / {calibration.proposed_threshold || 70}</dd></div>
+          </dl>
+          <p className="quality-recommendation">{calibrationRecommendation(calibration.recommendation)}</p>
+          <button type="button" disabled={busy || calibration.reviewed < 10 || calibration.current_threshold === calibration.proposed_threshold} onClick={applyIcpThreshold}>
+            应用建议合格线
+          </button>
+        </section>
+
+        <section className="quality-panel experiment-builder">
+          <div className="quality-panel-title"><div><strong>新建单变量实验</strong><span>同一轮只测试一个差异</span></div></div>
+          <label>实验名称<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：问题式主题 vs 价值式主题" /></label>
+          <label>假设<input value={form.hypothesis} onChange={(event) => setForm({ ...form, hypothesis: event.target.value })} placeholder="例如：具体业务问题能提高有效回复率" /></label>
+          <label>测试变量
+            <select value={form.variable_name} onChange={(event) => setForm({ ...form, variable_name: event.target.value })}>
+              <option value="subject">邮件主题</option>
+              <option value="opening">开场角度</option>
+              <option value="cta">行动指令</option>
+              <option value="length">正文长度</option>
+            </select>
+          </label>
+          <div className="experiment-variants">
+            <label>A 版本<input value={form.variant_a} onChange={(event) => setForm({ ...form, variant_a: event.target.value })} placeholder="保持当前写法" /></label>
+            <label>B 版本<input value={form.variant_b} onChange={(event) => setForm({ ...form, variant_b: event.target.value })} placeholder="使用具体业务问题" /></label>
+          </div>
+          <button type="button" className="primary" disabled={busy} onClick={createExperiment}>启动实验</button>
+        </section>
+      </div>
+
+      <section className="experiment-history">
+        <div className="quality-panel-title"><div><strong>实验复盘</strong><span>每个版本至少发送 100 封后再判断胜出</span></div></div>
+        {!experiments.length ? <div className="empty-state">尚未创建实验</div> : experiments.map((experiment) => (
+          <article key={experiment.id}>
+            <header>
+              <div><strong>{experiment.name}</strong><span>{experiment.variable_name} · {experiment.hypothesis}</span></div>
+              <em>{experimentStatusLabel(experiment.status)}</em>
+            </header>
+            <div className="experiment-results">
+              {(experiment.analysis?.variants || []).map((variant) => (
+                <div key={variant.name}>
+                  <b>{variant.name}</b>
+                  <span>发送 {variant.sent}</span>
+                  <span>回复 {variant.replies}</span>
+                  <span>有效回复 {variant.positive_reply_rate}%</span>
+                </div>
+              ))}
+            </div>
+            <p>{experiment.analysis?.winner ? `胜出版本：${experiment.analysis.winner}` : "样本仍在积累，暂不下结论。"}</p>
+            {experiment.status === "active" && <button type="button" disabled={busy} onClick={() => updateExperiment(experiment.id, "completed")}>结束并保留结果</button>}
+          </article>
+        ))}
+      </section>
+    </section>
+  );
+}
+
+function QualityMetric({ label, value, hint }) {
+  return <article className="quality-metric"><span>{label}</span><strong>{value}</strong><small>{hint}</small></article>;
+}
+
+function calibrationRecommendation(value) {
+  const labels = {
+    "Collect at least 10 reviewed examples before changing the ICP threshold.": "至少收集 10 条销售复核结果后，再调整 ICP 合格线。",
+    "Tighten the ICP threshold by 5 points and review the repeated false-positive traits.": "误判偏多，建议提高 5 分，并复查重复出现的错误特征。",
+    "Relax the ICP threshold by 5 points and review the missed positive traits.": "漏掉好线索偏多，建议降低 5 分，并补充遗漏的正向特征。",
+    "Keep the current threshold; reviewed errors are balanced.": "当前误差较均衡，建议保持现有合格线。",
+  };
+  return labels[value] || value || "等待销售反馈。";
+}
+
+function experimentStatusLabel(status) {
+  return { draft: "草稿", active: "进行中", completed: "已完成", cancelled: "已取消" }[status] || status;
 }
 
 function SummaryCard({ label, value, hint }) {

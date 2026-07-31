@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
+import { rememberWorkspaceContact, selectedWorkspaceContact } from "./workspaceNavigation.js";
 
 const lifecycleOptions = [
   ["lead", "线索"],
@@ -59,6 +60,7 @@ function CustomerWorkspace() {
   const [emailMode, setEmailMode] = useState("ai");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [qualityReview, setQualityReview] = useState(null);
   const [approved, setApproved] = useState(false);
   const [loading, setLoading] = useState(false);
   const [operationLabel, setOperationLabel] = useState("");
@@ -99,6 +101,7 @@ function CustomerWorkspace() {
       setBody(next.draft?.body || defaultEmailBody(next.contact));
       setEmailMode(next.draft?.mode || "ai");
       setApproved(next.draft?.status === "approved");
+      setQualityReview(next.draft?.quality_review || null);
       setTimeout(() => document.querySelector("#customer-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     } catch (err) {
       setError(err.message);
@@ -109,11 +112,16 @@ function CustomerWorkspace() {
   }, []);
 
   useEffect(() => {
-    const open = (event) => loadDetail(Number(event.detail?.contactId));
+    const open = (event) => {
+      const contactId = rememberWorkspaceContact(event.detail?.contactId);
+      if (contactId) loadDetail(contactId);
+    };
     const refresh = () => loadSuggestions().catch(() => {});
     window.addEventListener("salesbot:open-contact", open);
     window.addEventListener("salesbot:refresh-related", refresh);
     loadSuggestions().catch(() => {});
+    const selectedContactId = selectedWorkspaceContact();
+    if (selectedContactId) loadDetail(selectedContactId);
     return () => {
       window.removeEventListener("salesbot:open-contact", open);
       window.removeEventListener("salesbot:refresh-related", refresh);
@@ -181,6 +189,7 @@ function CustomerWorkspace() {
       });
       setSubject(result.subject || "");
       setBody(result.body || "");
+      setQualityReview(result.quality_review || null);
       setApproved(false);
       window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "邮件草稿已生成，请检查后再发送" } }));
     } finally {
@@ -225,9 +234,19 @@ function CustomerWorkspace() {
     });
     setSubject(saved.subject || subject.trim());
     setBody(saved.body || body.trim());
+    setQualityReview(saved.quality_review || null);
     await api("/api/email-draft/approve", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
     setApproved(true);
     window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "邮件草稿已审核锁定，可以发送" } }));
+  }
+
+  async function reviewIcp(expectedQualified) {
+    if (!contact) return;
+    await api("/api/icp-feedback", {
+      method: "POST",
+      body: JSON.stringify({ contact_id: contact.id, expected_qualified: expectedQualified }),
+    });
+    window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "ICP 判断反馈已记录" } }));
   }
 
   async function guarded(action) {
@@ -258,7 +277,13 @@ function CustomerWorkspace() {
         <div className="workspace-content">
           {error && <div className="admin-alert is-error">{error}</div>}
           <WorkflowStrip contact={contact} research={detail?.research} draft={detail?.draft} feedback={detail?.feedback} />
-          <WorkspaceProfile contact={contact} research={detail?.research} onResearch={() => guarded(researchContact)} onAdoptEmail={(email) => guarded(() => adoptEmail(email))} />
+          <WorkspaceProfile
+            contact={contact}
+            research={detail?.research}
+            onResearch={() => guarded(researchContact)}
+            onAdoptEmail={(email) => guarded(() => adoptEmail(email))}
+            onIcpFeedback={(expected) => guarded(() => reviewIcp(expected))}
+          />
           <div className="workspace-form">
             <label>阶段
               <select value={stage} onChange={(event) => setStage(event.target.value)}>
@@ -292,8 +317,9 @@ function CustomerWorkspace() {
                 </select>
               </label>
             </div>
-            <label>主题<input value={subject} onChange={(event) => { setSubject(event.target.value); setApproved(false); }} placeholder="邮件主题" /></label>
-            <label>正文<textarea value={body} onChange={(event) => { setBody(event.target.value); setApproved(false); }} placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}" /></label>
+            <label>主题<input value={subject} onChange={(event) => { setSubject(event.target.value); setApproved(false); setQualityReview(null); }} placeholder="邮件主题" /></label>
+            <label>正文<textarea value={body} onChange={(event) => { setBody(event.target.value); setApproved(false); setQualityReview(null); }} placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}" /></label>
+            <CopyQualityReview review={qualityReview} />
             <div className={`draft-approval ${approved ? "approved" : "pending"}`}><strong>{approved ? "草稿已审核锁定" : "草稿尚未审核"}</strong><span>{approved ? "若修改主题或正文，需要重新审核。" : "检查收件人、事实依据、主题和正文后再锁定发送。"}</span></div>
             <div className="panel-actions">
               <button type="button" disabled={loading} onClick={() => guarded(draftEmail)}>{loading ? (operationLabel || "处理中...") : (emailMode === "ai" ? "调研并生成草稿" : "套用自定义草稿")}</button>
@@ -310,7 +336,8 @@ function CustomerWorkspace() {
 }
 
 function WorkflowStrip({ contact, research, draft, feedback }) {
-  const identityReady = ["confirmed", "likely"].includes(contact.identity_status) || Number(contact.identity_confidence || 0) >= 70;
+  const icp = contact.icp_assessment || {};
+  const identityReady = icp.qualified || ["confirmed", "likely"].includes(contact.identity_status) || Number(contact.identity_confidence || 0) >= 70;
   const emailReady = contact.email_status === "valid" && !!contact.email;
   const researchReady = Array.isArray(research?.sources) && research.sources.length > 0;
   const draftReady = !!draft?.body;
@@ -318,7 +345,7 @@ function WorkflowStrip({ contact, research, draft, feedback }) {
   const replied = contact.status === "replied" || Number(feedback?.replied || 0) > 0;
   const opened = Number(feedback?.opened || 0) > 0;
   const steps = [
-    ["身份匹配", identityReady, identityReady ? `${contact.identity_confidence || contact.lead_score || "--"} 分` : "待确认"],
+    ["ICP 与身份", identityReady, icp.score != null ? `${icp.score} 分 · ${icpTierLabel(icp.tier)}` : identityReady ? `${contact.identity_confidence || contact.lead_score || "--"} 分` : "待确认"],
     ["邮箱验证", emailReady, emailReady ? "valid" : "待富化"],
     ["实时调研", researchReady, researchReady ? `${research.sources.length} 条证据` : "待调研"],
     ["邮件草稿", draftReady, draftReady ? "已保存" : "待生成"],
@@ -339,14 +366,26 @@ function draftActionLabel(contact) {
   return "待写草稿";
 }
 
-function WorkspaceProfile({ contact, research, onResearch, onAdoptEmail }) {
+function WorkspaceProfile({ contact, research, onResearch, onAdoptEmail, onIcpFeedback }) {
   const insights = contact.profile_insights || {};
+  const icp = contact.icp_assessment || insights.icp_assessment || {};
   return (
     <div className="workspace-profile">
       <div><strong>{fullName(contact)}</strong><span>{contact.job_title || ""} · {contact.company_name || ""}</span></div>
       <div><b>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "线索"}</b><span>{dispositionLabel(contact.disposition)}</span></div>
-      <div><b>{insights.icp_fit_score ?? "--"}</b><span>拟合度 / {intentLabel(insights.intent_level)}</span></div>
+      <div><b>{icp.score ?? insights.icp_fit_score ?? "--"}</b><span>ICP · {icpTierLabel(icp.tier)} / {intentLabel(insights.intent_level)}</span></div>
       <p>{contact.profile_summary || "还没有客户画像，点击列表里的“画像”生成。"}</p>
+      {icp.score != null && <section className={`icp-assessment tier-${icp.tier || "review"}`}>
+        <div>
+          <strong>{icp.qualified ? "符合当前 ICP" : "需要人工复核"}</strong>
+          <span>置信度 {icp.confidence ?? "--"} · {Object.entries(icp.breakdown || {}).map(([key, value]) => `${icpDimensionLabel(key)} ${value}`).join(" / ")}</span>
+        </div>
+        <div className="icp-feedback-actions">
+          <span>判断准确吗？</span>
+          <button type="button" onClick={() => onIcpFeedback(true)}>适合跟进</button>
+          <button type="button" onClick={() => onIcpFeedback(false)}>不匹配</button>
+        </div>
+      </section>}
       <div className="panel-actions"><button type="button" onClick={onResearch} disabled={contact.pool_type !== "private"}>{research ? "刷新实时调研" : "调研公司与实时新闻"}</button></div>
       <ResearchEvidence research={research} />
       <EnhancedProfileBlocks insights={insights} />
@@ -494,6 +533,87 @@ function StageAnalysis({ analysis }) {
   );
 }
 
+function CopyQualityReview({ review }) {
+  if (!review?.status) {
+    return (
+      <section className="copy-quality neutral">
+        <div>
+          <strong>发送前自动质检</strong>
+          <span>重新生成或套用当前草稿后，系统会检查垃圾词、事实风险、格式和行动指令。</span>
+        </div>
+      </section>
+    );
+  }
+  const issues = [...(review.blocking_issues || []), ...(review.warnings || [])];
+  const statusLabel = {
+    ready: "可发送",
+    revise: "建议修改",
+    blocked: "已拦截",
+  }[review.status] || "待检查";
+  return (
+    <section className={`copy-quality ${review.status || "neutral"}`}>
+      <div className="copy-quality-head">
+        <div>
+          <strong>{statusLabel}</strong>
+          <span>文案质量 {Number(review.score || 0)} 分</span>
+        </div>
+        <b>{review.status === "blocked" ? "修正后才能审核" : review.status === "revise" ? "建议先优化" : "通过自动检查"}</b>
+      </div>
+      {review.rules && (
+        <div className="copy-quality-rules" aria-label="冷邮件写作规则">
+          <span className={review.rules.peer_to_peer ? "pass" : "fail"}>同行语气</span>
+          <span className={review.rules.word_count_in_range ? "pass" : "fail"}>
+            正文 {Number(review.rules.prospect_word_count || 0)} 词（目标 100-120）
+          </span>
+          <span className={review.rules.single_low_friction_cta ? "pass" : "fail"}>单一低门槛 CTA</span>
+        </div>
+      )}
+      {issues.length > 0 && (
+        <ul className="quality-issue-list">
+          {issues.slice(0, 5).map((issue, index) => (
+            <li key={`${issue.code || issue}-${index}`}>{copyIssueLabel(issue)}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function copyIssueLabel(issue) {
+  const code = typeof issue === "string" ? issue : issue?.code;
+  const detail = typeof issue === "object" ? issue?.message || issue?.detail || issue?.recommendation : "";
+  const labels = {
+    missing_subject: "缺少具体主题",
+    body_too_short: "正文太短，缺少价值信息和明确问题",
+    body_too_long: "正文过长，建议压缩",
+    body_below_target_words: "正文少于 100 词，补足一条真实观察或本地渠道价值",
+    body_above_target_words: "正文超过 120 词，删除重复介绍和泛化宣传",
+    unresolved_placeholders: "存在未处理的模板变量",
+    internal_data_exposed: "正文暴露了内部评分、核验或来源字段",
+    fake_urgency: "存在人为制造紧迫感的措辞",
+    unverifiable_return: "包含无法核实的收益承诺",
+    generic_flattery: "开场赞美过于泛化",
+    template_cliche: "包含明显模板化开场",
+    salesy_pitch: "语气像推销广告，改成同行之间的商业判断",
+    excessive_exclamation: "感叹号过多",
+    subject_all_caps: "主题包含连续大写词",
+    missing_question: "缺少低门槛的确认问题",
+    too_many_questions: "问题过多，只保留一个主要行动指令",
+    high_friction_cta: "首封不要直接约会；改为询问是否可发送一页合作思路",
+    missing_unsubscribe: "缺少退订链接",
+    missing_greeting: "缺少自然称呼",
+    missing_cta: "缺少清晰且低门槛的下一步",
+    too_long: "正文过长，建议压缩",
+    too_many_links: "链接过多，可能影响送达",
+    excessive_caps: "大写内容过多，像群发广告",
+    spam_phrase: "包含高风险营销措辞",
+    unsupported_claim: "存在未经证据支持的事实或收益承诺",
+    malformed_placeholder: "模板变量格式不正确",
+    weak_personalization: "个性化信息不足",
+  };
+  return detail || labels[code] || String(code || "需要人工复核");
+}
+
 function fullName(contact) {
   return [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "(No name)";
 }
@@ -504,6 +624,25 @@ function dispositionLabel(disposition) {
 
 function intentLabel(level) {
   return { high: "高意向", medium: "中意向", low: "低意向", unknown: "待判断" }[level] || "待判断";
+}
+
+function icpTierLabel(tier) {
+  return {
+    priority: "高优先",
+    qualified: "符合",
+    review: "需复核",
+    disqualified: "不建议",
+  }[tier] || "待评估";
+}
+
+function icpDimensionLabel(dimension) {
+  return {
+    contactability: "联系方式",
+    role_authority: "职位",
+    account_fit: "公司",
+    identity_quality: "身份",
+    market_evidence: "市场证据",
+  }[dimension] || dimension;
 }
 
 function candidateCategoryLabel(category) {
@@ -555,11 +694,11 @@ function defaultEmailBody(contact) {
     "",
     matchLine,
     "",
-    "I work with Vertu, a premium mobile and luxury technology brand. We are looking for selective partners where the customer base already values high-end products, service, and differentiated retail experiences.",
+    "From VERTU headquarters, I work with prospective local partners on whether a VERTU boutique or selective distribution model could suit their market.",
     "",
-    `If ${company} is exploring new premium categories or partner brands, I can send a short note on where Vertu may fit and what a lightweight cooperation model could look like.`,
+    "VERTU combines luxury mobile products, accessories and a differentiated retail experience for high-value customers. For the right operator, this can create a distinct premium category alongside an existing luxury portfolio, subject to a practical local market plan.",
     "",
-    "Would it be worth a brief reply to see if this is relevant?",
+    `May I send a one-page view of how a VERTU channel partnership could be assessed for ${company}'s market?`,
     "",
     "Best regards,",
     "{{sender_name}} You",

@@ -8,6 +8,7 @@ from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile
 from ..db import Repository
 from ..logging_utils import log
+from .quality import OutboundQualityService
 
 
 class ProfileAgentService:
@@ -25,6 +26,7 @@ class ProfileAgentService:
         api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
         if not use_llm or not api_key:
             self.repo.update_profile_summary(contact_id, fallback["summary"], fallback)
+            fallback["icp_assessment"] = OutboundQualityService(self.repo).assess_contact(contact)
             return fallback
         prompt = (
             "You are an overseas B2B sales customer-insight agent for Vertu. "
@@ -50,6 +52,7 @@ class ProfileAgentService:
             log("profile_agent.failed", contact_id=contact_id, error=str(exc))
             insights = fallback
         insights = _normalize_profile_insights(insights, fallback)
+        insights["icp_assessment"] = OutboundQualityService(self.repo).assess_contact(contact)
         self.repo.update_profile_summary(contact_id, insights["summary"], insights)
         return insights
 

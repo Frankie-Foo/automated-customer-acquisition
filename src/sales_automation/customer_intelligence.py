@@ -140,10 +140,10 @@ def outreach_framework(contact: dict[str, Any]) -> dict[str, str]:
     source_context = _source_context(contact)
     business_match = _business_match_sentence(company, role, source_context, contact.get("industry"))
     return {
-        "intent": f"Briefly ask whether {company} is open to a practical channel cooperation conversation.",
+        "intent": f"Assess whether {company} could consider operating a local VERTU boutique or selective distribution channel.",
         "business_match": business_match,
-        "our_value": "Position Vertu as a premium mobile and luxury technology brand suitable for selective high-end retail or distributor channels.",
-        "low_barrier_ask": "Ask for a short reply or a 15-minute exploratory call, not a heavy proposal immediately.",
+        "our_value": "Position VERTU headquarters as a practical partner for a differentiated luxury category, local boutique model, and selective distribution plan without promising a commercial outcome.",
+        "low_barrier_ask": "Ask permission to send a one-page local-market partnership outline; do not request a meeting or call in the first email.",
         "close": "Keep the ending direct, polite, and easy to say yes/no to.",
     }
 
@@ -162,28 +162,28 @@ def pain_point_strategy(contact: dict[str, Any]) -> dict[str, str]:
     )
 
     if any(keyword in text for keyword in ("hotel", "hospitality", "resort", "concierge")):
-        pain = "needs differentiated VIP guest experiences and high-ticket retail/service add-ons"
+        pain = "whether differentiated VIP guest experiences and high-ticket retail or service add-ons fit the local operation"
         angle = "position Vertu as a premium guest gifting, concierge, or VIP retail conversation"
         proof = "connect the message to luxury hospitality, concierge service, and customer experience"
     elif any(keyword in text for keyword in ("watch", "jewelry", "jewellery", "luxury", "boutique", "fashion", "pre-owned", "second hand")):
-        pain = "needs high-margin premium categories that fit an existing luxury customer base"
+        pain = "whether a differentiated premium category fits an existing luxury customer base and portfolio"
         angle = "position Vertu as a selective luxury technology category, not a mass electronics product"
         proof = "connect the message to curated assortment, status products, and premium service"
     elif any(keyword in text for keyword in ("dealer", "distributor", "reseller", "retail", "automotive", "supercar")):
-        pain = "needs differentiated products, channel margin, and a low-friction cooperation model"
+        pain = "whether differentiated products and a practical channel model can complement the current commercial mix"
         angle = "position Vertu as an incremental premium category for existing high-value customers"
         proof = "connect the message to channel expansion, customer upgrade, and selective distribution"
     else:
-        pain = "may need a differentiated premium offer but the evidence is still limited"
+        pain = "whether a differentiated premium offer could fit, while the available evidence remains limited"
         angle = "ask a light qualification question before sending a heavier proposal"
         proof = "use only the imported account context and avoid unsupported claims"
 
     return {
-        "suspected_pain": f"{company} {pain}.",
+        "suspected_pain": f"For a business like {company}, the practical question is {pain}.",
         "outreach_angle": angle,
         "message_hook": _message_hook(contact, pain),
         "evidence_to_use": context.get("hiring_signal_summary") or context.get("seed_reason") or proof,
-        "question_to_ask": f"Would it be relevant to explore whether Vertu fits {company}'s current customer base or channel plans?",
+        "question_to_ask": f"May I send a one-page view of how a VERTU boutique or selective distribution model could be assessed for {company}'s market?",
         "avoid": f"Do not claim {company} has a confirmed problem unless it appears in source notes; frame it as a practical fit question for {role}.",
     }
 
