@@ -20,7 +20,7 @@ from ..outreach_copy import (
     customer_visible_source_context,
 )
 from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
-from ..rendering import open_pixel_url, render_string, render_template, unsubscribe_url
+from ..rendering import build_html_body, open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 from .pdca import LeadWorkflowService
 from .quality import OutboundQualityService
@@ -139,7 +139,7 @@ class PersonalizedEmailService:
         if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
-        html_body = "<br>".join(html.escape(line) for line in text.splitlines())
+        html_body = build_html_body(text, product_images=self.config.product_images)
         html_body += f'<img src="{open_pixel_url(contact, step, base_url, tracking_secret)}" width="1" height="1" alt="" />'
         idempotency_key = f"contact-{contact['id']}-step-{step}"
         attempt = self.repo.reserve_send_attempt(
@@ -332,13 +332,14 @@ class PersonalizedEmailService:
         prompt = (
             "You are a VERTU global-headquarters channel-development representative. Generate one concise English first-touch email from only the provided facts. "
             "The commercial purpose is to identify a credible local partner who could open and operate a VERTU boutique or develop selective local distribution. "
+            "This email will be sent with VERTU product images displayed below the text, so you do not need to describe phones, watches, or wearables in the body. "
             "Frame the value as a differentiated luxury category and potential commercial upside for the partner's high-value customer base; never promise revenue, margin, returns, or an outcome. "
-            "Output strict JSON only with fields: subject, body. Body must be plain text, 100-120 prospect-facing words before the signature, natural, and specific. "
+            "Output strict JSON only with fields: subject, body. Body must be plain text, 70-100 prospect-facing words before the signature, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
             "You may use at most one current signal from research_sources, only when its title and snippet directly support the wording. "
             "Treat undated or ambiguous sources as weak evidence and phrase them as an observation, not a confirmed business fact. "
             "Use a peer-to-peer commercial tone, not a sales script. Every sentence must add a fact, business observation, or practical partner value. "
-            "Use this structure without headings: observed account context; local boutique/distribution opportunity; why VERTU may fit the partner's customer base; exactly one low-friction permission question; brief close. "
+            "Use this structure without headings: observed account context; local boutique/distribution opportunity; why VERTU may fit the partner's customer base; exactly one low-friction permission question; brief close with a reference like 'the products attached below give a quick sense of our range'. "
             "The only CTA should ask whether you may send a one-page local-market partnership outline. Do not request a meeting, call, calendar invite, or attachment in the first email. "
             "Avoid generic claims such as 'we are a leading brand', 'exclusive opportunity', 'hope this email finds you well', or 'high quality and good price'. "
             "Never expose CRM fields, lead scores, verification status, follow-up status, owners, source IDs, or internal notes. "
@@ -410,8 +411,7 @@ class PersonalizedEmailService:
             f"{match.rstrip('.')}. "
             f"From VERTU headquarters, I work with prospective local partners on whether a VERTU boutique or selective distribution model could suit their market.\n\n"
             f"{pain[0].upper() + pain[1:] if pain else 'The relevant question is whether the category can fit the local customer base and operating model.'} "
-            "VERTU combines luxury mobile products, accessories and a differentiated retail experience for high-value customers. "
-            "For the right local operator, this can create a distinct premium category alongside an existing luxury portfolio, subject to a practical market plan.\n\n"
+            "The products below give a quick sense of our range — including AI phones, smartwatches, mechanical watches and premium wearables.\n\n"
             f"May I send a one-page view of how a VERTU channel partnership could be assessed for {company}'s market?\n\n"
             f"{_sender_signature(user, self.config.sender.get('name', ''))}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
@@ -504,7 +504,7 @@ class OutreachService:
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
         text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
-        html_body = "<br>".join(html.escape(line) for line in text.splitlines())
+        html_body = build_html_body(text, product_images=self.config.product_images)
         validate_email_body(subject, text)
         html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url, tracking_secret)}" width="1" height="1" alt="" />'
         step = int(step_cfg["step"])

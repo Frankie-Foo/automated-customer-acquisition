@@ -563,7 +563,7 @@ function CopyQualityReview({ review }) {
         <div className="copy-quality-rules" aria-label="冷邮件写作规则">
           <span className={review.rules.peer_to_peer ? "pass" : "fail"}>同行语气</span>
           <span className={review.rules.word_count_in_range ? "pass" : "fail"}>
-            正文 {Number(review.rules.prospect_word_count || 0)} 词（目标 100-120）
+            正文 {Number(review.rules.prospect_word_count || 0)} 词（目标 70-100）
           </span>
           <span className={review.rules.single_low_friction_cta ? "pass" : "fail"}>单一低门槛 CTA</span>
         </div>
@@ -586,8 +586,8 @@ function copyIssueLabel(issue) {
     missing_subject: "缺少具体主题",
     body_too_short: "正文太短，缺少价值信息和明确问题",
     body_too_long: "正文过长，建议压缩",
-    body_below_target_words: "正文少于 100 词，补足一条真实观察或本地渠道价值",
-    body_above_target_words: "正文超过 120 词，删除重复介绍和泛化宣传",
+    body_below_target_words: "正文少于 70 词，补足一条真实观察或本地渠道价值",
+    body_above_target_words: "正文超过 100 词，删除重复介绍和泛化宣传（产品图已展示品类）",
     unresolved_placeholders: "存在未处理的模板变量",
     internal_data_exposed: "正文暴露了内部评分、核验或来源字段",
     fake_urgency: "存在人为制造紧迫感的措辞",

@@ -31,6 +31,10 @@ class AppConfig:
     def sequence(self) -> list[dict[str, Any]]:
         return self.raw.get("sequence", [])
 
+    @property
+    def product_images(self) -> dict[str, Any]:
+        return self.raw.get("product_images", {})
+
 
 def load_dotenv(path: Path = Path(".env"), *, override: bool = True) -> None:
     if not path.exists():

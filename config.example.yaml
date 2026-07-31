@@ -302,3 +302,25 @@ sequence:
     subject: "Re: Quick question about {{company_name}}"
     body_template: templates/step3.txt
     ai_opener: false
+
+product_images:
+  enabled: true
+  base_url: ${PUBLIC_BASE_URL}
+  position: after_body
+  columns: 3
+  items:
+    - src: assets/email_images/outreach_01.png
+      alt: VERTU AI Phones
+      width: 320
+    - src: assets/email_images/outreach_02.png
+      alt: VERTU Watches
+      width: 320
+    - src: assets/email_images/outreach_03.png
+      alt: VERTU Premium Wearables
+      width: 320
+    - src: assets/email_images/outreach_04.png
+      alt: VERTU Luxury Mobile
+      width: 320
+    - src: assets/email_images/outreach_05.png
+      alt: VERTU Product Portfolio
+      width: 320

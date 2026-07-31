@@ -25,6 +25,55 @@ def render_template(path: Path, values: dict[str, Any]) -> tuple[str, str]:
     return text, html_body
 
 
+def build_html_body(text: str, *, product_images: dict[str, Any] | None = None) -> str:
+    """Build email HTML body from plain text, optionally appending product images."""
+    html_body = "<br>".join(html.escape(line) for line in str(text).splitlines())
+    if product_images and product_images.get("enabled"):
+        image_html = build_product_image_html(product_images)
+        if image_html:
+            html_body += image_html
+    return html_body
+
+
+def build_product_image_html(config: dict[str, Any]) -> str:
+    """Build a responsive product image grid for HTML email body."""
+    items = config.get("items") if isinstance(config.get("items"), list) else []
+    if not items:
+        return ""
+    base_url = str(config.get("base_url") or "").rstrip("/")
+    cols = max(1, min(5, int(config.get("columns") or 3)))
+    parts = [
+        '<div style="margin-top:32px;padding-top:24px;border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">',
+        '<p style="margin:0 0 16px 0;font-size:13px;color:#555;line-height:1.6">',
+        'Explore the VERTU product portfolio:' if cols >= 3 else 'Featured VERTU products:',
+        '</p>',
+        '<table border="0" cellpadding="0" cellspacing="0" width="100%" role="presentation" style="border-collapse:collapse">',
+    ]
+    for i, item in enumerate(items):
+        if isinstance(item, dict) and item.get("src"):
+            src = str(item["src"])
+            if base_url and not src.startswith(("http://", "https://")):
+                src = f"{base_url}/{src.lstrip('/')}"
+            alt = html.escape(str(item.get("alt") or "VERTU product"), quote=True)
+            width = max(160, min(640, int(item.get("width") or 320)))
+            if i % cols == 0:
+                parts.append('<tr>')
+            parts.append(
+                f'<td valign="top" style="padding:0 8px 16px 0" width="{100 // cols}%">'
+                f'<img src="{html.escape(src, quote=True)}" alt="{alt}" '
+                f'width="{width}" style="max-width:100%;height:auto;display:block;border:1px solid #eee;border-radius:4px" />'
+                f'</td>'
+            )
+            if (i + 1) % cols == 0 or i == len(items) - 1:
+                parts.append('</tr>')
+    parts.append('</table>')
+    parts.append('<p style="margin:8px 0 0 0;font-size:11px;color:#aaa">')
+    parts.append('AI Phones · Smartwatches · Mechanical Watches · Premium Wearables')
+    parts.append('</p>')
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 def tracking_token(
     contact_id: int,
     action: str,
