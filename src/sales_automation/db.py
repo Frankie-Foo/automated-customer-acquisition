@@ -4103,7 +4103,7 @@ class Repository:
                       WHERE i.metadata->'reply_classification'->>'positive' = 'true'
                     )::integer AS positive_replied_count,
                     COUNT(DISTINCT c.id) FILTER (
-                      WHERE i.metadata->'reply_classification'->>'label' LIKE 'negative%'
+                      WHERE i.metadata->'reply_classification'->>'label' LIKE 'negative%%'
                     )::integer AS negative_replied_count,
                     COUNT(DISTINCT c.id) FILTER (
                       WHERE i.metadata->'reply_classification'->>'label' = 'ooo'

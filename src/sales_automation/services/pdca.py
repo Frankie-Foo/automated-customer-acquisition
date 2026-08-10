@@ -113,7 +113,13 @@ class LeadWorkflowService:
                 result["tasks_created"] += 1
             self.repo.refresh_customer_profile_snapshot(contact_id)
         if campaign_id:
-            self.repo.refresh_campaign_metrics(campaign_id)
+            try:
+                self.repo.refresh_campaign_metrics(campaign_id)
+                result["metrics_refreshed"] = True
+            except Exception:
+                # Contact, lead, and task writes commit independently; campaign metrics are rebuildable.
+                result["metrics_refreshed"] = False
+                result["warnings"] = ["campaign_metrics_refresh_failed"]
         return result
 
     def register_contacts(

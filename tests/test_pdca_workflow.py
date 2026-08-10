@@ -152,6 +152,25 @@ def test_ingest_keeps_blacklisted_lead_but_does_not_create_sales_task() -> None:
     assert saved["source_context"]["blocked_reason"] == "previous unsubscribe"
 
 
+def test_ingest_reports_metrics_failure_without_turning_written_contacts_into_a_500() -> None:
+    class MetricsFailRepo(WorkflowRepo):
+        def refresh_campaign_metrics(self, _campaign_id):
+            raise RuntimeError("metrics unavailable")
+
+    repo = MetricsFailRepo()
+    result = LeadWorkflowService(repo).ingest_contacts(
+        [{"company_name": "Example", "website": "example.com", "job_title": "Owner"}],
+        user={"id": 3, "username": "sales"},
+        source_type="csv_import",
+        source_ref="sample.csv",
+    )
+
+    assert result["inserted"] == 1
+    assert result["linked"] == 1
+    assert result["metrics_refreshed"] is False
+    assert result["warnings"] == ["campaign_metrics_refresh_failed"]
+
+
 def test_ingest_does_not_assign_a_public_duplicate_or_create_a_task() -> None:
     class PublicDuplicateRepo(WorkflowRepo):
         def __init__(self) -> None:

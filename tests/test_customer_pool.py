@@ -2,6 +2,9 @@ from contextlib import contextmanager
 import json
 from types import SimpleNamespace
 
+from psycopg._queries import PostgresQuery
+from psycopg.adapt import Transformer
+
 from sales_automation.db import Repository
 
 
@@ -129,6 +132,24 @@ def test_flywheel_rows_include_recent_phone_outcomes():
     query, _ = db.conn.calls[-1]
     assert "interaction_type IN ('email_reply', 'phone_call')" in query
     assert "reply_flags.event_count" in query
+
+
+def test_campaign_metrics_sql_is_valid_for_psycopg_parameter_parsing():
+    class PsycopgParsingConn(FakeConn):
+        def execute(self, query, params=()):
+            parsed = PostgresQuery(Transformer.from_context(None))
+            parsed.convert(query, params)
+            self.calls.append((query, params))
+            return FakeCursor([{"campaign_id": 41}])
+
+    class PsycopgParsingDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self.conn = PsycopgParsingConn()
+
+    metrics = Repository(PsycopgParsingDb()).refresh_campaign_metrics(41)
+
+    assert metrics["campaign_id"] == 41
 
 
 def test_sales_user_can_view_public_pool_contact():
