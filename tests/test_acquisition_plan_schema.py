@@ -12,7 +12,7 @@ def test_acquisition_plan_schema_is_durable_and_idempotent():
 
 
 def test_acquisition_plan_scope_migration_preserves_existing_databases():
-    sql = Path("migrations/036_acquisition_plan_pool_scope.sql").read_text(encoding="utf-8")
+    sql = Path("migrations/037_acquisition_plan_pool_scope.sql").read_text(encoding="utf-8")
 
     assert "ALTER COLUMN owner_user_id DROP NOT NULL" in sql
     assert "acquisition_plans_pool_scope_check" in sql
