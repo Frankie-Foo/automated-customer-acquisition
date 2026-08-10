@@ -9,6 +9,7 @@ const emptyNewUser = {
   password: "",
   reply_to_email: "",
   sender_alias_localpart: "",
+  role: "sales",
   daily_source_limit: 100,
   daily_send_limit: 200,
 };
@@ -117,7 +118,7 @@ function AdminConsole() {
           ...newUser,
           username: newUser.username.trim(),
           display_name: newUser.display_name.trim(),
-          role: "sales",
+          role: newUser.role,
           daily_source_limit: Number(newUser.daily_source_limit || 100),
           daily_send_limit: Number(newUser.daily_send_limit || 100),
         }),
@@ -205,7 +206,7 @@ function AdminConsole() {
         </div>
         <p>创建销售账号、调整配额、管理发件账号和 warmup 状态。</p>
       </div>
-      {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`}>{error || message}</div>}
+      {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>{error || message}</div>}
       <div className="admin-summary">
         <SummaryCard label="销售账号" value={`${summary.activeUsers}/${users.length}`} hint="启用 / 全部" />
         <SummaryCard label="今日获客" value={summary.sourceUsed} hint="全员已使用" />
@@ -223,7 +224,7 @@ function AdminConsole() {
           ["quality", "质量与实验"],
           ["assignment", "地区分配"],
           ["audit", "操作记录"],
-        ].map(([value, label]) => <button key={value} type="button" className={activeSection === value ? "active" : ""} onClick={() => setActiveSection(value)}>{label}</button>)}
+        ].map(([value, label]) => <button key={value} type="button" className={activeSection === value ? "active" : ""} aria-pressed={activeSection === value} onClick={() => setActiveSection(value)}>{label}</button>)}
       </nav>
       <div className="admin-grid">
         {activeSection === "users" && <section className="admin-card">
@@ -236,6 +237,13 @@ function AdminConsole() {
             <label>
               姓名
               <input value={newUser.display_name} onChange={(event) => setNewUser({ ...newUser, display_name: event.target.value })} placeholder="销售01" />
+            </label>
+            <label>
+              角色
+              <select value={newUser.role} onChange={(event) => setNewUser({ ...newUser, role: event.target.value })}>
+                <option value="sales">销售</option>
+                <option value="manager">经理</option>
+              </select>
             </label>
             <label>
               密码

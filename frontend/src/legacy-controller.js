@@ -75,7 +75,10 @@ function renderAccount() {
   document.body.classList.toggle("is-admin", user.role === "admin");
   adminConsole?.classList.toggle("hidden", user.role !== "admin");
   adminNavLink?.classList.toggle("hidden", user.role !== "admin");
-  if (user.role !== "admin" && ["admin", "report"].includes(currentPage())) {
+  if (user.role !== "admin" && user.role !== "manager" && currentPage() === "report") {
+    setPage("dashboard", true);
+  }
+  if (user.role !== "admin" && currentPage() === "admin") {
     setPage("dashboard", true);
   }
 }
@@ -115,7 +118,11 @@ function setPage(page, replaceHash = false) {
   if (pageSubtitle) pageSubtitle.textContent = pageMeta[safePage][1];
   const inWorkflow = ["source", "research", "outreach", "followup"].includes(safePage);
   workflowNav?.classList.toggle("hidden", !inWorkflow);
-  workflowLinks.forEach((link) => link.classList.toggle("active", link.dataset.flowPage === safePage));
+  workflowLinks.forEach((link) => {
+    const active = link.dataset.flowPage === safePage;
+    link.classList.toggle("active", active);
+    link.toggleAttribute("aria-current", active);
+  });
   document.body.dataset.activePage = safePage;
 
   if (previousPage && previousPage !== safePage) {
@@ -133,7 +140,11 @@ function setPage(page, replaceHash = false) {
 function syncPageFromHash() {
   const key = window.location.hash.replace("#", "");
   const page = currentPage();
-  if (["admin", "report"].includes(page) && state.user && state.user.role !== "admin") {
+  if (page === "admin" && state.user && state.user.role !== "admin") {
+    setPage("dashboard", true);
+    return;
+  }
+  if (page === "report" && state.user && !["admin", "manager"].includes(state.user.role)) {
     setPage("dashboard", true);
     return;
   }
@@ -187,7 +198,7 @@ pageLinks.forEach((link) => {
   link.addEventListener("click", (event) => {
     const page = link.dataset.pageLink;
     if (!page) return;
-    if (["admin", "report"].includes(page) && state.user?.role !== "admin") {
+    if ((page === "admin" || (page === "report" && state.user?.role !== "manager")) && state.user?.role !== "admin") {
       event.preventDefault();
       showNotice("只有管理员可以打开控制台。", "error");
       return;

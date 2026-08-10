@@ -59,12 +59,22 @@ function Workbench() {
     }
   }
 
+  function moveTab(event, id) {
+    const index = primaryTabs.findIndex(([tabId]) => tabId === id);
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0
+      : event.key === "End" ? primaryTabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : primaryTabs.length - 1)) % primaryTabs.length;
+    setActiveTab(primaryTabs[nextIndex][0]);
+  }
+
   return (
     <>
       <div className="workbench-nav">
         <div className="tabs" role="tablist">
           {primaryTabs.map(([id, label]) => (
-            <button key={id} type="button" className={`tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>
+            <button key={id} id={`workbench-tab-${id}`} role="tab" type="button" className={`tab ${activeTab === id ? "active" : ""}`} aria-selected={activeTab === id} aria-controls={`workbench-panel-${id}`} tabIndex={activeTab === id ? 0 : -1} onKeyDown={(event) => moveTab(event, id)} onClick={() => setActiveTab(id)}>
               {label}
             </button>
           ))}
@@ -76,14 +86,16 @@ function Workbench() {
           </div>
         </details>
       </div>
-      {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`}>{error || message}</div>}
-      {activeTab === "source" && <SourcePanel guarded={guarded} notify={notify} />}
-      {activeTab === "company-seeds" && <CompanySeedPanelV2 guarded={guarded} notify={notify} />}
-      {activeTab === "linkedin" && <LinkedInSearchPanel guarded={guarded} notify={notify} />}
-      {activeTab === "csv" && <CsvPanel guarded={guarded} notify={notify} />}
-      {activeTab === "manual" && <ManualPanel guarded={guarded} notify={notify} />}
-      {activeTab === "runbook" && <RunbookPanel guarded={guarded} notify={notify} isAdmin={isAdmin} />}
-      {activeTab === "status" && <StatusPanel guarded={guarded} notify={notify} />}
+      {(message || error) && <div className={`admin-alert ${error ? "is-error" : ""}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>{error || message}</div>}
+      <div id={`workbench-panel-${activeTab}`} role="tabpanel" aria-labelledby={primaryTabs.some(([id]) => id === activeTab) ? `workbench-tab-${activeTab}` : undefined} aria-label={primaryTabs.some(([id]) => id === activeTab) ? undefined : "更多工具"}>
+        {activeTab === "source" && <SourcePanel guarded={guarded} notify={notify} />}
+        {activeTab === "company-seeds" && <CompanySeedPanelV2 guarded={guarded} notify={notify} />}
+        {activeTab === "linkedin" && <LinkedInSearchPanel guarded={guarded} notify={notify} />}
+        {activeTab === "csv" && <CsvPanel guarded={guarded} notify={notify} />}
+        {activeTab === "manual" && <ManualPanel guarded={guarded} notify={notify} />}
+        {activeTab === "runbook" && <RunbookPanel guarded={guarded} notify={notify} isAdmin={isAdmin} />}
+        {activeTab === "status" && <StatusPanel guarded={guarded} notify={notify} />}
+      </div>
     </>
   );
 }

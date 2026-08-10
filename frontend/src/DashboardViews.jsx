@@ -151,6 +151,7 @@ function Metrics({ summary }) {
 
 function QuickStart({ user, contacts, publicContacts }) {
   const isAdmin = user?.role === "admin";
+  const isManager = user?.role === "manager";
   const items = isAdmin
     ? [
         { title: "系统状态", href: "#admin", hint: "检查生产配置与异常", action: "检查" },
@@ -158,14 +159,14 @@ function QuickStart({ user, contacts, publicContacts }) {
         { title: "团队数据", href: "#report", hint: "查看获客、发送和回复表现", action: "查看" },
         { title: "邮件抽查", href: "#outreach", hint: "抽查发送内容与回流", action: "抽查" },
       ]
-    : salesActions(contacts, publicContacts);
+    : salesActions(contacts, publicContacts, isManager);
   return (
     <section className="quickstart action-center">
       <div className="quickstart-head">
         <div>
-          <span className="eyebrow">{isAdmin ? "ADMIN" : "TODAY"}</span>
-          <h2>{isAdmin ? "管理入口" : "下一步做什么"}</h2>
-          {!isAdmin && <p>按优先级处理客户。完成当前动作后，系统会自动给出下一步。</p>}
+          <span className="eyebrow">{isAdmin ? "ADMIN" : isManager ? "TEAM" : "TODAY"}</span>
+          <h2>{isAdmin ? "管理入口" : isManager ? "团队下一步" : "下一步做什么"}</h2>
+          {!isAdmin && <p>{isManager ? "先处理团队待办，再查看团队周报。" : "按优先级处理客户。完成当前动作后，系统会自动给出下一步。"}</p>}
         </div>
       </div>
       <div className="quickstart-grid">
@@ -184,7 +185,7 @@ function QuickStart({ user, contacts, publicContacts }) {
   );
 }
 
-function salesActions(contacts, publicContacts) {
+function salesActions(contacts, publicContacts, isManager = false) {
   const own = (contacts || []).filter((contact) => contact.pool_type !== "public");
   const followups = own.filter((contact) => contact.status === "replied"
     || Number(contact.replied_count || 0) > 0
@@ -199,6 +200,7 @@ function salesActions(contacts, publicContacts) {
     { title: "补齐客户资料", href: "#research", hint: "核验身份、邮箱和客户画像", count: needsEmail.length, rank: needsEmail.length ? 2 : 6 },
     { title: "准备个性化邮件", href: "#research", hint: "选择客户，检查草稿后再发送", count: ready.length, rank: ready.length ? 3 : 7 },
   ].sort((left, right) => left.rank - right.rank);
+  if (isManager) actions.push({ title: "查看团队周报", href: "#report", hint: "查看团队获客、触达与回流", action: "查看", rank: 8 });
   return actions.map((item, index) => ({ ...item, priority: index === 0 && item.count > 0 }));
 }
 

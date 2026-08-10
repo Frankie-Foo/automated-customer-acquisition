@@ -77,7 +77,10 @@ function ContactsPipeline() {
   const [sessionUser, setSessionUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const [contacts, setContacts] = useState([]);
   const [status, setStatus] = useState("");
-  const [filter, setFilter] = useState(() => window.SALESBOT_SESSION?.user?.role === "admin" ? "" : "mine");
+  const [filter, setFilter] = useState(() => {
+    const role = window.SALESBOT_SESSION?.user?.role;
+    return role === "admin" ? "" : role === "manager" ? "private_pool" : "mine";
+  });
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -296,7 +299,7 @@ function ContactsPipeline() {
       <div className="section-head">
         <div>
           <span className="eyebrow">Pipeline</span>
-          <h2>{filter === "public_pool" ? "公共客户池" : filter === "mine" || filter === "private_pool" ? "我的客户" : "销售任务"}</h2>
+          <h2>{filter === "public_pool" ? "公共客户池" : filter === "private_pool" && sessionUser.role === "manager" ? "团队客户" : filter === "mine" || filter === "private_pool" ? "我的客户" : "销售任务"}</h2>
           <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "系统已经把客户分组，优先处理可发送和需确认的客户。"} <span className="sync-status">{lastSyncedAt ? `自动同步 ${formatSyncTime(lastSyncedAt)}` : "正在同步"}</span></p>
         </div>
         <div className="toolbar">
@@ -314,12 +317,12 @@ function ContactsPipeline() {
           ["missing_draft", "待写草稿"],
           ["draft_pending", "待审核"],
           ["draft_approved", "可发送"],
-        ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
+        ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} aria-pressed={filter === value} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
       </nav>
-      <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} />
+      <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} canBulkProcess={filter !== "public_pool"} />
       {actionFeedback && <ActionFeedback feedback={actionFeedback} onNext={() => openContact(actionFeedback.contactId)} onDismiss={() => setActionFeedback(null)} />}
       <ImportBatchReport report={importReport} />
-      {error && <div className="admin-alert is-error">{error}</div>}
+      {error && <div className="admin-alert is-error" role="alert">{error}</div>}
       <div className="table-shell contact-task-table">
         <div className="task-table-head">
           <strong>{taskTableTitle(filter)}</strong>
@@ -345,7 +348,7 @@ function formatSyncTime(value) {
   return value.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
-function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkBusy }) {
+function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkBusy, canBulkProcess }) {
   const stats = useMemo(() => summarizeWorkQueue(contacts), [contacts]);
   const cards = [
     {
@@ -390,8 +393,8 @@ function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkB
           <p>系统先自动分组，销售只看结果：能发的先发，能自动补的批量补，剩下少量再人工确认。</p>
         </div>
         <div className="sales-work-actions">
-          <button type="button" className="primary" disabled={!!bulkBusy} onClick={() => onBulkAction("bulk-email")}>{bulkBusy === "bulk-email" ? "正在补邮箱..." : "批量补邮箱"}</button>
-          <button type="button" disabled={!!bulkBusy} onClick={() => onBulkAction("bulk-social")}>{bulkBusy === "bulk-social" ? "正在补社媒..." : "批量补社媒"}</button>
+          <button type="button" className="primary" disabled={!!bulkBusy || !canBulkProcess} title={canBulkProcess ? "" : "公共池客户需先领取"} onClick={() => onBulkAction("bulk-email")}>{bulkBusy === "bulk-email" ? "正在补邮箱..." : "批量补邮箱"}</button>
+          <button type="button" disabled={!!bulkBusy || !canBulkProcess} title={canBulkProcess ? "" : "公共池客户需先领取"} onClick={() => onBulkAction("bulk-social")}>{bulkBusy === "bulk-social" ? "正在补社媒..." : "批量补社媒"}</button>
         </div>
       </div>
       <div className="sales-work-cards">
@@ -403,9 +406,9 @@ function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkB
           </button>
         ))}
       </div>
-      <div className="sales-work-summary">
+      <div className="sales-work-summary" role="status" aria-live="polite">
         <strong>{stats.mainAdvice}</strong>
-        <span>{stats.secondaryAdvice}</span>
+        <span>{canBulkProcess ? stats.secondaryAdvice : "公共池仅供挑选和领取；领取后才能批量补资料。"}</span>
       </div>
     </section>
   );

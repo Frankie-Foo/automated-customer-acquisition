@@ -3302,6 +3302,11 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
 }
 
+:where(a, button, summary, [role="tab"]):focus-visible {
+  outline: 3px solid rgba(13, 148, 136, 0.45);
+  outline-offset: 2px;
+}
+
 button {
   min-height: 36px;
   padding: 0 14px;
@@ -5326,7 +5331,8 @@ main,
 
 @media (max-width: 1120px) {
   .workflow-nav {
-    display: none !important;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .workflow-strip {
@@ -5739,7 +5745,8 @@ main,
 }
 
 .contact-task-table {
-  overflow: visible;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
 }
 
 .task-table-head {
