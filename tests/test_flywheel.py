@@ -54,6 +54,47 @@ def test_automatic_learning_ignores_neutral_contacts_and_waits_for_evidence():
     assert plan["threshold_action"] is None
 
 
+def test_calibration_uses_frozen_profile_version_and_ignores_delivery_failures():
+    positive = _row(
+        icp_assessment={
+            "qualified": False,
+            "assessment_before_outcome": {"qualified": True, "profile_version": 4},
+        },
+        positive_replies=1,
+        replied=1,
+    )
+    delivery_failure = _row(
+        icp_assessment={"qualified": True, "profile_version": 4},
+        bounced=1,
+        unsubscribed=1,
+        lost=1,
+    )
+
+    examples = build_icp_calibration_examples([positive, delivery_failure])
+
+    assert examples == [{
+        "contact_id": None,
+        "predicted_qualified": True,
+        "expected_qualified": True,
+        "reason": "observed_positive_outcome",
+        "profile_version": 4,
+    }]
+
+
+def test_calibration_accepts_a_labeled_phone_outcome_without_email_delivery():
+    examples = build_icp_calibration_examples([
+        _row(
+            sent=0,
+            delivered=0,
+            icp_assessment={"qualified": True, "profile_version": 4},
+            positive_outcomes=1,
+        )
+    ])
+
+    assert examples[0]["expected_qualified"] is True
+    assert examples[0]["profile_version"] == 4
+
+
 def test_automatic_learning_proposes_bounded_icp_update_and_experiment_winner():
     rows = [
         _row(icp_assessment={"qualified": True}, negative_replies=1, replied=1)

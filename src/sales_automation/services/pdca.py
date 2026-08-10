@@ -87,6 +87,7 @@ class LeadWorkflowService:
             contact_id = int(contact["id"])
             if contact_id not in result["contact_ids"]:
                 result["contact_ids"].append(contact_id)
+            contact_owner_id = contact.get("owner_user_id")
             lead = self.repo.upsert_lead_record(
                 external_id=lead_external_id(source_type, source_ref, row_number, prepared),
                 source_type=source_type,
@@ -94,7 +95,7 @@ class LeadWorkflowService:
                 source_row=row_number,
                 campaign_id=campaign_id,
                 contact_id=contact_id,
-                owner_user_id=owner_user_id,
+                owner_user_id=int(contact_owner_id) if contact_owner_id else None,
                 raw_data={**raw_contact, "original_linkedin_url": raw_contact.get("linkedin_url")},
                 normalized_email=prepared.get("email"),
                 normalized_phone=normalize_phone(prepared.get("phone")),
@@ -108,7 +109,7 @@ class LeadWorkflowService:
                 quality_score=prepared.get("lead_score"),
             )
             result["linked"] += 1
-            if self.ensure_next_task(contact_id, owner_user_id=owner_user_id, lead_id=int(lead["id"])):
+            if self.ensure_next_task(contact_id, owner_user_id=contact_owner_id, lead_id=int(lead["id"])):
                 result["tasks_created"] += 1
             self.repo.refresh_customer_profile_snapshot(contact_id)
         if campaign_id:
@@ -143,7 +144,7 @@ class LeadWorkflowService:
             contact = self.repo.get_contact(contact_id)
             if not contact:
                 continue
-            owner_user_id = contact.get("owner_user_id") or (user or {}).get("id")
+            owner_user_id = contact.get("owner_user_id")
             lead = self.repo.upsert_lead_record(
                 external_id=lead_external_id(source_type, source_ref, row_number, contact),
                 source_type=source_type,
@@ -182,6 +183,8 @@ class LeadWorkflowService:
         if not contact:
             return None
         owner_user_id = int(owner_user_id or contact.get("owner_user_id") or 0) or None
+        if contact.get("pool_type") != "private" or owner_user_id is None:
+            return None
         task = next_task_for_contact(contact)
         if not task:
             return None

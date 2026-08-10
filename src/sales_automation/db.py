@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -813,12 +814,15 @@ class Repository:
         )
         ON CONFLICT (linkedin_url) DO UPDATE
         SET source_person_id = COALESCE(EXCLUDED.source_person_id, contacts.source_person_id),
-            owner_user_id = COALESCE(contacts.owner_user_id, EXCLUDED.owner_user_id),
-            owner = COALESCE(contacts.owner, EXCLUDED.owner),
-            pool_type = CASE
-                WHEN contacts.owner_user_id IS NULL AND contacts.pool_type = 'public' THEN contacts.pool_type
-                ELSE COALESCE(contacts.pool_type, EXCLUDED.pool_type)
+            owner_user_id = CASE
+                WHEN contacts.pool_type = 'public' THEN NULL
+                ELSE COALESCE(contacts.owner_user_id, EXCLUDED.owner_user_id)
             END,
+            owner = CASE
+                WHEN contacts.pool_type = 'public' THEN NULL
+                ELSE COALESCE(contacts.owner, EXCLUDED.owner)
+            END,
+            pool_type = contacts.pool_type,
             lead_score = COALESCE(EXCLUDED.lead_score, contacts.lead_score),
             identity_confidence = COALESCE(EXCLUDED.identity_confidence, contacts.identity_confidence),
             identity_status = COALESCE(EXCLUDED.identity_status, contacts.identity_status),
@@ -2924,6 +2928,12 @@ class Repository:
         current = contact.get("icp_assessment") or {}
         if not isinstance(current, dict):
             current = {}
+        if "assessment_before_outcome" not in current:
+            current["assessment_before_outcome"] = {
+                key: current[key]
+                for key in ("qualified", "score", "tier", "profile_name", "profile_version")
+                if key in current
+            }
         label = reply_classification.get("label", "")
         positive = reply_classification.get("positive", False)
         score_shift = 0
@@ -2932,7 +2942,7 @@ class Repository:
         if label in ("positive_interested", "positive_soft", "positive_referral"):
             score_shift = 10
             tags.append("reply_validated")
-            new_signals = {"last_reply_signal": "positive", "validated_at": datetime.now().isoformat()}
+            new_signals = {"last_reply_signal": "positive", "validated_at": datetime.now(UTC).isoformat()}
             if not current.get("qualified"):
                 current["tier"] = "review"
                 current["qualified"] = True
@@ -2940,14 +2950,14 @@ class Repository:
         elif label in ("negative_notfit", "negative_hostile"):
             score_shift = -15
             tags.append("reply_not_fit")
-            new_signals = {"last_reply_signal": "negative", "notfit_at": datetime.now().isoformat()}
+            new_signals = {"last_reply_signal": "negative", "notfit_at": datetime.now(UTC).isoformat()}
             current["tier"] = "disqualified"
             current["qualified"] = False
             current["score"] = min(current.get("score") or 40, 35)
         elif label == "negative_notnow":
             score_shift = -5
             tags.append("reply_not_now")
-            new_signals = {"last_reply_signal": "notnow", "notnow_at": datetime.now().isoformat()}
+            new_signals = {"last_reply_signal": "notnow", "notnow_at": datetime.now(UTC).isoformat()}
         else:
             return
         current["score"] = max(0, min(100, (current.get("score") or 0) + score_shift))
@@ -2981,6 +2991,8 @@ class Repository:
                        THEN GREATEST(COALESCE(event_flags.positive_replies, 0), COALESCE(reply_flags.positive, 0)) ELSE 0 END::integer AS positive_replies,
                   CASE WHEN COALESCE(event_flags.sent, 0) > 0 AND COALESCE(event_flags.replied, 0) > 0
                        THEN GREATEST(COALESCE(event_flags.negative_replies, 0), COALESCE(reply_flags.negative, 0)) ELSE 0 END::integer AS negative_replies,
+                  COALESCE(reply_flags.positive, 0)::integer AS positive_outcomes,
+                  COALESCE(reply_flags.negative, 0)::integer AS negative_outcomes,
                   CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.bounced, 0) ELSE 0 END::integer AS bounced,
                   CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.unsubscribed, 0) ELSE 0 END::integer AS unsubscribed,
                   CASE WHEN c.lifecycle_stage IN ('meeting', 'business_plan', 'store_visit', 'trial_order', 'agency_agreement', 'hq_visit', 'signed', 'maintenance') THEN 1 ELSE 0 END AS meetings,
@@ -2995,7 +3007,7 @@ class Repository:
                     COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'opened')::integer AS opened,
                     COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied')::integer AS replied,
                     COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied' AND metadata->'reply_classification'->>'positive' = 'true')::integer AS positive_replies,
-                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied' AND metadata->'reply_classification'->>'label' LIKE 'negative%%')::integer AS negative_replies,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied' AND metadata->'reply_classification'->>'label' = 'negative_notfit')::integer AS negative_replies,
                     COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'bounced')::integer AS bounced,
                     COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'unsubscribed')::integer AS unsubscribed
                   FROM email_events
@@ -3004,13 +3016,14 @@ class Repository:
                 ) event_flags ON TRUE
                 LEFT JOIN LATERAL (
                   SELECT
+                    COUNT(*)::integer AS event_count,
                     MAX(CASE WHEN metadata->'reply_classification'->>'positive' = 'true'
                                OR outcome IN ('positive_interested', 'positive_soft', 'positive_referral') THEN 1 ELSE 0 END)::integer AS positive,
-                    MAX(CASE WHEN metadata->'reply_classification'->>'label' LIKE 'negative%%'
-                               OR outcome LIKE 'negative%%' THEN 1 ELSE 0 END)::integer AS negative
+                    MAX(CASE WHEN metadata->'reply_classification'->>'label' = 'negative_notfit'
+                               OR outcome = 'negative_notfit' THEN 1 ELSE 0 END)::integer AS negative
                   FROM interactions
                   WHERE interactions.contact_id = c.id
-                    AND interactions.interaction_type = 'email_reply'
+                    AND interactions.interaction_type IN ('email_reply', 'phone_call')
                     AND interactions.occurred_at >= NOW() - (%s::text || ' days')::interval
                 ) reply_flags ON TRUE
                 LEFT JOIN LATERAL (
@@ -3020,6 +3033,7 @@ class Repository:
                 ) lead_meta ON TRUE
                 WHERE c.created_at >= NOW() - (%s::text || ' days')::interval
                    OR COALESCE(event_flags.event_count, 0) > 0
+                   OR COALESCE(reply_flags.event_count, 0) > 0
                 """,
                 (days, days, days),
             ).fetchall()
@@ -4412,6 +4426,7 @@ class Repository:
                         ),
                         updated_at = NOW()
                     WHERE id = %s
+                      AND status = 'open'
                     RETURNING *
                     """,
                     (outcome, user["id"], task_id),
@@ -4427,12 +4442,36 @@ class Repository:
                         updated_at = NOW()
                     FROM contacts c
                     WHERE t.id = %s AND c.id = t.contact_id
+                      AND t.status = 'open'
                       AND (t.assigned_user_id = %s OR (t.assigned_user_id IS NULL AND c.owner_user_id = %s))
                     RETURNING t.*
                     """,
                     (outcome, user["id"], task_id, user["id"], user["id"]),
                 ).fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            task = dict(row)
+            if task.get("task_type") == "call":
+                conn.execute(
+                    """
+                    INSERT INTO interactions(
+                        contact_id, lead_id, user_id, interaction_type, direction, channel,
+                        subject, content, outcome, source_ref, metadata
+                    )
+                    VALUES (%s, %s, %s, 'phone_call', 'outbound', 'phone', %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (
+                        task["contact_id"],
+                        task.get("lead_id"),
+                        user["id"],
+                        task.get("title"),
+                        task.get("description"),
+                        outcome or "completed",
+                        f"followup_task:{task['id']}",
+                        json.dumps({"task_id": task["id"]}),
+                    ),
+                )
+            return task
 
     def close_open_followup_tasks(self, contact_id: int, *, except_trigger: str | None = None) -> int:
         with self.db.connect() as conn:

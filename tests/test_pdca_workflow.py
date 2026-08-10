@@ -150,3 +150,35 @@ def test_ingest_keeps_blacklisted_lead_but_does_not_create_sales_task() -> None:
     assert saved["status"] == "unsubscribed"
     assert saved["disposition"] == "abandoned"
     assert saved["source_context"]["blocked_reason"] == "previous unsubscribe"
+
+
+def test_ingest_does_not_assign_a_public_duplicate_or_create_a_task() -> None:
+    class PublicDuplicateRepo(WorkflowRepo):
+        def __init__(self) -> None:
+            super().__init__()
+            self.contacts["https://linkedin.com/in/public"] = {
+                "id": 8,
+                "linkedin_url": "https://linkedin.com/in/public",
+                "company_name": "Public Lead",
+                "pool_type": "public",
+                "owner_user_id": None,
+            }
+
+        def find_contact_match(self, _contact):
+            return self.contacts["https://linkedin.com/in/public"]
+
+        def upsert_contacts(self, _contacts, **_kwargs):
+            return 0, 1
+
+    repo = PublicDuplicateRepo()
+    result = LeadWorkflowService(repo).ingest_contacts(
+        [{"linkedin_url": "https://linkedin.com/in/public", "company_name": "Public Lead"}],
+        user={"id": 3, "username": "sales"},
+        source_type="csv_import",
+        source_ref="public.csv",
+    )
+
+    assert result["duplicates"] == 1
+    assert result["tasks_created"] == 0
+    assert repo.leads[0]["owner_user_id"] is None
+    assert repo.tasks == []

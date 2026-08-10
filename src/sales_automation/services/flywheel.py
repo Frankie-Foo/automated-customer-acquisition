@@ -140,11 +140,18 @@ def build_icp_calibration_examples(rows: Iterable[dict[str, Any]]) -> list[dict[
     """
     examples = []
     for row in rows:
-        assessment = row.get("icp_assessment")
+        current_assessment = row.get("icp_assessment")
+        assessment = (
+            current_assessment.get("assessment_before_outcome")
+            if isinstance(current_assessment, dict)
+            and isinstance(current_assessment.get("assessment_before_outcome"), dict)
+            else current_assessment
+        )
         if not isinstance(assessment, dict) or "qualified" not in assessment:
             continue
         positive = bool(
             _as_int(row.get("positive_replies"))
+            or _as_int(row.get("positive_outcomes"))
             or _as_int(row.get("meetings"))
             or _as_int(row.get("won"))
             or str(row.get("lifecycle_stage") or "") in {
@@ -154,11 +161,7 @@ def build_icp_calibration_examples(rows: Iterable[dict[str, Any]]) -> list[dict[
         )
         negative = bool(
             _as_int(row.get("negative_replies"))
-            or _as_int(row.get("bounced"))
-            or _as_int(row.get("unsubscribed"))
-            or _as_int(row.get("lost"))
-            or str(row.get("lifecycle_stage") or "") == "abandoned"
-            or str(row.get("disposition") or "") in {"lost", "abandoned"}
+            or _as_int(row.get("negative_outcomes"))
         )
         if positive == negative:
             continue
@@ -167,6 +170,7 @@ def build_icp_calibration_examples(rows: Iterable[dict[str, Any]]) -> list[dict[
             "predicted_qualified": bool(assessment.get("qualified")),
             "expected_qualified": positive,
             "reason": "observed_positive_outcome" if positive else "observed_negative_outcome",
+            "profile_version": assessment.get("profile_version"),
         })
     return examples
 

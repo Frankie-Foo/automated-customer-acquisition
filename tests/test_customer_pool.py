@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import json
 from types import SimpleNamespace
 
 from sales_automation.db import Repository
@@ -49,6 +50,85 @@ def test_upsert_contacts_without_owner_defaults_to_public_pool():
     assert params["owner_user_id"] is None
     assert params["pool_type"] == "public"
     assert params["assignment_source"] == "automated_sourcing"
+
+
+def test_upsert_keeps_a_public_duplicate_unowned():
+    db = FakeDb()
+    Repository(db).upsert_contacts(
+        [{"linkedin_url": "https://linkedin.com/in/a", "first_name": "A"}],
+        owner_user_id=2,
+        pool_type="private",
+    )
+
+    query, _ = db.conn.calls[-1]
+    assert "WHEN contacts.pool_type = 'public' THEN NULL" in query
+    assert "pool_type = contacts.pool_type" in query
+
+
+def test_reply_feedback_freezes_the_assessment_before_it_changes():
+    db = FakeDb()
+    repo = Repository(db)
+    repo.get_contact = lambda _contact_id: {
+        "icp_assessment": {"qualified": True, "score": 80, "profile_version": 4}
+    }
+
+    repo.update_icp_from_reply(7, {"label": "positive_interested", "positive": True})
+
+    query, params = db.conn.calls[-1]
+    saved = json.loads(params[0])
+    assert "UPDATE contacts" in query
+    assert saved["qualified"] is True
+    assert saved["score"] == 90
+    assert saved["assessment_before_outcome"] == {
+        "qualified": True,
+        "score": 80,
+        "profile_version": 4,
+    }
+    assert saved["reply_signal_detail"]["validated_at"].endswith("+00:00")
+
+
+def test_completing_a_call_task_records_one_phone_interaction():
+    class TaskConn(FakeConn):
+        def execute(self, query, params=()):
+            self.calls.append((query, params))
+            if "UPDATE followup_tasks" in query:
+                return FakeCursor([{
+                    "id": 12,
+                    "contact_id": 7,
+                    "lead_id": 3,
+                    "task_type": "call",
+                    "title": "Call Ada",
+                    "description": "Record the outcome",
+                }])
+            return FakeCursor([])
+
+    class TaskDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self.conn = TaskConn()
+
+    db = TaskDb()
+    task = Repository(db).complete_followup_task(
+        12,
+        user={"id": 2, "role": "sales"},
+        outcome="positive_interested",
+    )
+
+    query, params = db.conn.calls[-1]
+    assert task["id"] == 12
+    assert "INSERT INTO interactions" in query
+    assert params[0:3] == (7, 3, 2)
+    assert params[5] == "positive_interested"
+    assert json.loads(params[7]) == {"task_id": 12}
+
+
+def test_flywheel_rows_include_recent_phone_outcomes():
+    db = FakeDb()
+    Repository(db).list_flywheel_contact_rows(window_days=30)
+
+    query, _ = db.conn.calls[-1]
+    assert "interaction_type IN ('email_reply', 'phone_call')" in query
+    assert "reply_flags.event_count" in query
 
 
 def test_sales_user_can_view_public_pool_contact():
