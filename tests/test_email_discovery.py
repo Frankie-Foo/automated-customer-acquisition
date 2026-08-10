@@ -214,7 +214,7 @@ def test_github_provider_extracts_company_commit_email(monkeypatch):
                 {"payload": {"commits": [{"author": {"email": "123+ada@users.noreply.github.com"}}]}},
             ]).encode()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=8: Response())
+    monkeypatch.setattr("sales_automation.email_discovery.safe_urlopen", lambda request, timeout=8: Response())
 
     result = GitHubCommitsEmailProvider().discover({"social_profiles": {"github": "https://github.com/ada"}}, "example.com")
 
@@ -233,7 +233,7 @@ def test_gravatar_provider_is_candidate_only(monkeypatch):
         def __exit__(self, *args):
             return None
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=5: Response())
+    monkeypatch.setattr("sales_automation.email_discovery.safe_urlopen", lambda request, timeout=5: Response())
 
     result = EmailDiscoveryEngine([GravatarEmailProvider()]).discover({"first_name": "Ada", "last_name": "Lovelace"}, "example.com")
 

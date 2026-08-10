@@ -83,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     repo = Repository(Database(config))
+    repo.db.bind_system_actor()
     try:
         repo.db.migrate()
         repo.ensure_default_admin(*default_admin_credentials())
@@ -104,8 +105,15 @@ def make_handler(config, repo: Repository):
     sso_cookie_same_site = "None" if secure_cookie and _truthy(config.raw.get("sso", {}).get("iframe_cookie")) else "Lax"
     embed_allowed_origins = _embed_allowed_origins(config.raw.get("sso", {}).get("embed_allowed_origins"))
 
+    def bind_actor(user: dict[str, Any] | None = None, *, system: bool = False) -> None:
+        database = getattr(repo, "db", None)
+        binder = getattr(database, "bind_system_actor" if system else "bind_actor", None)
+        if binder:
+            binder() if system else binder(user)
+
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            bind_actor(None)
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send_file(static_path("index.html"), "text/html; charset=utf-8")
@@ -175,6 +183,7 @@ def make_handler(config, repo: Repository):
                 except ValueError as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=400)
                     return
+                bind_actor(system=True)
                 repo.record_event(contact_id, "unsubscribed", {"source": source})
                 self._send_html("<!doctype html><title>Unsubscribed</title><p>You have been unsubscribed.</p>")
                 return
@@ -196,6 +205,7 @@ def make_handler(config, repo: Repository):
                 except ValueError:
                     self._send_pixel()
                     return
+                bind_actor(system=True)
                 repo.record_event(contact_id, "opened", {"source": source, "step": step})
                 self._send_pixel()
                 return
@@ -293,6 +303,7 @@ def make_handler(config, repo: Repository):
             self.send_error(404)
 
         def do_POST(self) -> None:
+            bind_actor(None)
             parsed = urlparse(self.path)
             try:
                 payload = self._read_json()
@@ -867,9 +878,9 @@ def make_handler(config, repo: Repository):
                 self._json_audit("scheduler", run_scheduler, summary="管理员手动运行调度")
                 return
             if parsed.path == "/api/mark":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def mark() -> dict[str, Any]:
-                    if not self._has_private_contact_access(int(payload["contact_id"])):
-                        raise RuntimeError("Contact not found")
                     repo.mark_status(int(payload["contact_id"]), payload["status"], notes=payload.get("notes"))
                     return {"ok": True}
                 self._json_audit(
@@ -882,9 +893,9 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/lifecycle":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def lifecycle() -> dict[str, Any]:
-                    if not self._has_private_contact_access(int(payload["contact_id"])):
-                        raise RuntimeError("Contact not found")
                     return LifecycleService(repo).update(
                         int(payload["contact_id"]),
                         lifecycle_stage=payload.get("lifecycle_stage"),
@@ -936,9 +947,9 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/lifecycle-activity":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def activity() -> dict[str, Any]:
-                    if not self._has_private_contact_access(int(payload["contact_id"])):
-                        raise RuntimeError("Contact not found")
                     contact_id = int(payload["contact_id"])
                     user = self._current_user()
                     activity_type = payload.get("activity_type") or "note"
@@ -975,9 +986,9 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/stage-agent":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def stage_agent() -> dict[str, Any]:
-                    if not self._has_private_contact_access(int(payload["contact_id"])):
-                        raise RuntimeError("Contact not found")
                     return {
                         "analysis": StageAgentService(config, repo).analyze(
                             int(payload["contact_id"]),
@@ -1303,6 +1314,7 @@ def make_handler(config, repo: Repository):
                         self._send_json({"ok": False, "error": str(exc)}, status=401)
                         return
                     def inbound_email() -> dict[str, Any]:
+                        bind_actor(system=True)
                         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
                         route = parse_signed_reply_route(config, [payload.get("to"), data.get("to"), data.get("recipient")])
                         contact_id = int(route["contact_id"]) if route else None
@@ -1345,6 +1357,7 @@ def make_handler(config, repo: Repository):
                     verified_payload = payload
                     if provider == "resend":
                         verified_payload = self._verify_resend_webhook(payload)
+                    bind_actor(system=True)
                     event_type = verified_payload.get("type") or verified_payload.get("event_type") or "unknown"
                     external_id = self.headers.get("svix-id") or verified_payload.get("id")
                     if not repo.record_webhook_delivery(provider, event_type, verified_payload, external_id):
@@ -1433,7 +1446,9 @@ def make_handler(config, repo: Repository):
         def _current_user(self) -> dict[str, Any] | None:
             token = parse_session_cookie(self.headers.get("Cookie"))
             try:
-                return repo.get_session_user(token)
+                user = repo.get_session_user(token)
+                bind_actor(user)
+                return user
             except Exception:
                 return None
 

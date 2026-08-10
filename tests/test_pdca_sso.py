@@ -41,7 +41,7 @@ def test_pdca_sso_exchanges_scoped_profile(monkeypatch):
             },
         })
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("sales_automation.pdca_sso.safe_urlopen", fake_urlopen)
     config = SimpleNamespace(raw={"sso": {
         "pdca_enabled": "true",
         "pdca_exchange_url": "https://pdca-workbench-teams.vertu.cn/api/auth/acquisition/exchange",
@@ -55,7 +55,7 @@ def test_pdca_sso_exchanges_scoped_profile(monkeypatch):
 
 
 def test_pdca_sso_rejects_non_sales_roles(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse({
+    monkeypatch.setattr("sales_automation.pdca_sso.safe_urlopen", lambda request, timeout: FakeResponse({
         "ok": True,
         "profile": {
             "subject": "pdca:3",

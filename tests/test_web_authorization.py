@@ -79,7 +79,15 @@ def test_sales_user_must_claim_contact_before_ai_mutations(monkeypatch):
     base_url = f"http://127.0.0.1:{server.server_port}"
 
     try:
-        for path in ("/api/profile-agent", "/api/email-draft"):
+        for path in (
+            "/api/profile-agent",
+            "/api/email-draft",
+            "/api/mark",
+            "/api/lifecycle",
+            "/api/lifecycle-activity",
+            "/api/stage-agent",
+            "/api/icp-feedback",
+        ):
             req = urllib.request.Request(
                 base_url + path,
                 data=json.dumps({"contact_id": 77}).encode("utf-8"),

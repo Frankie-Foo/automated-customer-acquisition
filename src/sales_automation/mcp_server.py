@@ -26,6 +26,7 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         nonlocal bound_user
         if bound_user is None:
             bound_user = _resolve_mcp_user(repo, bound_username)
+        repo.db.bind_actor(bound_user)
         return bound_user
 
     @app.tool()
@@ -95,9 +96,7 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
     def generate_outreach_email(contact_id: int) -> dict[str, Any]:
         """Generate a personalized outreach email draft for a customer. Does not send."""
         user = resolve_user()
-        contact = repo.get_contact_for_user(int(contact_id), user)
-        if not contact:
-            raise ValueError("Contact not found or not accessible")
+        contact = _require_private_contact(repo, int(contact_id), user)
         draft = PersonalizedEmailService(config, repo).draft(int(contact_id), mode="ai", user=user)
         return {
             "contact": _compact_contact(contact),
@@ -116,9 +115,7 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
     ) -> dict[str, Any]:
         """Update lifecycle/SABCD stage for a customer scoped to the selected user."""
         user = resolve_user()
-        contact = repo.get_contact_for_user(int(contact_id), user)
-        if not contact:
-            raise ValueError("Contact not found or not accessible")
+        contact = _require_private_contact(repo, int(contact_id), user)
         result = LifecycleService(repo).update(
             int(contact_id),
             lifecycle_stage=lifecycle_stage or None,
@@ -134,9 +131,7 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
     def generate_customer_profile(contact_id: int) -> dict[str, Any]:
         """Generate or refresh AI customer profile insights for a customer."""
         user = resolve_user()
-        contact = repo.get_contact_for_user(int(contact_id), user)
-        if not contact:
-            raise ValueError("Contact not found or not accessible")
+        _require_private_contact(repo, int(contact_id), user)
         return ProfileAgentService(config, repo).summarize(int(contact_id))
 
     return app
@@ -151,6 +146,13 @@ def _resolve_mcp_user(repo: Repository, username: str) -> dict[str, Any]:
                 raise ValueError(f"User is disabled: {username}")
             return user
     raise ValueError(f"Unknown sales user: {username}")
+
+
+def _require_private_contact(repo: Repository, contact_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    contact = repo.get_private_contact_for_user(contact_id, user)
+    if not contact:
+        raise ValueError("Contact must be claimed before mutation")
+    return contact
 
 
 def main(argv: list[str] | None = None) -> int:

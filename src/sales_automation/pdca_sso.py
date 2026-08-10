@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from .http import safe_urlopen
+
 
 class PdcaSsoError(RuntimeError):
     def __init__(self, message: str, status: int = 401):
@@ -49,7 +51,7 @@ class PdcaSsoService:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with safe_urlopen(request, timeout=8) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             mapped_status = 401 if exc.code in {400, 401, 403, 404, 422} else 503

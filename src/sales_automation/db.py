@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -30,6 +31,20 @@ def _psycopg():
 class Database:
     def __init__(self, config: AppConfig):
         self.config = config
+        self._actor = ContextVar(
+            f"sales_database_actor_{id(self)}",
+            default={"id": None, "role": "anonymous"},
+        )
+
+    def bind_actor(self, user: dict[str, Any] | None) -> None:
+        if not user:
+            self._actor.set({"id": None, "role": "anonymous"})
+            return
+        role = "admin" if user.get("role") == "admin" else "sales"
+        self._actor.set({"id": int(user["id"]), "role": role})
+
+    def bind_system_actor(self) -> None:
+        self._actor.set({"id": None, "role": "system"})
 
     def is_available(self) -> bool:
         try:
@@ -40,7 +55,7 @@ class Database:
             return False
 
     @contextmanager
-    def connect(self):
+    def connect(self, *, enforce_security: bool = True):
         psycopg, dict_row = _psycopg()
         db = self.config.database
         conn = psycopg.connect(
@@ -53,6 +68,17 @@ class Database:
             row_factory=dict_row,
         )
         try:
+            if enforce_security:
+                runtime_role = conn.execute(
+                    "SELECT 1 AS available FROM pg_roles WHERE rolname = 'sales_automation_runtime'"
+                ).fetchone()
+                if runtime_role:
+                    conn.execute("SET LOCAL ROLE sales_automation_runtime")
+            actor = self._actor.get()
+            conn.execute(
+                "SELECT set_config('sales.actor_id', %s, true), set_config('sales.actor_role', %s, true)",
+                (str(actor["id"] or ""), actor["role"]),
+            )
             yield conn
             conn.commit()
         except Exception:
@@ -63,7 +89,7 @@ class Database:
 
     def migrate(self, migration_dir: Path = Path("migrations")) -> list[str]:
         applied: list[str] = []
-        with self.connect() as conn:
+        with self.connect(enforce_security=False) as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
             existing = {
                 row["version"]

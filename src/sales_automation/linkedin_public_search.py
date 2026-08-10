@@ -14,7 +14,7 @@ from .clients import HunterClient, ProspeoClient, _domain_from_website, is_full_
 from .config import AppConfig
 from .db import Repository
 from .email_discovery import EmailCandidate, guess_email_candidates
-from .http import HttpClient
+from .http import HttpClient, safe_urlopen
 from .india_hiring_signals import IndiaHiringSignalService
 from .iran_hiring_signals import IranHiringSignalService
 from .logging_utils import log
@@ -1190,7 +1190,7 @@ def find_public_company_channels(domain_or_url: str, *, limit: int = 5) -> dict[
 def _fetch_public_page(url: str) -> str:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "salesbot-public-channel-discovery/1.0"})
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with safe_urlopen(request, timeout=4) as response:
             content_type = response.headers.get("Content-Type", "")
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return ""

@@ -6,6 +6,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from .http import safe_urlopen
+
 
 class VpsSsoError(RuntimeError):
     def __init__(self, message: str, status: int = 401):
@@ -75,7 +77,7 @@ class VpsSsoService:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with safe_urlopen(request, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code in {401, 403}:

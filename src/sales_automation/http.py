@@ -5,8 +5,9 @@ import http.client
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import unquote
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 # This project must never read from the AI investment Base. Keep the guard in
@@ -19,8 +20,28 @@ _BLOCKED_EXTERNAL_URL_MARKERS = (
 
 def _assert_external_url_allowed(url: str) -> None:
     normalized = str(url or "").strip()
-    if any(marker in normalized for marker in _BLOCKED_EXTERNAL_URL_MARKERS):
+    for _ in range(3):
+        decoded = unquote(normalized)
+        if decoded == normalized:
+            break
+        normalized = decoded
+    if any(marker.casefold() in normalized.casefold() for marker in _BLOCKED_EXTERNAL_URL_MARKERS):
         raise RuntimeError("Blocked external resource: AI investment Feishu Base is not available to this project")
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _assert_external_url_allowed(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+urlopen = build_opener(_SafeRedirectHandler()).open
+
+
+def safe_urlopen(url, *args, **kwargs):
+    target = url.full_url if isinstance(url, Request) else str(url)
+    _assert_external_url_allowed(target)
+    return urlopen(url, *args, **kwargs)
 
 
 @dataclass
@@ -49,7 +70,7 @@ class HttpClient:
         for attempt in range(1, attempt_limit + 1):
             try:
                 req = Request(url, data=body, headers=req_headers, method=method.upper())
-                with urlopen(req, timeout=self.timeout) as response:
+                with safe_urlopen(req, timeout=self.timeout) as response:
                     data = response.read().decode("utf-8")
                     return json.loads(data) if data else {}
             except (HTTPError, URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, json.JSONDecodeError) as exc:

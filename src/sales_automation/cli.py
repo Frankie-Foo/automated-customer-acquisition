@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = load_config(args.config)
     repo = Repository(Database(config))
+    repo.db.bind_system_actor()
 
     if args.command == "migrate":
         applied = repo.db.migrate()

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
 
 from .clients import HunterClient, NinjaPearClient, ProspeoClient, is_full_email
+from .http import safe_urlopen
 
 
 @dataclass
@@ -151,7 +152,7 @@ class GitHubCommitsEmailProvider:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with safe_urlopen(request, timeout=8) as response:
                 events = json.loads(response.read(500_000).decode("utf-8"))
         except Exception:
             return []
@@ -186,7 +187,7 @@ class GravatarEmailProvider:
             url = f"https://www.gravatar.com/avatar/{digest}?d=404"
             try:
                 request = urllib.request.Request(url, headers={"User-Agent": "salesbot-email-discovery/0.1"})
-                with urllib.request.urlopen(request, timeout=5) as response:
+                with safe_urlopen(request, timeout=5) as response:
                     if response.status == 200:
                         candidates.append(EmailCandidate.build(guessed, self.name, "unverified", 65, "personal_work"))
             except Exception:
@@ -485,7 +486,7 @@ def find_public_company_email(domain: str) -> str | None:
             url = f"{scheme}://{domain}{path}"
             try:
                 request = urllib.request.Request(url, headers={"User-Agent": "salesbot-email-discovery/0.1"})
-                with urllib.request.urlopen(request, timeout=5) as response:
+                with safe_urlopen(request, timeout=5) as response:
                     content_type = response.headers.get("Content-Type", "")
                     if "text/html" not in content_type and "text/plain" not in content_type:
                         continue

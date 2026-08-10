@@ -71,6 +71,9 @@ class AutomationRunService:
         if not owner:
             self.repo.finish_automation_run(run_id, status="failed", error="run_owner_unavailable")
             return self.repo.get_automation_run(run_id)
+        binder = getattr(getattr(self.repo, "db", None), "bind_actor", None)
+        if binder:
+            binder(owner)
 
         payload = run.get("input_payload") or {}
         seeds = list(payload.get("seeds") or [])

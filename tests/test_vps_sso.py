@@ -32,7 +32,7 @@ def test_vps_sso_verifies_odoo_session_and_employee(monkeypatch):
             return FakeResponse({"result": {"uid": 42, "username": "ivan.yu@vertu.com", "name": "Ivan"}})
         return FakeResponse({"result": [{"name": "于冰", "barcode": "800042", "work_email": "ivan.yu@vertu.com", "department_id": [7, "BD"]}]})
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("sales_automation.vps_sso.safe_urlopen", fake_urlopen)
     config = SimpleNamespace(raw={"sso": {"vps_enabled": "true", "odoo_base_url": "https://admin.vertu.cn"}})
 
     profile = VpsSsoService(config).verify(session_id="odoo-session", user_id=42)
@@ -46,7 +46,7 @@ def test_vps_sso_verifies_odoo_session_and_employee(monkeypatch):
 
 
 def test_vps_sso_rejects_uid_mismatch(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse({"result": {"uid": 7}}))
+    monkeypatch.setattr("sales_automation.vps_sso.safe_urlopen", lambda request, timeout: FakeResponse({"result": {"uid": 7}}))
     config = SimpleNamespace(raw={"sso": {"vps_enabled": "true", "odoo_base_url": "https://admin.vertu.cn"}})
 
     with pytest.raises(VpsSsoError) as exc:
