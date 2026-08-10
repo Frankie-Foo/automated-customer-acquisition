@@ -23,6 +23,7 @@ from ..outreach_guard import send_readiness, sleep_between_sends, validate_email
 from ..rendering import build_html_body, open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 from .pdca import LeadWorkflowService
+from .flywheel import DataFlywheelService
 from .quality import OutboundQualityService
 
 
@@ -139,7 +140,7 @@ class PersonalizedEmailService:
         if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
-        html_body = build_html_body(text, product_images=self.config.product_images)
+        html_body = build_html_body(text, product_images=getattr(self.config, "product_images", {}))
         html_body += f'<img src="{open_pixel_url(contact, step, base_url, tracking_secret)}" width="1" height="1" alt="" />'
         idempotency_key = f"contact-{contact['id']}-step-{step}"
         attempt = self.repo.reserve_send_attempt(
@@ -323,6 +324,7 @@ class PersonalizedEmailService:
         framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(copy_contact)
         pain_strategy = insights.get("pain_point_strategy") if isinstance(insights.get("pain_point_strategy"), dict) else {}
         followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
+        flywheel = DataFlywheelService(self.config, self.repo).context_for_contact(copy_contact)
         research = self.repo.get_contact_research(int(contact["id"])) or {}
         research_sources = []
         for item in (research.get("sources") or [])[:6]:
@@ -334,7 +336,7 @@ class PersonalizedEmailService:
             "The commercial purpose is to identify a credible local partner who could open and operate a VERTU boutique or develop selective local distribution. "
             "This email will be sent with VERTU product images displayed below the text, so you do not need to describe phones, watches, or wearables in the body. "
             "Frame the value as a differentiated luxury category and potential commercial upside for the partner's high-value customer base; never promise revenue, margin, returns, or an outcome. "
-            "Output strict JSON only with fields: subject, body. Body must be plain text, 70-100 prospect-facing words before the signature, natural, and specific. "
+            "Output strict JSON only with fields: subject, body. Body must be plain text, 70-110 prospect-facing words before the signature, natural, and specific. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
             "You may use at most one current signal from research_sources, only when its title and snippet directly support the wording. "
             "Treat undated or ambiguous sources as weak evidence and phrase them as an observation, not a confirmed business fact. "
@@ -350,6 +352,8 @@ class PersonalizedEmailService:
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
             f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
             f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
+            f"validated flywheel guidance: {json.dumps(flywheel, ensure_ascii=False)}; "
+            "Use flywheel guidance only to choose among facts already present; never invent evidence from it. "
             f"experiment instruction: {str((experiment or {}).get('instruction') or 'none')}; "
             "The experiment instruction may change only the stated experiment variable and must not weaken factual accuracy. "
             f"sender: {self.config.sender.get('name')}."

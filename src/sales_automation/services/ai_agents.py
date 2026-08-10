@@ -9,6 +9,7 @@ from ..customer_intelligence import build_customer_profile
 from ..db import Repository
 from ..logging_utils import log
 from .quality import OutboundQualityService
+from .flywheel import DataFlywheelService
 
 
 class ProfileAgentService:
@@ -52,6 +53,15 @@ class ProfileAgentService:
             log("profile_agent.failed", contact_id=contact_id, error=str(exc))
             insights = fallback
         insights = _normalize_profile_insights(insights, fallback)
+        flywheel = DataFlywheelService(self.config, self.repo).context_for_contact(contact)
+        if flywheel:
+            adjustment = int(flywheel.get("score_adjustment") or 0)
+            insights["icp_fit_score"] = max(0, min(100, int(insights.get("icp_fit_score") or 0) + adjustment))
+            insights["flywheel"] = {
+                "scope": flywheel.get("scope"),
+                "score_adjustment": adjustment,
+                "guidance": flywheel.get("prompt_guidance"),
+            }
         insights["icp_assessment"] = OutboundQualityService(self.repo).assess_contact(contact)
         self.repo.update_profile_summary(contact_id, insights["summary"], insights)
         return insights

@@ -6,6 +6,7 @@ from ..clients import NinjaPearClient, ProspeoClient, ProxycurlClient
 from ..config import AppConfig
 from ..db import Repository
 from ..logging_utils import log
+from ..provider_budget import ProviderBudgetGateway
 
 
 class SourcingService:
@@ -14,6 +15,7 @@ class SourcingService:
         self.repo = repo
 
     def source(self, criteria: dict[str, Any], limit: int, *, owner_user_id: int | None = None, owner: str | None = None) -> tuple[int, int]:
+        budget = ProviderBudgetGateway(self.config, self.repo)
         provider = self.config.raw.get("sourcing", {}).get("provider", "prospeo")
         prospeo_key = self.config.apis.get("prospeo_key", "")
         ninjapear_key = self.config.apis.get("ninjapear_key", "")
@@ -22,6 +24,7 @@ class SourcingService:
             if not role:
                 raise RuntimeError("Prospeo sourcing requires role")
             try:
+                budget.reserve("prospeo")
                 contacts = ProspeoClient(prospeo_key).search_people(
                     company_website=criteria.get("company_website"),
                     role=role,
@@ -39,6 +42,7 @@ class SourcingService:
             role = criteria.get("role") or criteria.get("title")
             if not company_website or not role:
                 raise RuntimeError("NinjaPear sourcing requires company_website and role")
+            budget.reserve("ninjapear")
             contacts = NinjaPearClient(ninjapear_key).search_employees(
                 company_website=company_website,
                 role=role,
@@ -49,6 +53,7 @@ class SourcingService:
             key = self.config.apis.get("proxycurl_key", "")
             if not key:
                 raise RuntimeError("Missing apis.prospeo_key or apis.ninjapear_key")
+            budget.reserve("proxycurl")
             contacts = ProxycurlClient(key).search_people(criteria, limit)
         contacts = [contact for contact in contacts if contact.get("linkedin_url")]
         for contact in contacts:

@@ -67,7 +67,7 @@ _HIGH_FRICTION_CTA_RE = re.compile(
 )
 _SIGNATURE_MARKER_RE = re.compile(r"^(best regards|kind regards|regards|sincerely|thanks|thank you)[,!]?$", re.I)
 _UNSUBSCRIBE_LINE_RE = re.compile(r"^unsubscribe\s*:", re.I)
-_TARGET_COPY_WORD_RANGE = (70, 100)
+_TARGET_COPY_WORD_RANGE = (70, 110)
 
 
 def default_icp_profile() -> dict[str, Any]:

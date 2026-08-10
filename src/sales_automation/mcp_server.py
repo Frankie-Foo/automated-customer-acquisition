@@ -19,14 +19,14 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
     repo = Repository(Database(config))
     app = FastMCP("sales-automation")
 
-    def resolve_user(username: str | None = None) -> dict[str, Any]:
-        target = username or os.environ.get("SALESBOT_MCP_USERNAME") or "admin"
-        for user in repo.list_users():
-            if str(user.get("username") or "").lower() == str(target).lower():
-                if not user.get("active", True):
-                    raise ValueError(f"User is disabled: {target}")
-                return user
-        raise ValueError(f"Unknown sales user: {target}")
+    bound_username = str(os.environ.get("SALESBOT_MCP_USERNAME") or "").strip()
+    bound_user: dict[str, Any] | None = None
+
+    def resolve_user() -> dict[str, Any]:
+        nonlocal bound_user
+        if bound_user is None:
+            bound_user = _resolve_mcp_user(repo, bound_username)
+        return bound_user
 
     @app.tool()
     def search_customers(
@@ -34,10 +34,9 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         status: str = "",
         filter_key: str = "",
         limit: int = 20,
-        user_username: str = "",
     ) -> dict[str, Any]:
         """Search CRM contacts scoped to a sales user. Returns compact customer rows."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         rows = repo.list_contacts(
             status=status or None,
             search=query or None,
@@ -51,9 +50,9 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         }
 
     @app.tool()
-    def get_customer_detail(contact_id: int, user_username: str = "") -> dict[str, Any]:
+    def get_customer_detail(contact_id: int) -> dict[str, Any]:
         """Get one customer detail, including candidates, lifecycle, profile and email events."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         detail = repo.contact_detail(int(contact_id), user=user)
         if not detail:
             raise ValueError("Contact not found or not accessible")
@@ -65,10 +64,9 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         default_location: str = "",
         default_industry: str = "",
         per_company_limit: int = 3,
-        user_username: str = "",
     ) -> dict[str, Any]:
         """Import company seed CSV text and run public LinkedIn sourcing. Does not send emails."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         seeds = parse_company_seed_csv(csv_text, default_location=default_location, default_industry=default_industry)
         requested = max(1, min(10, int(per_company_limit or 3))) * max(1, len(seeds))
         quotas = QuotaService(config, repo).snapshot(user)
@@ -94,13 +92,13 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         }
 
     @app.tool()
-    def generate_outreach_email(contact_id: int, user_username: str = "") -> dict[str, Any]:
+    def generate_outreach_email(contact_id: int) -> dict[str, Any]:
         """Generate a personalized outreach email draft for a customer. Does not send."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         contact = repo.get_contact_for_user(int(contact_id), user)
         if not contact:
             raise ValueError("Contact not found or not accessible")
-        draft = PersonalizedEmailService(config, repo).draft(int(contact_id), mode="ai")
+        draft = PersonalizedEmailService(config, repo).draft(int(contact_id), mode="ai", user=user)
         return {
             "contact": _compact_contact(contact),
             "draft": draft,
@@ -115,10 +113,9 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         next_action_at: str = "",
         notes: str = "",
         lost_reason: str = "",
-        user_username: str = "",
     ) -> dict[str, Any]:
         """Update lifecycle/SABCD stage for a customer scoped to the selected user."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         contact = repo.get_contact_for_user(int(contact_id), user)
         if not contact:
             raise ValueError("Contact not found or not accessible")
@@ -134,15 +131,26 @@ def build_server(config_path: str = "config.yaml") -> FastMCP:
         return result
 
     @app.tool()
-    def generate_customer_profile(contact_id: int, user_username: str = "") -> dict[str, Any]:
+    def generate_customer_profile(contact_id: int) -> dict[str, Any]:
         """Generate or refresh AI customer profile insights for a customer."""
-        user = resolve_user(user_username or None)
+        user = resolve_user()
         contact = repo.get_contact_for_user(int(contact_id), user)
         if not contact:
             raise ValueError("Contact not found or not accessible")
         return ProfileAgentService(config, repo).summarize(int(contact_id))
 
     return app
+
+
+def _resolve_mcp_user(repo: Repository, username: str) -> dict[str, Any]:
+    if not username:
+        raise RuntimeError("SALESBOT_MCP_USERNAME is required; MCP never defaults to admin")
+    for user in repo.list_users():
+        if str(user.get("username") or "").casefold() == username.casefold():
+            if not user.get("active", True):
+                raise ValueError(f"User is disabled: {username}")
+            return user
+    raise ValueError(f"Unknown sales user: {username}")
 
 
 def main(argv: list[str] | None = None) -> int:

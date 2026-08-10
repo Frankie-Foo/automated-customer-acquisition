@@ -49,7 +49,15 @@ class OutboundQualityService:
         variants = experiment.get("variants") if isinstance(experiment.get("variants"), list) else []
         if len(variants) < 2:
             return None
-        variant = variants[contact_id % len(variants)]
+        winner_name = str(experiment.get("winner_variant") or "").strip()
+        learned_variant = next(
+            (item for item in variants if str(item.get("name") if isinstance(item, dict) else item) == winner_name),
+            None,
+        ) if winner_name else None
+        variant = learned_variant
+        if variant is None:
+            variant = variants[contact_id % len(variants)]
+        winner_selected = learned_variant is not None
         if isinstance(variant, str):
             variant = {"name": variant}
         if not isinstance(variant, dict):
@@ -60,6 +68,7 @@ class OutboundQualityService:
             "variant": str(variant.get("name") or f"Variant {(contact_id % len(variants)) + 1}"),
             "instruction": str(variant.get("instruction") or "")[:500],
             "variable_name": experiment.get("variable_name"),
+            "winner_selected": winner_selected,
         }
 
 

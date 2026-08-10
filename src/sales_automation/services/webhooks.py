@@ -82,12 +82,14 @@ class WebhookService:
                 metadata={"provider": provider, "message_id": message_id},
             )
         actionable_reply = bool(reply_classification and reply_classification.get("should_advance"))
+        should_close_tasks = event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"}
+        if contact and should_close_tasks:
+            if hasattr(self.repo, "close_open_followup_tasks"):
+                self.repo.close_open_followup_tasks(contact_id)
         if contact and (
             event_type in {"bounced", "failed", "unsubscribed", "complained"}
             or (event_type == "replied" and actionable_reply)
         ):
-            if hasattr(self.repo, "close_open_followup_tasks"):
-                self.repo.close_open_followup_tasks(contact_id)
             LeadWorkflowService(self.repo).ensure_next_task(
                 contact_id,
                 owner_user_id=owner_user_id,

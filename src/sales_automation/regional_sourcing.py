@@ -127,6 +127,11 @@ _SOUTHEAST_ASIA_CHANNELS = {
 }
 _SOUTH_ASIA_ROLES = ("owner", "founder", "managing director", "business head", "purchase head", "director")
 _SOUTH_ASIA_CHANNELS = ("official website", "contact", "authorized dealer", "distributor", "Instagram", "WhatsApp")
+_UK_ROLES = (
+    "owner", "founder", "managing director", "commercial director", "retail director",
+    "head of buying", "buyer", "business development director", "store director",
+)
+_UK_CHANNELS = ("official website", "contact", "authorised dealer", "distributor", "retailer", "Companies House")
 _INDIA_ROLES = (
     "owner",
     "founder",
@@ -252,6 +257,16 @@ _register(
     languages=("en",),
     role_terms=_INDIA_ROLES,
     channel_terms=_INDIA_CHANNELS,
+)
+
+_register(
+    ("united kingdom", "great britain", "britain", "england", "scotland", "wales", "london", "manchester"),
+    key="europe",
+    label="United Kingdom enhanced",
+    country="GB",
+    languages=("en",),
+    role_terms=_UK_ROLES,
+    channel_terms=_UK_CHANNELS,
 )
 
 for aliases, country in (

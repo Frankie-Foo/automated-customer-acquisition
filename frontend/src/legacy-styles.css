@@ -2010,6 +2010,118 @@ textarea {
   background: var(--ok-bg);
 }
 
+.composer-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-3);
+}
+
+.composer-steps b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-2);
+  font-size: 11px;
+}
+
+.composer-steps li.current {
+  border-color: var(--primary);
+  color: var(--text-1);
+}
+
+.composer-steps li.done {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--text-1);
+}
+
+.composer-steps li.done b {
+  background: var(--primary);
+  color: #fff;
+}
+
+.composer-send-note,
+.sync-status {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.sync-status::before {
+  content: "·";
+  margin: 0 6px;
+}
+
+.acquisition-control {
+  display: grid;
+  gap: 16px;
+}
+
+.acquisition-plan-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compact-table {
+  min-width: 900px;
+}
+
+.flywheel-head {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.flywheel-snapshots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.flywheel-snapshots article {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.flywheel-snapshots article span,
+.flywheel-snapshots article small {
+  color: var(--text-3);
+}
+
+@media (max-width: 1080px) {
+  .acquisition-plan-form,
+  .flywheel-snapshots {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .composer-steps,
+  .acquisition-plan-form,
+  .flywheel-snapshots {
+    grid-template-columns: 1fr;
+  }
+}
+
 .composer-progress {
   display: flex;
   align-items: center;

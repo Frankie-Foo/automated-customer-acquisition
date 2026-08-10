@@ -5,6 +5,8 @@ from ..db import Repository
 from ..logging_utils import log
 from ..quotas import QuotaService
 from .enrichment import EnrichmentService
+from .acquisition_planner import AcquisitionPlannerService
+from .flywheel import DataFlywheelService
 from .outreach import OutreachService
 from .pdca import LeadWorkflowService
 from .queue import QueueService
@@ -22,6 +24,7 @@ class SchedulerService:
                 log("scheduler.skipped_locked")
                 return
             try:
+                acquisition = AcquisitionPlannerService(self.config, self.repo).run_due()
                 quota = QuotaService(self.config, self.repo)
                 EnrichmentService(self.config, self.repo).enrich(enrich_limit)
                 QueueService(self.repo).queue(queue_limit)
@@ -32,7 +35,12 @@ class SchedulerService:
                 closed = self.repo.close_expired_outreach_sequences(wait_days=wait_days, limit=max(100, send_limit))
                 recycled = self.repo.recycle_stale_private_pool(limit=max(100, queue_limit))
                 tasks = LeadWorkflowService(self.repo).refresh_tasks(limit=max(500, queue_limit))
-                log("scheduler.completed", sent=sent, waiting=closed["waiting"], abandoned=closed["abandoned"], recycled=recycled, tasks=tasks)
+                try:
+                    flywheel = DataFlywheelService(self.config, self.repo).run_once()
+                except Exception as exc:
+                    flywheel = {"status": "failed", "error": str(exc)[:500]}
+                    log("flywheel.failed", error=str(exc))
+                log("scheduler.completed", acquisition=acquisition, sent=sent, waiting=closed["waiting"], abandoned=closed["abandoned"], recycled=recycled, tasks=tasks, flywheel=flywheel)
             finally:
                 conn.execute("SELECT pg_advisory_unlock(20260603)")
 

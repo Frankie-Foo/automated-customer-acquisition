@@ -22,9 +22,10 @@ from .linkedin_public_search import LinkedInPublicSearchService
 from .outbound_identity import parse_signed_reply_route
 from .outbound_quality import calibration_summary
 from .quotas import QuotaService
+from .provider_budget import ProviderBudgetExceeded
 from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
-from .services import AccountResearchService, AutomationRunService, EnrichmentService, LeadWorkflowService, LifecycleService, OutboundQualityService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .services import AcquisitionPlannerService, AccountResearchService, AutomationRunService, DataFlywheelService, EnrichmentService, LeadWorkflowService, LifecycleService, OutboundQualityService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
 from .vps_sso import VpsSsoError, VpsSsoService
 from .pdca_sso import PdcaSsoError, PdcaSsoService
 
@@ -39,6 +40,14 @@ def normalize_company_website(value: str | None) -> str:
 
 def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = value.replace(";", ",").split(",")
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
 
 
 def _embed_allowed_origins(value: Any) -> tuple[str, ...]:
@@ -212,6 +221,18 @@ def make_handler(config, repo: Repository):
                 return
             if parsed.path == "/api/outbound-quality":
                 self._json(lambda: repo.outbound_quality_dashboard(user=self._current_user()))
+                return
+            if parsed.path == "/api/flywheel":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(repo.flywheel_summary)
+                return
+            if parsed.path == "/api/admin/acquisition-plans":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: {"plans": repo.list_acquisition_plans()})
                 return
             if parsed.path == "/api/search-tasks":
                 self._json(lambda: {"tasks": repo.list_lead_search_tasks(user=self._current_user())})
@@ -388,6 +409,39 @@ def make_handler(config, repo: Repository):
                 if not admin:
                     return
                 self._json_audit("migrate", lambda: {"applied": repo.db.migrate()}, summary="管理员执行数据库迁移")
+                return
+            if parsed.path == "/api/admin/acquisition-plans":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def create_acquisition_plan() -> dict[str, Any]:
+                    owner_user_id = int(payload.get("owner_user_id") or 0)
+                    if not repo.get_active_user(owner_user_id):
+                        raise ValueError("owner_user_id must reference an active user")
+                    name = str(payload.get("name") or "").strip()[:200]
+                    if not name:
+                        raise ValueError("name is required")
+                    return {"plan": repo.create_acquisition_plan(
+                        name=name,
+                        regions=_string_list(payload.get("regions")),
+                        industries=_string_list(payload.get("industries")),
+                        company_types=_string_list(payload.get("company_types")),
+                        role_terms=_string_list(payload.get("role_terms")),
+                        owner_user_id=owner_user_id,
+                        daily_lead_limit=max(1, min(int(payload.get("daily_lead_limit") or 20), 1000)),
+                        combinations_per_run=max(1, min(int(payload.get("combinations_per_run") or 3), 50)),
+                    )}
+                self._json_audit("create_acquisition_plan", create_acquisition_plan, summary="Create acquisition plan")
+                return
+            if parsed.path == "/api/admin/acquisition-plans/run":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json_audit(
+                    "run_acquisition_plans",
+                    lambda: AcquisitionPlannerService(config, repo).run_due(),
+                    summary="Run due acquisition plans",
+                )
                 return
             if parsed.path == "/api/change-password":
                 def change_password() -> dict[str, Any]:
@@ -587,6 +641,8 @@ def make_handler(config, repo: Repository):
                     result = SourcingService(config, repo).source(
                         criteria,
                         limit,
+                        owner_user_id=int(user["id"]),
+                        owner=str(user.get("display_name") or user.get("username") or ""),
                     )
                     quota_result = QuotaService(config, repo).consume(user, "source", limit)
                     return {"result": result, "usage": quota_result["user_usage"], "quotas": quota_result}
@@ -785,6 +841,17 @@ def make_handler(config, repo: Repository):
                     summary="单客户发送邮件",
                     metadata=lambda data: {"sent": data.get("sent")},
                 )
+                return
+            if parsed.path == "/api/flywheel/run":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                def run_flywheel() -> dict[str, Any]:
+                    return DataFlywheelService(config, repo).run_once(
+                        window_days=int(payload.get("window_days") or 30),
+                        min_samples=int(payload.get("min_samples") or 5),
+                    )
+                self._json_audit("flywheel_run", run_flywheel, summary="刷新数据飞轮策略")
                 return
             if parsed.path == "/api/scheduler":
                 admin = self._require_admin()
@@ -1313,7 +1380,7 @@ def make_handler(config, repo: Repository):
             try:
                 self._send_json({"ok": True, "data": fn()})
             except Exception as exc:
-                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                self._send_json({"ok": False, "error": str(exc)}, status=429 if isinstance(exc, ProviderBudgetExceeded) else 500)
 
         def _json_audit(
             self,
@@ -1333,7 +1400,7 @@ def make_handler(config, repo: Repository):
                 self._send_json({"ok": True, "data": data})
             except Exception as exc:
                 self._audit(action, target_type=target_type, target_id=None if callable(target_id) else target_id, summary=summary, success=False, error=str(exc))
-                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                self._send_json({"ok": False, "error": str(exc)}, status=429 if isinstance(exc, ProviderBudgetExceeded) else 500)
 
         def _audit(
             self,
@@ -1429,7 +1496,7 @@ def make_handler(config, repo: Repository):
         def _verify_resend_webhook(self, parsed_payload: dict[str, Any]) -> dict[str, Any]:
             secret = config.raw.get("webhooks", {}).get("resend_secret") or config.raw.get("notifications", {}).get("resend_webhook_secret")
             if not secret:
-                return parsed_payload
+                raise RuntimeError("Resend webhook signing secret is not configured")
             try:
                 from svix.webhooks import Webhook
 

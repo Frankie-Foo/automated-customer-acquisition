@@ -128,6 +128,27 @@ function CustomerWorkspace() {
     };
   }, [loadDetail, loadSuggestions]);
 
+  useEffect(() => {
+    if (!contact?.id) return undefined;
+    const refresh = async () => {
+      try {
+        const next = await api(`/api/contact-detail?contact_id=${encodeURIComponent(contact.id)}`);
+        if (next.contact) setDetail(next);
+      } catch {
+        // Keep the current form usable during a transient refresh failure.
+      }
+    };
+    const interval = window.setInterval(refresh, 30_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [contact?.id]);
+
   async function saveActivity() {
     if (!contact) throw new Error("请先选择客户");
     if (!content.trim()) throw new Error("请填写阶段记录");
@@ -317,6 +338,7 @@ function CustomerWorkspace() {
                 </select>
               </label>
             </div>
+            <ComposerSteps draft={detail?.draft} approved={approved} sent={Number(contact.sequence_step || 0) > 0} />
             <label>主题<input value={subject} onChange={(event) => { setSubject(event.target.value); setApproved(false); setQualityReview(null); }} placeholder="邮件主题" /></label>
             <label>正文<textarea value={body} onChange={(event) => { setBody(event.target.value); setApproved(false); setQualityReview(null); }} placeholder="邮件正文。可使用 {{first_name}}、{{company_name}}、{{unsubscribe_url}}" /></label>
             <CopyQualityReview review={qualityReview} />
@@ -326,12 +348,32 @@ function CustomerWorkspace() {
               <button type="button" disabled={loading} onClick={() => guarded(approveEmail)}>审核并锁定</button>
               <button type="button" disabled={loading || !approved} className="primary" onClick={() => guarded(sendCustomEmail)}>发送已审核邮件</button>
             </div>
+            {!approved && <p className="composer-send-note">发送按钮会在草稿审核锁定后启用，避免误发未确认内容。</p>}
             {loading && operationLabel && <div className="composer-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{operationLabel}</strong><small>实时调研和 AI 生成通常需要 10-30 秒，请勿重复点击。</small></div></div>}
           </div>
           <ActivityList activities={activities} onAnalyze={(activityId) => guarded(() => analyzeStage({ activity_id: activityId }))} />
         </div>
       )}
     </>
+  );
+}
+
+function ComposerSteps({ draft, approved, sent }) {
+  const drafted = Boolean(draft?.body);
+  const steps = [
+    ["生成草稿", drafted],
+    ["审核锁定", approved],
+    ["发送邮件", sent],
+  ];
+  const current = sent ? -1 : approved ? 2 : drafted ? 1 : 0;
+  return (
+    <ol className="composer-steps" aria-label="邮件发送进度">
+      {steps.map(([label, done], index) => (
+        <li key={label} className={done ? "done" : index === current ? "current" : "pending"} aria-current={index === current ? "step" : undefined}>
+          <b>{done ? "✓" : index + 1}</b><span>{label}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

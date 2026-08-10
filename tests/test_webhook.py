@@ -119,3 +119,52 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
     assert repo.events[0][2]["data"]["text"] == "Please send the price list."
     assert repo.activities[0][1]["content"] == "Please send the price list."
 
+
+def test_non_actionable_reply_stops_existing_followups_without_advancing_lifecycle():
+    class Repo:
+        def __init__(self):
+            self.events = []
+            self.closed = []
+            self.activities = []
+
+        def find_contact_id_by_message_id(self, message_id):
+            return None
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def route_inbound_reply(self, contact_id, user_id):
+            return {"owner_user_id": 3, "reply_assignment_pending": False}
+
+        def record_event(self, contact_id, event_type, payload):
+            self.events.append((contact_id, event_type, payload))
+
+        def get_contact(self, contact_id):
+            return {"id": contact_id, "owner_user_id": 3, "status": "replied", "sabcd_stage": "D"}
+
+        def close_open_followup_tasks(self, contact_id):
+            self.closed.append(contact_id)
+
+        def record_interaction(self, **kwargs):
+            pass
+
+        def add_lifecycle_activity(self, contact_id, **kwargs):
+            self.activities.append((contact_id, kwargs))
+
+    repo = Repo()
+    payload = {
+        "type": "email.received",
+        "data": {
+            "from": "lead@example.com",
+            "subject": "Automatic reply",
+            "text": "I am out of office until Monday.",
+        },
+    }
+
+    event = WebhookService(repo).process_payload("resend", payload)
+
+    assert event == "replied"
+    assert repo.closed == [77]
+    assert repo.events[0][2]["reply_classification"]["label"] == "ooo"
+    assert repo.activities == []
+

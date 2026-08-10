@@ -7,6 +7,7 @@ from ..config import AppConfig
 from ..db import Repository
 from ..email_discovery import build_email_discovery_engine
 from ..logging_utils import log
+from ..provider_budget import ProviderBudgetGateway
 
 
 class EnrichmentService:
@@ -56,7 +57,8 @@ class EnrichmentService:
         prospeo: ProspeoClient | None,
     ) -> dict[str, Any]:
         fields = self._enrich_one(contact, hunter, proxycurl, ninjapear, prospeo)
-        note = None if fields.get("email_status") == "valid" else "No verified email found"
+        warnings = fields.pop("_provider_warnings", [])
+        note = None if fields.get("email_status") == "valid" else "; ".join(warnings) or "No verified email found"
         self.repo.update_enrichment(contact["id"], fields, error=note)
         return fields
 
@@ -69,7 +71,14 @@ class EnrichmentService:
         prospeo: ProspeoClient | None,
     ) -> dict[str, Any]:
         domain = contact.get("company_domain")
-        fields = build_email_discovery_engine(self.config, stats_recorder=self.repo.record_email_provider_stat).discover(contact, domain)
+        budget = ProviderBudgetGateway(self.config, self.repo)
+        fields = build_email_discovery_engine(
+            self.config,
+            stats_recorder=self.repo.record_email_provider_stat,
+            budget_reserver=budget.try_reserve,
+            cache_reader=self.repo.get_provider_lookup_cache,
+            cache_writer=self.repo.store_provider_lookup_cache,
+        ).discover(contact, domain)
         if proxycurl and domain:
             company = proxycurl.company_lookup(domain)
             fields["company_size"] = company.get("company_size") or company.get("employee_count")

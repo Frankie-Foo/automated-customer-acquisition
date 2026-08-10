@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
+import AcquisitionControl from "./AcquisitionControl.jsx";
 
 const emptyNewUser = {
   username: "",
@@ -31,6 +32,8 @@ function AdminConsole() {
   const [automationRuns, setAutomationRuns] = useState([]);
   const [regionRules, setRegionRules] = useState([]);
   const [qualityData, setQualityData] = useState(null);
+  const [acquisitionPlans, setAcquisitionPlans] = useState([]);
+  const [flywheelData, setFlywheelData] = useState(null);
   const [newUser, setNewUser] = useState(emptyNewUser);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -51,14 +54,18 @@ function AdminConsole() {
         api("/api/automation-runs"),
         api("/api/admin/region-rules"),
         api("/api/outbound-quality"),
+        api("/api/admin/acquisition-plans"),
+        api("/api/flywheel"),
       ]);
-      const [userResult, senderResult, auditResult, runResult, ruleResult, qualityResult] = results;
+      const [userResult, senderResult, auditResult, runResult, ruleResult, qualityResult, planResult, flywheelResult] = results;
       if (userResult.status === "fulfilled") setUsers(userResult.value.users || []);
       if (senderResult.status === "fulfilled") setSenders(senderResult.value.senders || []);
       if (auditResult.status === "fulfilled") setAuditLogs(auditResult.value.logs || []);
       if (runResult.status === "fulfilled") setAutomationRuns(runResult.value.runs || []);
       if (ruleResult.status === "fulfilled") setRegionRules(ruleResult.value.rules || []);
       if (qualityResult.status === "fulfilled") setQualityData(qualityResult.value || null);
+      if (planResult.status === "fulfilled") setAcquisitionPlans(planResult.value.plans || []);
+      if (flywheelResult.status === "fulfilled") setFlywheelData(flywheelResult.value || null);
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length) setError(failures.map((result) => result.reason?.message || "管理数据加载失败").join("；"));
     } catch (err) {
@@ -212,6 +219,7 @@ function AdminConsole() {
           ["users", "账号与配额"],
           ["senders", "发件账号"],
           ["automation", "获客任务"],
+          ["acquisition", "获客与飞轮"],
           ["quality", "质量与实验"],
           ["assignment", "地区分配"],
           ["audit", "操作记录"],
@@ -271,6 +279,7 @@ function AdminConsole() {
           <div className="card-title-row"><h3>后台获客任务</h3><button type="button" onClick={loadAdminData}>刷新任务</button></div>
           <AutomationRunTable runs={automationRuns} onAction={updateAutomationRun} />
         </section>}
+        {activeSection === "acquisition" && <AcquisitionControl users={users} plans={acquisitionPlans} flywheel={flywheelData} onRefresh={loadAdminData} />}
         {activeSection === "quality" && <QualityExperimentPanel data={qualityData} onRefresh={loadAdminData} />}
         {activeSection === "assignment" && <section className="admin-card automation-admin-card">
           <div className="card-title-row"><div><h3>地区自动分配</h3><p className="muted">获客任务完成后，按国家/地区关键词首次分配到销售私人池。</p></div><button type="button" onClick={() => setRegionRules((current) => [...current, { owner: "", match: [] }])}>新增规则</button></div>

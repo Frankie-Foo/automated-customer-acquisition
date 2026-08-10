@@ -98,12 +98,15 @@ def test_next_task_tracks_contact_state() -> None:
         now=now,
     )
     reply = next_task_for_contact({"status": "replied", "company_name": "C"}, now=now)
+    call = next_task_for_contact({"status": "new", "company_name": "Phone Lead", "phone": "+447700900123"}, now=now)
     stopped = next_task_for_contact({"status": "unsubscribed", "company_name": "D"}, now=now)
 
     assert enrich["task_type"] == "enrich_contact"
     assert review["task_type"] == "generate_draft"
     assert reply["task_type"] == "reply"
     assert reply["priority"] == "urgent"
+    assert call["task_type"] == "call"
+    assert call["trigger_rule"] == "phone_first_touch"
     assert stopped is None
 
 

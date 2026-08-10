@@ -87,6 +87,7 @@ function ContactsPipeline() {
   const [busyAction, setBusyAction] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
   const [bulkBusy, setBulkBusy] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
 
   useEffect(() => {
     const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
@@ -111,10 +112,12 @@ function ContactsPipeline() {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
 
-  const loadContacts = useCallback(async () => {
+  const loadContacts = useCallback(async ({ silent = false } = {}) => {
     if (!sessionUser) return;
-    setLoading(true);
-    setError("");
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const [data, report] = await Promise.all([
         api(`/api/contacts?${query}`),
@@ -123,12 +126,13 @@ function ContactsPipeline() {
       const rows = data.contacts || [];
       setContacts(rows);
       setImportReport(report);
+      setLastSyncedAt(new Date());
       window.latestContacts = rows;
       window.dispatchEvent(new CustomEvent("salesbot:contacts-updated", { detail: { contacts: rows } }));
     } catch (err) {
-      setError(err.message);
+      if (!silent) setError(err.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [query, sessionUser]);
 
@@ -155,6 +159,19 @@ function ContactsPipeline() {
   useEffect(() => {
     const timer = window.setTimeout(loadContacts, 250);
     return () => window.clearTimeout(timer);
+  }, [loadContacts]);
+
+  useEffect(() => {
+    const refresh = () => loadContacts({ silent: true });
+    const interval = window.setInterval(refresh, 30_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [loadContacts]);
 
   async function runContactAction(contact, action) {
@@ -280,7 +297,7 @@ function ContactsPipeline() {
         <div>
           <span className="eyebrow">Pipeline</span>
           <h2>{filter === "public_pool" ? "公共客户池" : filter === "mine" || filter === "private_pool" ? "我的客户" : "销售任务"}</h2>
-          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "系统已经把客户分组，优先处理可发送和需确认的客户。"}</p>
+          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "系统已经把客户分组，优先处理可发送和需确认的客户。"} <span className="sync-status">{lastSyncedAt ? `自动同步 ${formatSyncTime(lastSyncedAt)}` : "正在同步"}</span></p>
         </div>
         <div className="toolbar">
           <label htmlFor="contact-status-filter">Status<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
@@ -322,6 +339,10 @@ function ContactsPipeline() {
       {contacts.length > pageSize && <div className="table-pagination"><span>共 {contacts.length} 条，每页 {pageSize} 条</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
   );
+}
+
+function formatSyncTime(value) {
+  return value.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
 function SalesWorkQueue({ contacts, activeFilter, setFilter, onBulkAction, bulkBusy }) {

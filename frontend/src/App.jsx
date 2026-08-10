@@ -38,13 +38,11 @@ const LegacyShell = memo(function LegacyShell() {
 export default function App() {
   const [sessionUser, setSessionUser] = useState(null);
   const [activePage, setActivePage] = useState(currentPage);
-  const [visitedPages, setVisitedPages] = useState(() => new Set([currentPage()]));
 
   useEffect(() => {
     const syncRoute = () => {
       const page = currentPage();
       setActivePage(page);
-      setVisitedPages((current) => current.has(page) ? current : new Set([...current, page]));
     };
     window.addEventListener("hashchange", syncRoute);
     window.addEventListener("salesbot:page-change", syncRoute);
@@ -80,12 +78,12 @@ export default function App() {
       <AuthGatePortal onSessionChange={setSessionUser} />
       {sessionUser && !sessionUser.must_change_password && (
         <>
-          {visitedPages.has("admin") && <AdminConsolePortal />}
-          {visitedPages.has("research") && <ContactsPipelinePortal />}
-          {visitedPages.has("outreach") && <CustomerWorkspacePortal />}
-          {visitedPages.has("source") && <WorkbenchPortal />}
+          {activePage === "admin" && <AdminConsolePortal />}
+          {activePage === "research" && <ContactsPipelinePortal />}
+          {activePage === "outreach" && <CustomerWorkspacePortal />}
+          {activePage === "source" && <WorkbenchPortal />}
           <DashboardViewsPortal activePage={activePage} />
-          {visitedPages.has("outreach") && <SentEmailsPortal />}
+          {activePage === "outreach" && <SentEmailsPortal />}
         </>
       )}
     </>

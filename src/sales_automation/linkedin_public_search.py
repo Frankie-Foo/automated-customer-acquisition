@@ -20,6 +20,7 @@ from .iran_hiring_signals import IranHiringSignalService
 from .logging_utils import log
 from .regional_rules import is_low_quality_domain, mapped_middle_east_domain
 from .regional_sourcing import detect_regional_profile, regional_role_terms, search_options
+from .provider_budget import ProviderBudgetExceeded, ProviderBudgetGateway
 from .russia_hiring_signals import RussiaHiringSignalService
 from .southeast_asia_hiring_signals import SoutheastAsiaHiringSignalService
 
@@ -211,6 +212,7 @@ class LinkedInPublicSearchService:
         self.iran_hiring_signals = IranHiringSignalService(config, public_search=self.client)
         self.russia_hiring_signals = RussiaHiringSignalService(config, public_search=self.client)
         self.southeast_asia_hiring_signals = SoutheastAsiaHiringSignalService(config, public_search=self.client)
+        self.provider_budget = ProviderBudgetGateway(config, repo)
 
     def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
         criteria = self.india_hiring_signals.enrich_criteria(criteria)
@@ -310,6 +312,7 @@ class LinkedInPublicSearchService:
                                 "duplicate_or_existing_contact",
                             )
             if hunter and (company_domain or criteria.get("company_keyword")):
+                self.provider_budget.reserve("hunter")
                 provider_queries += 1
                 hunter_result = hunter.search_domain_emails(
                     domain=company_domain or None,
@@ -323,7 +326,7 @@ class LinkedInPublicSearchService:
                     candidates=len(hunter_rows),
                     valid_candidates=sum(1 for row in hunter_rows if _hunter_verification_status(row) == "valid"),
                     selected=0,
-                    credits_used=1 if hunter_rows else 0,
+                    credits_used=0,
                 )
                 for item in hunter_rows[:max(0, limit - len(all_results))]:
                     parsed = parse_hunter_domain_email(item, criteria, hunter_result)
@@ -353,6 +356,7 @@ class LinkedInPublicSearchService:
             if prospeo and company_domain and remaining:
                 prospeo_people: list[dict[str, Any]] = []
                 try:
+                    self.provider_budget.reserve("prospeo")
                     provider_queries += 1
                     prospeo_calls += 1
                     prospeo_people = prospeo.search_people(
@@ -382,6 +386,7 @@ class LinkedInPublicSearchService:
                         continue
                     enrichments += 1
                     try:
+                        self.provider_budget.reserve("prospeo")
                         enriched = prospeo.enrich_person(person)
                     except Exception as exc:
                         log("prospeo.person_enrich.failed", person_id=person.get("source_person_id"), error=str(exc)[:500])
@@ -415,7 +420,7 @@ class LinkedInPublicSearchService:
                     candidates=len(prospeo_people),
                     valid_candidates=valid_people,
                     selected=valid_people,
-                    credits_used=enrichments + (1 if prospeo_people else 0),
+                    credits_used=0,
                 )
 
             query_options = search_options(criteria)
@@ -525,6 +530,7 @@ class LinkedInPublicSearchService:
             )
             if not seed_domain and self.config.apis.get("hunter_key") and seed.get("company_name"):
                 try:
+                    self.provider_budget.reserve("hunter")
                     domains = HunterClient(self.config.apis["hunter_key"]).find_company_domains(
                         str(seed["company_name"]),
                         limit=3,
@@ -539,6 +545,8 @@ class LinkedInPublicSearchService:
                         selected=1 if seed_domain else 0,
                         credits_used=0,
                     )
+                except ProviderBudgetExceeded:
+                    raise
                 except Exception as exc:
                     log("hunter.domain_finder.failed", company=seed.get("company_name"), error=str(exc))
             if not seed_domain:
@@ -653,21 +661,26 @@ class LinkedInPublicSearchService:
             checked += 1
             email = item.get("email")
             if hunter and is_full_email(email):
-                verified = hunter.verify_email(email)
-                status = verified.get("status", "unknown")
-                score = int(verified.get("score") or item.get("confidence") or 0)
-                self.repo.record_email_provider_stat("hunter_verify_candidate", calls=1, candidates=1, valid_candidates=1 if status == "valid" else 0, selected=1 if status == "valid" else 0, credits_used=1)
-                if status == "valid":
-                    self.repo.adopt_email_candidate(contact["id"], {**item, "status": "valid", "confidence": max(score, int(item.get("confidence") or 0)), "source": "linkedin_public_search+hunter_verify"})
-                    return
+                if not self.provider_budget.try_reserve("hunter"):
+                    hunter = None
+                else:
+                    verified = hunter.verify_email(email)
+                    status = verified.get("status", "unknown")
+                    score = int(verified.get("score") or item.get("confidence") or 0)
+                    self.repo.record_email_provider_stat("hunter_verify_candidate", calls=1, candidates=1, valid_candidates=1 if status == "valid" else 0, selected=1 if status == "valid" else 0, credits_used=0)
+                    if status == "valid":
+                        self.repo.adopt_email_candidate(contact["id"], {**item, "status": "valid", "confidence": max(score, int(item.get("confidence") or 0)), "source": "linkedin_public_search+hunter_verify"})
+                        return
             if prospeo:
+                if not self.provider_budget.try_reserve("prospeo"):
+                    continue
                 try:
                     found = prospeo.enrich_person(contact)
                 except Exception:
                     found = {}
                 email_obj = found.get("email") or found.get("work_email")
                 found_email = email_obj.get("email") if isinstance(email_obj, dict) else email_obj
-                self.repo.record_email_provider_stat("prospeo_candidate", calls=1, candidates=1, valid_candidates=1 if is_full_email(found_email) else 0, selected=1 if is_full_email(found_email) else 0, credits_used=1)
+                self.repo.record_email_provider_stat("prospeo_candidate", calls=1, candidates=1, valid_candidates=1 if is_full_email(found_email) else 0, selected=1 if is_full_email(found_email) else 0, credits_used=0)
                 if is_full_email(found_email):
                     self.repo.adopt_email_candidate(contact["id"], EmailCandidate.build(found_email, "linkedin_public_search+prospeo", "valid", 95, "personal_work").__dict__)
                     return

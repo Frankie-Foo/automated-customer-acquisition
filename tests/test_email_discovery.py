@@ -21,6 +21,30 @@ class BrokenProvider:
         raise RuntimeError("quota exhausted")
 
 
+class PaidPersonalProvider(PersonalProvider):
+    name = "prospeo"
+
+
+class PaidFallbackProvider(PublicOnlyProvider):
+    name = "hunter"
+    called = 0
+
+    def discover(self, contact, domain):
+        type(self).called += 1
+        return super().discover(contact, domain)
+
+
+class CountingPaidProvider(PersonalProvider):
+    name = "prospeo"
+
+    def __init__(self):
+        self.calls = 0
+
+    def discover(self, contact, domain):
+        self.calls += 1
+        return super().discover(contact, domain)
+
+
 def test_public_company_email_is_candidate_not_selected():
     result = EmailDiscoveryEngine([PublicOnlyProvider()]).discover({}, "example.com")
 
@@ -67,6 +91,67 @@ def test_provider_stats_recorder_is_called():
     assert stats[0][1]["candidates"] == 1
     assert stats[0][1]["valid_candidates"] == 1
     assert stats[0][1]["selected"] == 1
+
+
+def test_paid_waterfall_stops_after_a_valid_personal_email():
+    PaidFallbackProvider.called = 0
+    stats = []
+
+    result = EmailDiscoveryEngine(
+        [PaidPersonalProvider(), PaidFallbackProvider()],
+        stats_recorder=lambda provider, **fields: stats.append((provider, fields)),
+    ).discover({}, "example.com")
+
+    assert result["email"] == "ada@example.com"
+    assert PaidFallbackProvider.called == 0
+    assert stats[-1] == ("hunter", {"calls": 0, "skipped": 1, "credits_used": 0})
+
+
+def test_paid_provider_cache_hit_skips_api_and_budget():
+    provider = CountingPaidProvider()
+    reserved = []
+    cached = [EmailCandidate.build("cached@example.com", "prospeo", "valid", 95, "personal_work").__dict__]
+
+    result = EmailDiscoveryEngine(
+        [provider],
+        daily_credit_limits={"prospeo": 10},
+        budget_reserver=lambda *args: reserved.append(args) or True,
+        cache_reader=lambda *args: cached,
+    ).discover({"first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+
+    assert result["email"] == "cached@example.com"
+    assert provider.calls == 0
+    assert reserved == []
+
+
+def test_paid_provider_budget_exhaustion_is_reported_without_calling_api():
+    provider = CountingPaidProvider()
+
+    result = EmailDiscoveryEngine(
+        [provider],
+        daily_credit_limits={"prospeo": 0},
+        budget_reserver=lambda provider, amount, limit: False,
+    ).discover({"first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+
+    assert provider.calls == 0
+    assert result["email_status"] == "unknown"
+    assert result["_provider_warnings"] == ["prospeo:provider_daily_budget_exhausted"]
+
+
+def test_paid_provider_stores_negative_cache():
+    provider = PaidFallbackProvider()
+    writes = []
+
+    EmailDiscoveryEngine(
+        [provider],
+        daily_credit_limits={"hunter": 10},
+        budget_reserver=lambda *args: True,
+        cache_writer=lambda *args: writes.append(args),
+    ).discover({"first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+
+    assert writes[0][0:2] == ("hunter", "email_discovery")
+    assert writes[0][3] == "no_match"
+    assert writes[0][5] == 24 * 3600
 
 
 def test_github_provider_extracts_company_commit_email(monkeypatch):

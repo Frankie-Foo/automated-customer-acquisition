@@ -9,6 +9,20 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+# This project must never read from the AI investment Base. Keep the guard in
+# the shared HTTP client so a future integration cannot accidentally bypass it.
+_BLOCKED_EXTERNAL_URL_MARKERS = (
+    "ncnqnih15n0h.feishu.cn/base/CpnybxXoGasunts8O4UckKFyn5b",
+    "CpnybxXoGasunts8O4UckKFyn5b",
+)
+
+
+def _assert_external_url_allowed(url: str) -> None:
+    normalized = str(url or "").strip()
+    if any(marker in normalized for marker in _BLOCKED_EXTERNAL_URL_MARKERS):
+        raise RuntimeError("Blocked external resource: AI investment Feishu Base is not available to this project")
+
+
 @dataclass
 class HttpClient:
     timeout: int = 30
@@ -23,6 +37,7 @@ class HttpClient:
         json_body: dict[str, Any] | None = None,
         retries: int | None = None,
     ) -> dict[str, Any]:
+        _assert_external_url_allowed(url)
         body = None if json_body is None else json.dumps(json_body).encode("utf-8")
         req_headers = {
             "Content-Type": "application/json",

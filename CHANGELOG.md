@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-08-10 - Production acquisition control and sales workflow UX
+
+- Add a shared provider-budget gateway so direct sourcing, LinkedIn public search, and enrichment respect configured daily credit limits before paid API calls.
+- Add admin acquisition-plan and flywheel controls for region-by-industry plans, run results, conservative learning snapshots, and evidence-backed rule changes.
+- Reduce the sales customer table to one contextual next action, keep secondary operations in a menu, and refresh customer/reply state every 30 seconds.
+- Make email delivery a visible three-step flow: generate draft, review and lock, then send; hidden prerequisites no longer look like broken buttons.
+- Mount only the active React page to stop duplicate listeners and background requests after navigation.
+- Preserve outreach email images during frontend builds and include nested static assets in Python packages and Docker deployments.
+
+## 2026-08-07 - Data flywheel closure
+
+- Add an automatic learning pass: high-signal outcomes can adjust the ICP threshold once per 30-day window, and decision-grade experiments can select a winning variant for future drafts.
+- Persist every automatic change in `flywheel_learning_events`; neutral replies, opens, and small samples never change production rules.
+- Make learned experiment winners effective in the next email assignment while preserving the original experiment evidence and owner isolation.
+- Add database-backed global and regional flywheel strategy snapshots based on sent, delivered, opened, replied, bounced, lifecycle, and won/lost outcomes.
+- Keep small samples in learning-only status; only sufficiently supported segments can influence the next profile score and AI email guidance.
+- Run the flywheel after the scheduler, expose admin-only refresh and summary endpoints, and document the operational flow.
+- Normalize Chinese and English country names into shared Middle East, CIS, South Asia, and Southeast Asia scopes.
+- Align first-touch copy validation and AI generation to the same 70-110 prospect-facing word range.
+
 ## 0.2.0 - 2026-07-27 - India and Iran regional intelligence
 
 - Detect Indian and Iranian accounts automatically from country, location, local aliases, and company domains without adding sales-facing switches.

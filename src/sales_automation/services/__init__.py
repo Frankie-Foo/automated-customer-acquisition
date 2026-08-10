@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from .ai_agents import ProfileAgentService, StageAgentService
+from .acquisition_planner import AcquisitionPlannerService
 from .automation import AutomationRunService
 from .enrichment import EnrichmentService
+from .flywheel import DataFlywheelService
 from .lifecycle import LifecycleService
 from .mailbox import MailboxReplyService
 from .outreach import OutreachService, PersonalizedEmailService
@@ -17,6 +19,8 @@ from .webhooks import WebhookService, _extract_contact_id, _extract_event_type, 
 
 __all__ = [
     "EnrichmentService",
+    "AcquisitionPlannerService",
+    "DataFlywheelService",
     "AutomationRunService",
     "LifecycleService",
     "LeadWorkflowService",

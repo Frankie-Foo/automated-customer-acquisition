@@ -22,7 +22,7 @@ salesbot-web = "sales_automation.web:main"
 salesbot-mcp = "sales_automation.mcp_server:main"
 
 [tool.setuptools.package-data]
-sales_automation = ["web_static/*", "web_static/assets/*"]
+sales_automation = ["web_static/*", "web_static/assets/*", "web_static/assets/email_images/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

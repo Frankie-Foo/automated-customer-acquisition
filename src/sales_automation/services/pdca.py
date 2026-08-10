@@ -268,6 +268,15 @@ def next_task_for_contact(contact: dict[str, Any], *, now: datetime | None = Non
         if draft == "draft":
             return _task("review_draft", "normal", f"审核首封邮件：{name}", "检查客户事实、主题、正文和收件邮箱后确认发送。", now + timedelta(hours=24), "first_touch_review")
         return _task("generate_draft", "normal", f"生成个性化邮件：{name}", "根据客户资料和公开事实生成首封邮件，生成后由销售审核。", now + timedelta(hours=24), "first_touch_draft")
+    if normalize_phone(_whatsapp_value(contact)) or normalize_phone(contact.get("phone")):
+        return _task(
+            "call",
+            "normal",
+            f"电话或 WhatsApp 触达：{name}",
+            "确认决策人，并记录沟通结果、需求、异议和下一步动作。",
+            now + timedelta(hours=24),
+            "phone_first_touch",
+        )
     return _task("enrich_contact", "normal", f"补齐联系方式：{name}", "优先核验负责人身份和个人工作邮箱；公司通用邮箱仅作为候选。", now + timedelta(hours=24), "missing_valid_email")
 
 

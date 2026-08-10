@@ -1704,6 +1704,127 @@ class Repository:
         with self.db.connect() as conn:
             return conn.execute("SELECT * FROM sales_users WHERE id = %s AND active = TRUE", (user_id,)).fetchone()
 
+    def list_due_acquisition_plans(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM acquisition_plans
+                WHERE status = 'active' AND next_run_at <= NOW()
+                ORDER BY next_run_at, id
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+
+    def list_acquisition_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT p.*, u.username, u.display_name,
+                       latest.status AS last_run_status,
+                       latest.metrics AS last_run_metrics,
+                       latest.completed_at AS last_run_completed_at
+                FROM acquisition_plans p
+                JOIN sales_users u ON u.id = p.owner_user_id
+                LEFT JOIN LATERAL (
+                  SELECT status, metrics, completed_at
+                  FROM acquisition_plan_runs
+                  WHERE plan_id = p.id
+                  ORDER BY run_date DESC, id DESC
+                  LIMIT 1
+                ) latest ON TRUE
+                ORDER BY p.created_at DESC
+                LIMIT %s
+                """,
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+
+    def create_acquisition_plan(
+        self,
+        *,
+        name: str,
+        regions: list[str],
+        industries: list[str],
+        company_types: list[str],
+        role_terms: list[str],
+        owner_user_id: int,
+        daily_lead_limit: int,
+        combinations_per_run: int,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO acquisition_plans(
+                  name, regions, industries, company_types, role_terms,
+                  owner_user_id, daily_lead_limit, combinations_per_run
+                )
+                VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    name,
+                    json.dumps(regions, ensure_ascii=False),
+                    json.dumps(industries, ensure_ascii=False),
+                    json.dumps(company_types, ensure_ascii=False),
+                    json.dumps(role_terms, ensure_ascii=False),
+                    owner_user_id,
+                    daily_lead_limit,
+                    combinations_per_run,
+                ),
+            ).fetchone()
+
+    def begin_acquisition_plan_run(
+        self,
+        plan_id: int,
+        combinations: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO acquisition_plan_runs(plan_id, combinations)
+                VALUES (%s, %s::jsonb)
+                ON CONFLICT(plan_id, run_date) DO UPDATE
+                SET status = 'running', combinations = EXCLUDED.combinations,
+                    metrics = '{}'::jsonb, error = NULL, started_at = NOW(), completed_at = NULL
+                WHERE acquisition_plan_runs.status = 'failed'
+                RETURNING *
+                """,
+                (plan_id, json.dumps(combinations, ensure_ascii=False)),
+            ).fetchone()
+
+    def finish_acquisition_plan_run(
+        self,
+        run_id: int,
+        *,
+        plan_id: int,
+        status: str,
+        metrics: dict[str, Any],
+        cursor_advance: int,
+        error: str | None = None,
+    ) -> None:
+        if status not in {"completed", "failed"}:
+            raise ValueError("Invalid acquisition plan run status")
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE acquisition_plan_runs
+                SET status = %s, metrics = %s::jsonb, error = %s, completed_at = NOW()
+                WHERE id = %s AND plan_id = %s
+                """,
+                (status, json.dumps(metrics, ensure_ascii=False), error, run_id, plan_id),
+            )
+            conn.execute(
+                """
+                UPDATE acquisition_plans
+                SET cursor_position = cursor_position + %s,
+                    next_run_at = CASE WHEN %s = 'completed' THEN NOW() + INTERVAL '1 day' ELSE NOW() + INTERVAL '1 hour' END,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (max(0, int(cursor_advance)), status, plan_id),
+            )
+
     def create_automation_run(
         self,
         *,
@@ -2080,6 +2201,65 @@ class Repository:
                     updated_at = NOW()
                 """,
                 (provider, calls, candidates, valid_candidates, selected, errors, credits_used, last_error),
+            )
+
+    def reserve_email_provider_credits(self, provider: str, amount: int, daily_limit: int) -> bool:
+        amount = max(0, int(amount))
+        daily_limit = max(0, int(daily_limit))
+        if amount == 0:
+            return True
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO email_provider_stats(provider, stat_date, credits_used)
+                SELECT %s, CURRENT_DATE, %s
+                WHERE %s <= %s
+                ON CONFLICT (provider, stat_date) DO UPDATE
+                SET credits_used = email_provider_stats.credits_used + EXCLUDED.credits_used,
+                    updated_at = NOW()
+                WHERE email_provider_stats.credits_used + EXCLUDED.credits_used <= %s
+                RETURNING credits_used
+                """,
+                (provider, amount, amount, daily_limit, daily_limit),
+            ).fetchone()
+            return row is not None and int(row["credits_used"] or 0) <= daily_limit
+
+    def get_provider_lookup_cache(self, provider: str, operation: str, lookup_key: str) -> list[dict[str, Any]] | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT response
+                FROM provider_lookup_cache
+                WHERE provider = %s AND operation = %s AND lookup_key = %s
+                  AND expires_at > NOW()
+                """,
+                (provider, operation, lookup_key),
+            ).fetchone()
+            return row["response"] if row else None
+
+    def store_provider_lookup_cache(
+        self,
+        provider: str,
+        operation: str,
+        lookup_key: str,
+        status: str,
+        response: list[dict[str, Any]],
+        ttl_seconds: int,
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_lookup_cache(
+                    provider, operation, lookup_key, status, response, expires_at
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, NOW() + (%s * INTERVAL '1 second'))
+                ON CONFLICT (provider, operation, lookup_key) DO UPDATE
+                SET status = EXCLUDED.status,
+                    response = EXCLUDED.response,
+                    expires_at = EXCLUDED.expires_at,
+                    updated_at = NOW()
+                """,
+                (provider, operation, lookup_key, status, json.dumps(response), max(1, int(ttl_seconds))),
             )
 
     def list_for_social_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2782,6 +2962,195 @@ class Repository:
                 """,
                 (json.dumps(current, ensure_ascii=False), contact_id),
             )
+
+    def list_flywheel_contact_rows(self, *, window_days: int = 30) -> list[dict[str, Any]]:
+        """Return one outcome row per contact for explainable strategy aggregation."""
+        days = max(1, min(int(window_days), 365))
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                  c.id, c.job_title, c.industry, c.location, c.icp_assessment,
+                  lead_meta.country, lead_meta.region,
+                  c.lifecycle_stage, c.disposition, c.source_context,
+                  COALESCE(event_flags.sent, 0)::integer AS sent,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.delivered, 0) ELSE 0 END::integer AS delivered,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.opened, 0) ELSE 0 END::integer AS opened,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.replied, 0) ELSE 0 END::integer AS replied,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 AND COALESCE(event_flags.replied, 0) > 0
+                       THEN GREATEST(COALESCE(event_flags.positive_replies, 0), COALESCE(reply_flags.positive, 0)) ELSE 0 END::integer AS positive_replies,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 AND COALESCE(event_flags.replied, 0) > 0
+                       THEN GREATEST(COALESCE(event_flags.negative_replies, 0), COALESCE(reply_flags.negative, 0)) ELSE 0 END::integer AS negative_replies,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.bounced, 0) ELSE 0 END::integer AS bounced,
+                  CASE WHEN COALESCE(event_flags.sent, 0) > 0 THEN COALESCE(event_flags.unsubscribed, 0) ELSE 0 END::integer AS unsubscribed,
+                  CASE WHEN c.lifecycle_stage IN ('meeting', 'business_plan', 'store_visit', 'trial_order', 'agency_agreement', 'hq_visit', 'signed', 'maintenance') THEN 1 ELSE 0 END AS meetings,
+                  CASE WHEN c.lifecycle_stage IN ('signed', 'maintenance') OR c.disposition = 'won' THEN 1 ELSE 0 END AS won,
+                  CASE WHEN c.lifecycle_stage = 'abandoned' OR c.disposition IN ('abandoned', 'lost') THEN 1 ELSE 0 END AS lost
+                FROM contacts c
+                LEFT JOIN LATERAL (
+                  SELECT
+                    COUNT(*)::integer AS event_count,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'sent')::integer AS sent,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'delivered')::integer AS delivered,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'opened')::integer AS opened,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied')::integer AS replied,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied' AND metadata->'reply_classification'->>'positive' = 'true')::integer AS positive_replies,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'replied' AND metadata->'reply_classification'->>'label' LIKE 'negative%%')::integer AS negative_replies,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'bounced')::integer AS bounced,
+                    COUNT(DISTINCT event_type) FILTER (WHERE event_type = 'unsubscribed')::integer AS unsubscribed
+                  FROM email_events
+                  WHERE email_events.contact_id = c.id
+                    AND email_events.occurred_at >= NOW() - (%s::text || ' days')::interval
+                ) event_flags ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT
+                    MAX(CASE WHEN metadata->'reply_classification'->>'positive' = 'true'
+                               OR outcome IN ('positive_interested', 'positive_soft', 'positive_referral') THEN 1 ELSE 0 END)::integer AS positive,
+                    MAX(CASE WHEN metadata->'reply_classification'->>'label' LIKE 'negative%%'
+                               OR outcome LIKE 'negative%%' THEN 1 ELSE 0 END)::integer AS negative
+                  FROM interactions
+                  WHERE interactions.contact_id = c.id
+                    AND interactions.interaction_type = 'email_reply'
+                    AND interactions.occurred_at >= NOW() - (%s::text || ' days')::interval
+                ) reply_flags ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT MAX(country) AS country, MAX(region) AS region
+                  FROM leads
+                  WHERE leads.contact_id = c.id
+                ) lead_meta ON TRUE
+                WHERE c.created_at >= NOW() - (%s::text || ' days')::interval
+                   OR COALESCE(event_flags.event_count, 0) > 0
+                """,
+                (days, days, days),
+            ).fetchall()
+
+    def save_flywheel_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE flywheel_strategy_snapshots
+                SET status = 'superseded', updated_at = NOW()
+                WHERE scope_type = %s AND scope_key = %s AND status = 'active'
+                """,
+                (snapshot["scope_type"], snapshot["scope_key"]),
+            )
+            return conn.execute(
+                """
+                INSERT INTO flywheel_strategy_snapshots(
+                  scope_type, scope_key, version, status, window_start, window_end,
+                  sample_size, metrics, rules, guidance, evidence
+                )
+                VALUES (%s, %s,
+                  COALESCE((
+                    SELECT MAX(version) + 1 FROM flywheel_strategy_snapshots
+                    WHERE scope_type = %s AND scope_key = %s
+                  ), 1),
+                  %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
+                )
+                RETURNING *
+                """,
+                (
+                    snapshot["scope_type"], snapshot["scope_key"],
+                    snapshot["scope_type"], snapshot["scope_key"],
+                    snapshot["status"], snapshot["window_start"], snapshot["window_end"],
+                    int(snapshot.get("sample_size") or 0),
+                    json.dumps(snapshot.get("metrics") or {}, ensure_ascii=False),
+                    json.dumps(snapshot.get("rules") or {}, ensure_ascii=False),
+                    json.dumps(snapshot.get("guidance") or {}, ensure_ascii=False),
+                    json.dumps(snapshot.get("evidence") or [], ensure_ascii=False),
+                ),
+            ).fetchone()
+
+    def get_active_flywheel_snapshot(self, *, scope_type: str, scope_key: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM flywheel_strategy_snapshots
+                WHERE scope_type = %s AND scope_key = %s AND status = 'active'
+                ORDER BY version DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (scope_type, scope_key),
+            ).fetchone()
+
+    def flywheel_summary(self) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT scope_type, scope_key, version, status, window_start, window_end,
+                       sample_size, metrics, rules, guidance, updated_at
+                FROM flywheel_strategy_snapshots
+                WHERE status = 'active'
+                ORDER BY scope_type, scope_key
+                """
+            ).fetchall()
+            learning = conn.execute(
+                """
+                SELECT id, action_type, scope_type, scope_key, target_id,
+                       before_state, after_state, reason, evidence, created_at
+                FROM flywheel_learning_events
+                ORDER BY created_at DESC
+                LIMIT 50
+                """
+            ).fetchall()
+        return {"snapshots": rows, "count": len(rows), "learning_events": learning}
+
+    def record_flywheel_learning_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO flywheel_learning_events(
+                  action_type, scope_type, scope_key, target_id,
+                  before_state, after_state, reason, evidence
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb)
+                RETURNING *
+                """,
+                (
+                    event["action_type"], event.get("scope_type") or "global",
+                    event.get("scope_key") or "global", event.get("target_id"),
+                    json.dumps(event.get("before_state") or {}, ensure_ascii=False),
+                    json.dumps(event.get("after_state") or {}, ensure_ascii=False),
+                    event["reason"],
+                    json.dumps(event.get("evidence") or {}, ensure_ascii=False),
+                ),
+            ).fetchone()
+
+    def latest_flywheel_learning_event(
+        self,
+        *,
+        action_type: str,
+        target_id: int | None = None,
+        window_days: int = 30,
+    ) -> dict[str, Any] | None:
+        days = max(1, min(int(window_days), 365))
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM flywheel_learning_events
+                WHERE action_type = %s
+                  AND (%s::bigint IS NULL OR target_id = %s)
+                  AND created_at >= NOW() - (%s::text || ' days')::interval
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (action_type, target_id, target_id, days),
+            ).fetchone()
+
+    def set_outbound_experiment_winner(self, experiment_id: int, *, variant: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE outbound_experiments
+                SET winner_variant = %s,
+                    winner_selected_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'active'
+                RETURNING *
+                """,
+                (variant.strip(), experiment_id),
+            ).fetchone()
 
     def outbound_quality_dashboard(self, *, user: dict[str, Any]) -> dict[str, Any]:
         is_admin = user.get("role") == "admin"
@@ -3566,23 +3935,43 @@ class Repository:
                 else {}
             )
             should_advance = event_type != "replied" or not reply_classification or bool(reply_classification.get("should_advance"))
-            if event_type in terminal and should_advance:
+            if event_type in terminal:
                 delivery_reason = payload.get("delivery_reason") if isinstance(payload, dict) else None
                 private_days = _private_pool_days(self.db.config.raw)
+                reply_label = str(reply_classification.get("label") or "")
+                effective_status = terminal[event_type]
+                if event_type == "replied" and reply_label == "unsubscribe":
+                    effective_status = "unsubscribed"
+                elif event_type == "replied" and reply_label == "bounce":
+                    effective_status = "bounced"
                 conn.execute(
                     """
                     UPDATE contacts
                     SET status = %s,
-                        last_stage_changed_at = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
-                        pool_expires_at = CASE WHEN %s = 'replied' AND pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
-                        sabcd_stage = CASE WHEN %s = 'replied' AND sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END,
+                        replied_at = CASE WHEN %s = 'replied' THEN NOW() ELSE replied_at END,
+                        last_stage_changed_at = CASE WHEN %s AND %s = 'replied' AND sabcd_stage = 'D' THEN NOW() ELSE last_stage_changed_at END,
+                        pool_expires_at = CASE WHEN %s AND %s = 'replied' AND pool_type = 'private' AND sabcd_stage = 'D' THEN NOW() + (%s::text || ' days')::interval ELSE pool_expires_at END,
+                        sabcd_stage = CASE WHEN %s AND %s = 'replied' AND sabcd_stage = 'D' THEN 'C' ELSE sabcd_stage END,
                         enrich_error = CASE
                             WHEN %s IN ('bounced', 'unsubscribed') THEN COALESCE(%s, enrich_error)
                             ELSE enrich_error
                         END
                     WHERE id = %s
                     """,
-                    (terminal[event_type], terminal[event_type], terminal[event_type], private_days, terminal[event_type], terminal[event_type], delivery_reason, contact_id),
+                    (
+                        effective_status,
+                        effective_status,
+                        should_advance,
+                        effective_status,
+                        should_advance,
+                        effective_status,
+                        private_days,
+                        should_advance,
+                        effective_status,
+                        effective_status,
+                        delivery_reason,
+                        contact_id,
+                    ),
                 )
 
     def record_webhook_delivery(self, provider: str, event_type: str, payload: dict[str, Any], external_id: str | None = None) -> bool:

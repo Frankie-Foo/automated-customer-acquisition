@@ -257,6 +257,14 @@ email_discovery:
     - gravatar
     - public_website
   max_candidates: 10
+  max_paid_credits_per_contact: 2
+  provider_daily_credit_limits:
+    prospeo: 300
+    ninjapear: 100
+    hunter: 200
+    pattern_guess+hunter_verify: 50
+  valid_cache_days: 90
+  no_match_cache_hours: 24
   smtp_verify_enabled: false
 
 queue:

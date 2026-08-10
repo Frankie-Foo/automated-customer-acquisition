@@ -7,6 +7,7 @@ from sales_automation.outbound_quality import (
     score_lead_list,
     summarize_experiment,
 )
+from sales_automation.services.quality import OutboundQualityService
 
 
 def _strong_contact(**overrides):
@@ -161,6 +162,26 @@ def test_experiment_summary_waits_for_sample_then_selects_positive_reply_winner(
 
     assert collecting["winner"] is None
     assert ready["winner"] == "B"
+
+
+def test_future_experiment_assignment_uses_learned_winner():
+    class Repo:
+        def get_active_outbound_experiment(self, *, owner_user_id):
+            return {
+                "id": 3,
+                "name": "Subject test",
+                "variable_name": "subject",
+                "winner_variant": "B",
+                "variants": [
+                    {"name": "A", "instruction": "Lead with category."},
+                    {"name": "B", "instruction": "Lead with local fit."},
+                ],
+            }
+
+    assignment = OutboundQualityService(Repo()).experiment_assignment(contact_id=1, owner_user_id=2)
+
+    assert assignment["variant"] == "B"
+    assert assignment["winner_selected"]
 
 
 def test_icp_calibration_recommends_tighter_threshold_after_false_positives():

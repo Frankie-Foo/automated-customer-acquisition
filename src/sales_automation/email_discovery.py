@@ -230,22 +230,67 @@ class EmailDiscoveryEngine:
         providers: list[EmailProvider],
         *,
         max_candidates: int = 10,
+        max_paid_credits: int = 2,
         stats_recorder: Callable[..., None] | None = None,
+        daily_credit_limits: dict[str, int] | None = None,
+        budget_reserver: Callable[[str, int, int], bool] | None = None,
+        cache_reader: Callable[[str, str, str], list[dict[str, Any]] | None] | None = None,
+        cache_writer: Callable[[str, str, str, str, list[dict[str, Any]], int], None] | None = None,
+        valid_cache_days: int = 90,
+        no_match_cache_hours: int = 24,
     ):
         self.providers = providers
         self.max_candidates = max_candidates
+        self.max_paid_credits = max(0, int(max_paid_credits))
         self.stats_recorder = stats_recorder
+        self.daily_credit_limits = daily_credit_limits or {}
+        self.budget_reserver = budget_reserver
+        self.cache_reader = cache_reader
+        self.cache_writer = cache_writer
+        self.valid_cache_seconds = max(1, int(valid_cache_days)) * 86400
+        self.no_match_cache_seconds = max(1, int(no_match_cache_hours)) * 3600
 
     def discover(self, contact: dict[str, Any], domain: str | None) -> dict[str, Any]:
         all_candidates: list[EmailCandidate] = []
         selected: EmailCandidate | None = None
+        paid_credits = 0
+        warnings: list[str] = []
         for provider in self.providers:
             provider_name = _provider_name(provider)
+            credit_cost = _provider_credit_cost(provider_name)
+            if credit_cost and (selected or paid_credits + credit_cost > self.max_paid_credits):
+                self._record_provider(provider_name, calls=0, skipped=1, credits_used=0)
+                continue
+            lookup_key = _provider_lookup_key(contact, domain) if credit_cost else ""
+            cached = self.cache_reader(provider_name, "email_discovery", lookup_key) if credit_cost and self.cache_reader else None
+            if cached is not None:
+                candidates = _candidates_from_cache(cached)
+                all_candidates.extend(candidates)
+                selected = selected or _select_valid_personal(candidates)
+                continue
+            daily_limit = self.daily_credit_limits.get(provider_name)
+            if credit_cost and daily_limit is not None and self.budget_reserver:
+                if not self.budget_reserver(provider_name, credit_cost, int(daily_limit)):
+                    warnings.append(f"{provider_name}:provider_daily_budget_exhausted")
+                    self._record_provider(provider_name, calls=0, skipped=1, credits_used=0, last_error="provider_daily_budget_exhausted")
+                    continue
             try:
                 candidates = provider.discover(contact, domain)
             except Exception as exc:
-                self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500])
+                paid_credits += credit_cost
+                self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500], credits_used=0 if daily_limit is not None else credit_cost)
                 continue
+            paid_credits += credit_cost
+            if credit_cost and self.cache_writer:
+                ttl = self.valid_cache_seconds if _select_valid_personal(candidates) else self.no_match_cache_seconds
+                self.cache_writer(
+                    provider_name,
+                    "email_discovery",
+                    lookup_key,
+                    "valid" if _select_valid_personal(candidates) else "no_match",
+                    [asdict(candidate) for candidate in candidates],
+                    ttl,
+                )
             all_candidates.extend(candidates)
             provider_selected = _select_valid_personal(candidates)
             selected = selected or provider_selected
@@ -255,7 +300,7 @@ class EmailDiscoveryEngine:
                 candidates=len(candidates),
                 valid_candidates=sum(1 for item in candidates if item.status == "valid"),
                 selected=1 if provider_selected else 0,
-                credits_used=_provider_credit_cost(provider_name),
+                credits_used=0 if daily_limit is not None else credit_cost,
             )
         fields: dict[str, Any] = {"email_status": "unknown"}
         if selected:
@@ -269,6 +314,8 @@ class EmailDiscoveryEngine:
             )
         if all_candidates:
             fields["email_candidates"] = [asdict(candidate) for candidate in _dedupe_candidates(all_candidates)[: self.max_candidates]]
+        if warnings:
+            fields["_provider_warnings"] = warnings
         return fields
 
     def _record_provider(self, provider: str, **fields: Any) -> None:
@@ -280,11 +327,23 @@ class EmailDiscoveryEngine:
             pass
 
 
-def build_email_discovery_engine(config: Any, *, stats_recorder: Callable[..., None] | None = None) -> EmailDiscoveryEngine:
+def build_email_discovery_engine(
+    config: Any,
+    *,
+    stats_recorder: Callable[..., None] | None = None,
+    budget_reserver: Callable[[str, int, int], bool] | None = None,
+    cache_reader: Callable[[str, str, str], list[dict[str, Any]] | None] | None = None,
+    cache_writer: Callable[[str, str, str, str, list[dict[str, Any]], int], None] | None = None,
+) -> EmailDiscoveryEngine:
     apis = config.apis
     discovery_cfg = config.raw.get("email_discovery", {})
     provider_names = discovery_cfg.get("providers") or ["prospeo", "ninjapear", "hunter", "pattern_guess", "public_website"]
     max_candidates = int(discovery_cfg.get("max_candidates") or 10)
+    max_paid_credits = int(discovery_cfg.get("max_paid_credits_per_contact") or 2)
+    daily_credit_limits = {
+        str(name): max(0, int(limit))
+        for name, limit in (discovery_cfg.get("provider_daily_credit_limits") or {}).items()
+    }
     hunter = HunterClient(apis.get("hunter_key", "")) if apis.get("hunter_key") else None
     ninjapear = NinjaPearClient(apis.get("ninjapear_key", "")) if apis.get("ninjapear_key") else None
     prospeo = ProspeoClient(apis.get("prospeo_key", "")) if apis.get("prospeo_key") else None
@@ -306,15 +365,54 @@ def build_email_discovery_engine(config: Any, *, stats_recorder: Callable[..., N
             providers.append(SmtpVerifyProvider())
         elif name == "public_website":
             providers.append(PublicWebsiteEmailProvider())
-    return EmailDiscoveryEngine(providers, max_candidates=max_candidates, stats_recorder=stats_recorder)
+    return EmailDiscoveryEngine(
+        providers,
+        max_candidates=max_candidates,
+        max_paid_credits=max_paid_credits,
+        stats_recorder=stats_recorder,
+        daily_credit_limits=daily_credit_limits,
+        budget_reserver=budget_reserver,
+        cache_reader=cache_reader,
+        cache_writer=cache_writer,
+        valid_cache_days=int(discovery_cfg.get("valid_cache_days") or 90),
+        no_match_cache_hours=int(discovery_cfg.get("no_match_cache_hours") or 24),
+    )
 
 
 def _provider_credit_cost(provider: str) -> int:
-    return 1 if provider in {"prospeo", "ninjapear", "hunter", "pattern_guess"} else 0
+    return {
+        "prospeo": 1,
+        "ninjapear": 1,
+        "hunter": 2,
+        "pattern_guess+hunter_verify": 5,
+    }.get(provider, 0)
 
 
 def _provider_name(provider: EmailProvider) -> str:
     return str(getattr(provider, "name", provider.__class__.__name__))
+
+
+def _provider_lookup_key(contact: dict[str, Any], domain: str | None) -> str:
+    identity = "|".join(
+        str(value or "").strip().lower()
+        for value in (
+            contact.get("linkedin_url"),
+            contact.get("first_name"),
+            contact.get("last_name"),
+            domain,
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _candidates_from_cache(items: list[dict[str, Any]]) -> list[EmailCandidate]:
+    candidates: list[EmailCandidate] = []
+    for item in items:
+        try:
+            candidates.append(EmailCandidate(**item))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return candidates
 
 
 def _select_valid_personal(candidates: list[EmailCandidate]) -> EmailCandidate | None:
