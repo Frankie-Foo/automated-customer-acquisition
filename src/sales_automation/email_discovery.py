@@ -278,6 +278,8 @@ class EmailDiscoveryEngine:
                 candidates = provider.discover(contact, domain)
             except Exception as exc:
                 paid_credits += credit_cost
+                if credit_cost and _is_rate_limited_error(exc):
+                    warnings.append(f"{provider_name}:provider_rate_limited")
                 self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500], credits_used=0 if daily_limit is not None else credit_cost)
                 continue
             paid_credits += credit_cost
@@ -396,7 +398,9 @@ def _provider_lookup_key(contact: dict[str, Any], domain: str | None) -> str:
     identity = "|".join(
         str(value or "").strip().lower()
         for value in (
+            contact.get("source_person_id"),
             contact.get("linkedin_url"),
+            contact.get("email"),
             contact.get("first_name"),
             contact.get("last_name"),
             domain,
@@ -428,9 +432,21 @@ def _dedupe_candidates(candidates: list[EmailCandidate]) -> list[EmailCandidate]
     by_email: dict[str, EmailCandidate] = {}
     for candidate in candidates:
         current = by_email.get(candidate.email)
-        if current is None or candidate.confidence > current.confidence:
+        if current is None or _candidate_rank(candidate) > _candidate_rank(current):
             by_email[candidate.email] = candidate
     return sorted(by_email.values(), key=lambda item: item.confidence, reverse=True)
+
+
+def _candidate_rank(candidate: EmailCandidate) -> tuple[int, int, int]:
+    return (
+        {"valid": 4, "accept_all": 3, "risky": 2, "unknown": 1}.get(candidate.status, 0),
+        1 if candidate.category == "personal_work" else 0,
+        candidate.confidence,
+    )
+
+
+def _is_rate_limited_error(error: Exception) -> bool:
+    return "http 429" in str(error).lower()
 
 
 def _github_login(contact: dict[str, Any]) -> str | None:

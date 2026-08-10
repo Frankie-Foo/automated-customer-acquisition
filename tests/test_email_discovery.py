@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from sales_automation.email_discovery import EmailCandidate, EmailDiscoveryEngine, GitHubCommitsEmailProvider, GravatarEmailProvider, SmtpVerifyProvider
+from sales_automation.email_discovery import EmailCandidate, EmailDiscoveryEngine, GitHubCommitsEmailProvider, GravatarEmailProvider, SmtpVerifyProvider, _provider_lookup_key
 
 
 class PublicOnlyProvider:
@@ -43,6 +43,13 @@ class CountingPaidProvider(PersonalProvider):
     def discover(self, contact, domain):
         self.calls += 1
         return super().discover(contact, domain)
+
+
+class RateLimitedProvider:
+    name = "prospeo"
+
+    def discover(self, contact, domain):
+        raise RuntimeError("HTTP 429: retry later")
 
 
 def test_public_company_email_is_candidate_not_selected():
@@ -152,6 +159,43 @@ def test_paid_provider_stores_negative_cache():
     assert writes[0][0:2] == ("hunter", "email_discovery")
     assert writes[0][3] == "no_match"
     assert writes[0][5] == 24 * 3600
+
+
+def test_paid_provider_429_is_reported_and_not_cached():
+    writes = []
+    stats = []
+
+    result = EmailDiscoveryEngine(
+        [RateLimitedProvider()],
+        daily_credit_limits={"prospeo": 10},
+        budget_reserver=lambda *args: True,
+        cache_writer=lambda *args: writes.append(args),
+        stats_recorder=lambda provider, **fields: stats.append((provider, fields)),
+    ).discover({"first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+
+    assert result["_provider_warnings"] == ["prospeo:provider_rate_limited"]
+    assert writes == []
+    assert stats == [("prospeo", {"calls": 1, "errors": 1, "last_error": "HTTP 429: retry later", "credits_used": 0})]
+
+
+def test_paid_cache_key_separates_provider_person_ids():
+    first = _provider_lookup_key({"source_person_id": "person-a", "first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+    second = _provider_lookup_key({"source_person_id": "person-b", "first_name": "Ada", "last_name": "Lovelace"}, "example.com")
+
+    assert first != second
+
+
+def test_dedupe_retains_verified_candidate_over_higher_confidence_unverified_duplicate():
+    verified = EmailCandidate.build("ada@example.com", "hunter", "valid", 70, "personal_work")
+    unverified = EmailCandidate.build("ada@example.com", "public", "unverified", 95, "personal_work")
+
+    result = EmailDiscoveryEngine([
+        type("Verified", (), {"discover": lambda self, contact, domain: [verified]})(),
+        type("Unverified", (), {"discover": lambda self, contact, domain: [unverified]})(),
+    ]).discover({}, "example.com")
+
+    assert result["email"] == "ada@example.com"
+    assert result["email_candidates"][0]["status"] == "valid"
 
 
 def test_github_provider_extracts_company_commit_email(monkeypatch):
