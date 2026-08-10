@@ -121,10 +121,24 @@ def test_copy_review_flags_salesy_language_and_meeting_first_cta():
 
     warning_codes = {item["code"] for item in review["warnings"]}
 
-    assert review["status"] == "revise"
+    assert review["status"] == "blocked"
     assert {"template_cliche", "salesy_pitch", "high_friction_cta"} <= warning_codes
+    assert "unverifiable_return" in {item["code"] for item in review["blocking_issues"]}
     assert not review["rules"]["peer_to_peer"]
     assert not review["rules"]["single_low_friction_cta"]
+
+
+def test_copy_review_blocks_unverifiable_commercial_returns():
+    review = review_email_copy(
+        "A Vertu retail fit for Premium Retail",
+        "Hi Amy,\n\nA VERTU partnership guarantees a 200% return for every local operator. "
+        "Your luxury retail network looks relevant to a selective distribution discussion. "
+        "May I send a one-page local-market outline?\n\n"
+        "Best regards,\nFrank\n\nUnsubscribe: {{unsubscribe_url}}",
+    )
+
+    assert review["status"] == "blocked"
+    assert "unverifiable_return" in {item["code"] for item in review["blocking_issues"]}
 
 
 def test_prospect_copy_word_count_excludes_signature_and_unsubscribe_line():

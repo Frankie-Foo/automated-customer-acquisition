@@ -24,6 +24,19 @@ def test_extract_event_type_normalizes_complaint_and_failure():
     assert _extract_event_type("resend", {"type": "email.failed"}) == "failed"
 
 
+def test_extract_event_type_normalizes_sent_and_rejects_unknown_events():
+    assert _extract_event_type("resend", {"type": "email.sent"}) == "sent"
+    assert _extract_event_type("resend", {"type": "email.some_future_event"}) == "unknown"
+
+
+def test_provider_sent_webhook_is_idempotent_after_local_send_recording():
+    class Repo:
+        def record_event(self, *args, **kwargs):
+            raise AssertionError("provider sent webhook must not insert another sent event")
+
+    assert WebhookService(Repo()).process_payload("resend", {"type": "email.sent"}) == "sent"
+
+
 def test_extract_message_id_from_resend_payload():
     assert _extract_message_id({"data": {"email": {"id": "abc123"}}}) == "abc123"
 
@@ -118,6 +131,50 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
     assert event == "replied"
     assert repo.events[0][2]["data"]["text"] == "Please send the price list."
     assert repo.activities[0][1]["content"] == "Please send the price list."
+
+
+def test_reply_uses_in_reply_to_before_sender_email_and_updates_original_message():
+    class Repo:
+        def __init__(self):
+            self.events = []
+            self.outbound_updates = []
+
+        def find_contact_id_by_message_id(self, message_id):
+            return 42 if message_id == "<outbound-42@example.com>" else None
+
+        def find_contact_id_by_email(self, email):
+            return 77
+
+        def record_event(self, contact_id, event_type, payload):
+            self.events.append((contact_id, event_type, payload))
+
+        def update_outreach_message_event(self, **kwargs):
+            self.outbound_updates.append(kwargs)
+
+    repo = Repo()
+
+    event = WebhookService(repo).process_payload(
+        "imap",
+        {
+            "event_type": "replied",
+            "from": "lead@example.com",
+            "message_id": "<reply-99@example.com>",
+            "in_reply_to": "<outbound-42@example.com>",
+            "subject": "Re: Vertu",
+            "text": "Please send more information.",
+        },
+    )
+
+    assert event == "replied"
+    assert repo.events[0][0] == 42
+    assert repo.outbound_updates == [
+        {
+            "provider": "imap",
+            "provider_message_id": "<outbound-42@example.com>",
+            "event_type": "replied",
+            "error": None,
+        }
+    ]
 
 
 def test_non_actionable_reply_stops_existing_followups_without_advancing_lifecycle():

@@ -363,7 +363,11 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
     visible_copy = f"{subject}\n{body}"
     for code, pattern in _HYPE_PATTERNS.items():
         if pattern.search(visible_copy):
-            warnings.append(_issue(code, _copy_recommendation(code)))
+            issue = _issue(code, _copy_recommendation(code))
+            if code == "unverifiable_return":
+                blocking.append(issue)
+            else:
+                warnings.append(issue)
             score -= 10
     peer_to_peer_issues: list[str] = []
     for code, pattern in _PEER_TO_PEER_PATTERNS.items():

@@ -25,10 +25,20 @@ class WebhookService:
 
     def process_payload(self, provider: str, payload: dict[str, Any]) -> str:
         event_type = _extract_event_type(provider, payload)
+        if event_type == "unknown":
+            raise ValueError("Unsupported webhook event type")
+        # Sends are recorded synchronously with the provider message id. Replaying
+        # the provider's acknowledgement must not create a second sent event.
+        if event_type == "sent":
+            return event_type
         if provider == "resend" and event_type == "replied":
             payload = self._hydrate_resend_received_email(payload)
         reply_route = parse_signed_reply_route(self.config, _extract_reply_recipients(payload)) if self.config else None
         contact_id = int(reply_route["contact_id"]) if reply_route and event_type == "replied" else _extract_contact_id(payload)
+        if not contact_id:
+            in_reply_to = _extract_in_reply_to(payload) if event_type == "replied" else None
+            if in_reply_to:
+                contact_id = self.repo.find_contact_id_by_message_id(in_reply_to)
         if not contact_id:
             message_id = _extract_message_id(payload)
             if message_id:
@@ -59,10 +69,11 @@ class WebhookService:
         payload = annotate_delivery_payload(event_type, payload)
         self.repo.record_event(contact_id, event_type, payload)
         message_id = _extract_message_id(payload)
-        if message_id and hasattr(self.repo, "update_outreach_message_event"):
+        outbound_message_id = _extract_in_reply_to(payload) if event_type == "replied" else message_id
+        if outbound_message_id and hasattr(self.repo, "update_outreach_message_event"):
             self.repo.update_outreach_message_event(
                 provider=provider,
-                provider_message_id=message_id,
+                provider_message_id=outbound_message_id,
                 event_type=event_type,
                 error=str(payload.get("delivery_reason") or "")[:1000] or None,
             )
@@ -195,7 +206,9 @@ def _extract_event_type(provider: str, payload: dict[str, Any]) -> str:
         return "opened"
     if "deliver" in raw:
         return "delivered"
-    return raw or "opened"
+    if raw.endswith(".sent") or raw == "sent":
+        return "sent"
+    return "unknown"
 
 
 def _extract_message_id(payload: dict[str, Any]) -> str | None:
@@ -216,6 +229,29 @@ def _extract_message_id(payload: dict[str, Any]) -> str | None:
             value = value.get(key)
         if value:
             return str(value)
+    return None
+
+
+def _extract_in_reply_to(payload: dict[str, Any]) -> str | None:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    email = data.get("email") if isinstance(data.get("email"), dict) else {}
+    headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+    for value in (
+        payload.get("in_reply_to"),
+        payload.get("in-reply-to"),
+        data.get("in_reply_to"),
+        data.get("in-reply-to"),
+        email.get("in_reply_to"),
+        email.get("in-reply-to"),
+        headers.get("in-reply-to"),
+        headers.get("In-Reply-To"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:512]
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()[:512]
     return None
 
 
@@ -313,4 +349,4 @@ def _contact_name(contact: dict[str, Any]) -> str:
     return person or str(contact.get("company_name") or "客户")
 
 
-__all__ = ["WebhookService", "_extract_contact_id", "_extract_event_type", "_extract_message_id", "_extract_recipient_email", "_extract_sender_email"]
+__all__ = ["WebhookService", "_extract_contact_id", "_extract_event_type", "_extract_in_reply_to", "_extract_message_id", "_extract_recipient_email", "_extract_sender_email"]
