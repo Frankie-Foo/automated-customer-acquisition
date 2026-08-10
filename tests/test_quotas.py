@@ -1,7 +1,9 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
+from sales_automation.db import Repository
 from sales_automation.quotas import QuotaService
 
 
@@ -67,6 +69,32 @@ def test_consume_global_only_for_cli_scheduler():
 
     assert result["global_usage"]["send_count"] == 2
     assert result["remaining_global"] == 1
+
+
+def test_repository_returns_updated_global_quota_row():
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def execute(self, query, params=()):
+            if "SELECT usage_date" in query:
+                return Cursor({"source_count": 0, "send_count": 0})
+            if "UPDATE global_daily_usage" in query:
+                return Cursor({"source_count": 3, "send_count": 0})
+            return Cursor()
+
+    class Database:
+        @contextmanager
+        def connect(self):
+            yield Connection()
+
+    usage = Repository(Database()).consume_global_quota("source_count", 3, 5)
+
+    assert usage["source_count"] == 3
 
 
 def test_default_global_quota_supports_30_users():

@@ -692,6 +692,7 @@ class Repository:
                 """,
                 (amount,),
             ).fetchone()
+            return rows
 
     def ensure_sender_account(self, account: dict[str, Any]) -> dict[str, Any]:
         with self.db.connect() as conn:
