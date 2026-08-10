@@ -214,7 +214,33 @@ class LinkedInPublicSearchService:
         self.southeast_asia_hiring_signals = SoutheastAsiaHiringSignalService(config, public_search=self.client)
         self.provider_budget = ProviderBudgetGateway(config, repo)
 
-    def run(self, criteria: dict[str, Any], limit: int, *, user: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        criteria: dict[str, Any],
+        limit: int,
+        *,
+        user: dict[str, Any] | None = None,
+        pool_type: str = "public",
+    ) -> dict[str, Any]:
+        if pool_type not in {"private", "public"}:
+            raise ValueError("Invalid search pool type")
+        if pool_type == "private" and not user:
+            raise ValueError("Private search requires an owner")
+        task_user_id = int(user["id"]) if user else None
+        contact_owner_user_id = task_user_id if pool_type == "private" else None
+        contact_owner_name = (
+            str(user.get("display_name") or user.get("username") or "").strip()
+            if contact_owner_user_id and user
+            else ""
+        )
+
+        def upsert_contact(contact: dict[str, Any]) -> tuple[int, int]:
+            if contact_owner_name:
+                contact["owner"] = contact_owner_name
+            return self.repo.upsert_contacts(
+                [contact], owner_user_id=contact_owner_user_id, pool_type=pool_type
+            )
+
         criteria = self.india_hiring_signals.enrich_criteria(criteria)
         criteria = self.iran_hiring_signals.enrich_criteria(criteria)
         criteria = self.russia_hiring_signals.enrich_criteria(criteria)
@@ -232,8 +258,8 @@ class LinkedInPublicSearchService:
             criteria=criteria,
             provider="linkedin_public_search",
             requested_limit=limit,
-            created_by_user_id=int(user["id"]),
-            owner_user_id=int(user["id"]),
+            created_by_user_id=task_user_id,
+            owner_user_id=task_user_id,
         )
         all_results: list[dict[str, Any]] = []
         promoted = skipped = 0
@@ -293,7 +319,7 @@ class LinkedInPublicSearchService:
                         self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
                         self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
                     else:
-                        inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                        inserted, _ = upsert_contact(contact)
                         if inserted:
                             promoted += 1
                             promoted_contact = self.repo.get_contact_by_linkedin_url(known_profile_url)
@@ -342,7 +368,7 @@ class LinkedInPublicSearchService:
                         self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
                         self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
                         continue
-                    inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                    inserted, _ = upsert_contact(contact)
                     if inserted:
                         promoted += 1
                         promoted_contact = self.repo.get_contact_by_linkedin_url(parsed["linkedin_url"])
@@ -405,7 +431,7 @@ class LinkedInPublicSearchService:
                         self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
                         self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
                         continue
-                    inserted, _ = self.repo.upsert_contacts([contact], pool_type="public")
+                    inserted, _ = upsert_contact(contact)
                     if inserted:
                         promoted += 1
                         promoted_contact = self.repo.get_contact_by_linkedin_url(parsed["linkedin_url"])
@@ -464,10 +490,7 @@ class LinkedInPublicSearchService:
                         self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
                         self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
                         continue
-                    inserted, _ = self.repo.upsert_contacts(
-                        [contact],
-                        pool_type="public",
-                    )
+                    inserted, _ = upsert_contact(contact)
                     if inserted:
                         promoted += 1
                         promoted_contact = self.repo.get_contact_by_linkedin_url(parsed["linkedin_url"])

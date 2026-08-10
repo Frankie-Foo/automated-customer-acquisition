@@ -1669,8 +1669,8 @@ class Repository:
         criteria: dict[str, Any],
         provider: str,
         requested_limit: int,
-        created_by_user_id: int,
-        owner_user_id: int,
+        created_by_user_id: int | None,
+        owner_user_id: int | None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
             return conn.execute(
@@ -1756,7 +1756,7 @@ class Repository:
                        latest.metrics AS last_run_metrics,
                        latest.completed_at AS last_run_completed_at
                 FROM acquisition_plans p
-                JOIN sales_users u ON u.id = p.owner_user_id
+                LEFT JOIN sales_users u ON u.id = p.owner_user_id
                 LEFT JOIN LATERAL (
                   SELECT status, metrics, completed_at
                   FROM acquisition_plan_runs
@@ -1778,18 +1778,25 @@ class Repository:
         industries: list[str],
         company_types: list[str],
         role_terms: list[str],
-        owner_user_id: int,
+        owner_user_id: int | None,
+        pool_type: str = "private",
         daily_lead_limit: int,
         combinations_per_run: int,
     ) -> dict[str, Any]:
+        if pool_type not in {"private", "public"}:
+            raise ValueError("Invalid acquisition plan pool type")
+        if pool_type == "private" and not owner_user_id:
+            raise ValueError("Private acquisition plans require an owner")
+        if pool_type == "public":
+            owner_user_id = None
         with self.db.connect() as conn:
             return conn.execute(
                 """
                 INSERT INTO acquisition_plans(
                   name, regions, industries, company_types, role_terms,
-                  owner_user_id, daily_lead_limit, combinations_per_run
+                  owner_user_id, pool_type, daily_lead_limit, combinations_per_run
                 )
-                VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s)
+                VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
@@ -1799,6 +1806,7 @@ class Repository:
                     json.dumps(company_types, ensure_ascii=False),
                     json.dumps(role_terms, ensure_ascii=False),
                     owner_user_id,
+                    pool_type,
                     daily_lead_limit,
                     combinations_per_run,
                 ),

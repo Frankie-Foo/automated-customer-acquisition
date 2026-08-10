@@ -19,6 +19,80 @@ from sales_automation.linkedin_public_search import (
 from sales_automation.clients import _domain_from_website
 
 
+def test_search_pool_scope_controls_contact_owner_and_task_visibility():
+    class Repo:
+        def __init__(self):
+            self.task = None
+            self.upserts = []
+
+        def create_lead_search_task(self, **kwargs):
+            self.task = kwargs
+            return {"id": 1}
+
+        def create_lead_search_result(self, task_id, parsed, *, status):
+            return {"id": 2}
+
+        def find_duplicate_contact(self, contact):
+            return None
+
+        def upsert_contacts(self, contacts, *, owner_user_id=None, pool_type=None):
+            self.upserts.append((list(contacts), owner_user_id, pool_type))
+            return 1, 0
+
+        def get_contact_by_linkedin_url(self, url):
+            return {"id": 3, "lead_score": 0}
+
+        def mark_lead_search_result_promoted(self, result_id, contact_id):
+            pass
+
+        def update_lead_search_result_status(self, result_id, status, failure_reason=None):
+            pass
+
+        def complete_lead_search_task(self, task_id, **kwargs):
+            pass
+
+    class Search:
+        def search(self, query, *, limit=10, **options):
+            return [{
+                "title": "Ada Example - Founder - Example | LinkedIn",
+                "snippet": "Founder at Example in United Kingdom",
+                "link": "https://www.linkedin.com/in/ada-example",
+            }]
+
+    class Config:
+        apis = {}
+        raw = {"sourcing": {"linkedin_public_search": {"max_queries_per_run": 1}}}
+
+    def run(pool_type, user):
+        repo = Repo()
+        service = LinkedInPublicSearchService(Config(), repo)
+        service.client = Search()
+        service.run(
+            {
+                "role": "Founder",
+                "company_keyword": "Example",
+                "company_website": "example.com",
+                "location": "United Kingdom",
+                "auto_domain_lookup": False,
+                "auto_generate_email_candidates": False,
+            },
+            1,
+            user=user,
+            pool_type=pool_type,
+        )
+        return repo
+
+    private = run("private", {"id": 8, "role": "sales", "display_name": "Ivan"})
+    assert private.task["owner_user_id"] == 8
+    assert private.upserts[0][1:] == (8, "private")
+    assert private.upserts[0][0][0]["owner"] == "Ivan"
+
+    public = run("public", None)
+    assert public.task["created_by_user_id"] is None
+    assert public.task["owner_user_id"] is None
+    assert public.upserts[0][1:] == (None, "public")
+
+
 def test_build_linkedin_queries_uses_public_profile_site_filter():
     queries = build_linkedin_queries({
         "role": "Brand Manager",

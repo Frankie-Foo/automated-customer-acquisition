@@ -71,8 +71,10 @@ def test_due_plan_respects_actual_usage_and_never_sends_email():
         def __init__(self, config, repo):
             pass
 
-        def run(self, criteria, limit, user):
+        def run(self, criteria, limit, user, pool_type):
             assert limit == 4
+            assert user["id"] == 8
+            assert pool_type == "private"
             return {"results": 3, "promoted": 2}
 
     repo = Repo()
@@ -109,6 +111,8 @@ def test_due_plan_only_advances_combinations_that_ran():
             self.finished = kwargs
 
     class Quota:
+        consumed = []
+
         def __init__(self, config, repo):
             pass
 
@@ -122,8 +126,10 @@ def test_due_plan_only_advances_combinations_that_ran():
         def __init__(self, config, repo):
             pass
 
-        def run(self, criteria, limit, user):
+        def run(self, criteria, limit, user, pool_type):
             assert limit == 1
+            assert user["id"] == 8
+            assert pool_type == "private"
             return {"results": 1, "promoted": 0}
 
     repo = Repo()
@@ -131,6 +137,130 @@ def test_due_plan_only_advances_combinations_that_ran():
 
     assert repo.finished["cursor_advance"] == 2
     assert len(repo.finished["metrics"]["combinations"]) == 2
+
+
+def test_public_plan_uses_global_quota_without_owner_or_private_pool():
+    class Repo:
+        def list_due_acquisition_plans(self, limit):
+            return [{
+                "id": 4,
+                "pool_type": "public",
+                "regions": ["India"],
+                "industries": ["watches"],
+                "company_types": ["dealer"],
+                "role_terms": ["owner"],
+                "owner_user_id": None,
+                "daily_lead_limit": 5,
+                "combinations_per_run": 1,
+            }]
+
+        def begin_acquisition_plan_run(self, plan_id, combinations):
+            return {"id": 9}
+
+        def get_active_user(self, user_id):
+            raise AssertionError("public plans must not load an owner")
+
+        def finish_acquisition_plan_run(self, run_id, **kwargs):
+            self.finished = kwargs
+
+    class Quota:
+        consumed = []
+
+        def __init__(self, config, repo):
+            pass
+
+        def remaining_global(self, kind):
+            assert kind == "source"
+            return 4
+
+        def snapshot(self, user):
+            raise AssertionError("public plans must not read a user quota")
+
+        def consume(self, user, kind, amount):
+            raise AssertionError("public plans must not consume a user quota")
+
+        def consume_global(self, kind, amount):
+            self.consumed.append((kind, amount))
+
+    class Search:
+        def __init__(self, config, repo):
+            pass
+
+        def run(self, criteria, limit, user, pool_type):
+            assert user is None
+            assert pool_type == "public"
+            return {"results": 3, "promoted": 2}
+
+    repo = Repo()
+    result = AcquisitionPlannerService(SimpleNamespace(), repo, search_factory=Search, quota_factory=Quota).run_due()
+
+    assert result == {"plans": 1, "completed": 1, "failed": 0, "results": 3, "promoted": 2}
+    assert repo.finished["status"] == "completed"
+    assert Quota.consumed == [("source", 3)]
+
+
+def test_private_plan_retry_keeps_owner_scope_and_does_not_charge_failed_run():
+    class Repo:
+        def __init__(self):
+            self.finishes = []
+            self.run_id = 0
+
+        def list_due_acquisition_plans(self, limit):
+            return [{
+                "id": 4,
+                "pool_type": "private",
+                "regions": ["India"],
+                "industries": ["watches"],
+                "company_types": ["dealer"],
+                "role_terms": ["owner"],
+                "owner_user_id": 8,
+                "daily_lead_limit": 5,
+                "combinations_per_run": 1,
+            }]
+
+        def begin_acquisition_plan_run(self, plan_id, combinations):
+            self.run_id += 1
+            return {"id": self.run_id}
+
+        def get_active_user(self, user_id):
+            return {"id": user_id, "role": "sales"}
+
+        def finish_acquisition_plan_run(self, run_id, **kwargs):
+            self.finishes.append(kwargs)
+
+    class Quota:
+        consumed = []
+
+        def __init__(self, config, repo):
+            pass
+
+        def snapshot(self, user):
+            return {"source": {"remaining_user": 4, "remaining_global": 20}}
+
+        def consume(self, user, kind, amount):
+            self.consumed.append((user["id"], kind, amount))
+
+    class Search:
+        calls = []
+
+        def __init__(self, config, repo):
+            pass
+
+        def run(self, criteria, limit, user, pool_type):
+            self.calls.append((user["id"], pool_type))
+            if len(self.calls) == 1:
+                raise RuntimeError("temporary search failure")
+            return {"results": 2, "promoted": 1}
+
+    repo = Repo()
+    service = AcquisitionPlannerService(SimpleNamespace(), repo, search_factory=Search, quota_factory=Quota)
+    assert service.run_due()["failed"] == 1
+    assert service.run_due()["completed"] == 1
+
+    assert [item["status"] for item in repo.finishes] == ["failed", "completed"]
+    assert repo.finishes[0]["cursor_advance"] == 0
+    assert Search.calls == [(8, "private"), (8, "private")]
+    assert Quota.consumed == [(8, "source", 2)]
 
 
 def test_united_kingdom_uses_local_search_profile():

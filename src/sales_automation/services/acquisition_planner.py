@@ -77,14 +77,22 @@ class AcquisitionPlannerService:
         return summary
 
     def _run_plan(self, plan: dict[str, Any], combinations: list[dict[str, str]]) -> dict[str, Any]:
-        owner = self.repo.get_active_user(int(plan["owner_user_id"]))
-        if not owner:
-            raise RuntimeError("acquisition_plan_owner_unavailable")
+        pool_type = str(plan.get("pool_type") or "private")
+        if pool_type not in {"private", "public"}:
+            raise RuntimeError("acquisition_plan_invalid_pool_type")
+        owner = None
+        if pool_type == "private":
+            owner = self.repo.get_active_user(int(plan.get("owner_user_id") or 0))
+            if not owner:
+                raise RuntimeError("acquisition_plan_owner_unavailable")
         if not combinations:
             return {"results": 0, "promoted": 0, "combinations": []}
         quota = self.quota_factory(self.config, self.repo)
-        snapshot = quota.snapshot(owner)
-        remaining = min(int(snapshot["source"]["remaining_user"]), int(snapshot["source"]["remaining_global"]))
+        if pool_type == "public":
+            remaining = quota.remaining_global("source")
+        else:
+            snapshot = quota.snapshot(owner)
+            remaining = min(int(snapshot["source"]["remaining_user"]), int(snapshot["source"]["remaining_global"]))
         budget = min(max(0, int(plan.get("daily_lead_limit") or 0)), remaining)
         search = self.search_factory(self.config, self.repo)
         metrics = {"results": 0, "promoted": 0, "combinations": []}
@@ -94,11 +102,14 @@ class AcquisitionPlannerService:
                 break
             slots = max(1, len(combinations) - index)
             requested = max(1, left // slots)
-            result = search.run(criteria, requested, user=owner)
+            result = search.run(criteria, requested, user=owner, pool_type=pool_type)
             used = max(0, int(result.get("results") or 0))
             promoted = max(0, int(result.get("promoted") or 0))
             if used:
-                quota.consume(owner, "source", used)
+                if pool_type == "public":
+                    quota.consume_global("source", used)
+                else:
+                    quota.consume(owner, "source", used)
             metrics["results"] += used
             metrics["promoted"] += promoted
             metrics["combinations"].append({"criteria": criteria, "requested": requested, "results": used, "promoted": promoted})

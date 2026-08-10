@@ -426,9 +426,14 @@ def make_handler(config, repo: Repository):
                 if not admin:
                     return
                 def create_acquisition_plan() -> dict[str, Any]:
-                    owner_user_id = int(payload.get("owner_user_id") or 0)
-                    if not repo.get_active_user(owner_user_id):
+                    pool_type = str(payload.get("pool_type") or "private").strip().lower()
+                    if pool_type not in {"private", "public"}:
+                        raise ValueError("pool_type must be private or public")
+                    owner_user_id = int(payload.get("owner_user_id") or 0) or None
+                    if pool_type == "private" and not repo.get_active_user(int(owner_user_id or 0)):
                         raise ValueError("owner_user_id must reference an active user")
+                    if pool_type == "public":
+                        owner_user_id = None
                     name = str(payload.get("name") or "").strip()[:200]
                     if not name:
                         raise ValueError("name is required")
@@ -439,6 +444,7 @@ def make_handler(config, repo: Repository):
                         company_types=_string_list(payload.get("company_types")),
                         role_terms=_string_list(payload.get("role_terms")),
                         owner_user_id=owner_user_id,
+                        pool_type=pool_type,
                         daily_lead_limit=max(1, min(int(payload.get("daily_lead_limit") or 20), 1000)),
                         combinations_per_run=max(1, min(int(payload.get("combinations_per_run") or 3), 50)),
                     )}

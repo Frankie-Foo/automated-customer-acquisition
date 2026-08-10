@@ -51,6 +51,8 @@ def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
             "/api/send-one",
             "/api/blacklist",
             "/api/webhook",
+            "/api/admin/acquisition-plans",
+            "/api/admin/acquisition-plans/run",
         ):
             req = urllib.request.Request(
                 base_url + path,

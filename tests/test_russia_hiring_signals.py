@@ -47,6 +47,7 @@ def test_russia_detection_uses_location_or_ru_domain():
     assert is_russia_account({"location": "Moscow, Russia"}) is True
     assert is_russia_account({"company_domain": "example.ru"}) is True
     assert is_russia_account({"location": "Singapore", "company_domain": "example.com"}) is False
+    assert is_russia_account({"location": "Singapore"}) is False
 
 
 def test_company_hiring_signal_filters_wrong_employer_and_scores_expansion():

@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS acquisition_plans (
   industries JSONB NOT NULL DEFAULT '[]'::jsonb,
   company_types JSONB NOT NULL DEFAULT '[]'::jsonb,
   role_terms JSONB NOT NULL DEFAULT '[]'::jsonb,
-  owner_user_id BIGINT NOT NULL REFERENCES sales_users(id) ON DELETE RESTRICT,
+  owner_user_id BIGINT REFERENCES sales_users(id) ON DELETE RESTRICT,
+  pool_type TEXT NOT NULL DEFAULT 'private' CHECK (pool_type IN ('private', 'public')),
   daily_lead_limit INTEGER NOT NULL DEFAULT 20 CHECK (daily_lead_limit BETWEEN 1 AND 1000),
   combinations_per_run INTEGER NOT NULL DEFAULT 3 CHECK (combinations_per_run BETWEEN 1 AND 50),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'archived')),
@@ -13,7 +14,11 @@ CREATE TABLE IF NOT EXISTS acquisition_plans (
   cursor_position INTEGER NOT NULL DEFAULT 0,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (
+    (pool_type = 'private' AND owner_user_id IS NOT NULL)
+    OR (pool_type = 'public' AND owner_user_id IS NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_acquisition_plans_due

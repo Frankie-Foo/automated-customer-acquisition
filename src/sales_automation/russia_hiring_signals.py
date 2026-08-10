@@ -259,7 +259,7 @@ def is_russia_account(seed: dict[str, Any]) -> bool:
     )
     if profile.key == "russia":
         return True
-    domain = _domain_from_website(seed.get("company_domain") or seed.get("website") or "")
+    domain = _domain_from_website(seed.get("company_domain") or seed.get("website") or "") or ""
     if domain.endswith((".ru", ".рф")):
         return True
     text = _normalize(" ".join(str(seed.get(key) or "") for key in ("location", "country", "reason")))
