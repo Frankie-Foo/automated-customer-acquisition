@@ -20,6 +20,18 @@ def test_plan_combinations_rotates_region_industry_company_and_role():
     ]
 
 
+def test_plan_combinations_split_or_roles_into_searchable_titles():
+    plan = {
+        "regions": ["India"],
+        "industries": ["watches"],
+        "company_types": ["dealer"],
+        "role_terms": ["owner OR founder"],
+        "combinations_per_run": 2,
+    }
+
+    assert [item["role"] for item in plan_combinations(plan)] == ["owner", "founder"]
+
+
 def test_due_plan_respects_actual_usage_and_never_sends_email():
     class Repo:
         def list_due_acquisition_plans(self, limit):
@@ -71,6 +83,54 @@ def test_due_plan_respects_actual_usage_and_never_sends_email():
     assert result == {"plans": 1, "completed": 1, "failed": 0, "results": 3, "promoted": 2}
     assert Quota.consumed == [(8, "source", 3)]
     assert repo.finished["status"] == "completed"
+
+
+def test_due_plan_only_advances_combinations_that_ran():
+    class Repo:
+        def list_due_acquisition_plans(self, limit):
+            return [{
+                "id": 4,
+                "regions": ["India", "United Kingdom", "Russia"],
+                "industries": ["watches"],
+                "company_types": ["dealer"],
+                "role_terms": ["owner"],
+                "owner_user_id": 8,
+                "daily_lead_limit": 3,
+                "combinations_per_run": 3,
+            }]
+
+        def begin_acquisition_plan_run(self, plan_id, combinations):
+            return {"id": 9}
+
+        def get_active_user(self, user_id):
+            return {"id": user_id, "role": "sales"}
+
+        def finish_acquisition_plan_run(self, run_id, **kwargs):
+            self.finished = kwargs
+
+    class Quota:
+        def __init__(self, config, repo):
+            pass
+
+        def snapshot(self, user):
+            return {"source": {"remaining_user": 2, "remaining_global": 2}}
+
+        def consume(self, user, kind, amount):
+            pass
+
+    class Search:
+        def __init__(self, config, repo):
+            pass
+
+        def run(self, criteria, limit, user):
+            assert limit == 1
+            return {"results": 1, "promoted": 0}
+
+    repo = Repo()
+    AcquisitionPlannerService(SimpleNamespace(), repo, search_factory=Search, quota_factory=Quota).run_due()
+
+    assert repo.finished["cursor_advance"] == 2
+    assert len(repo.finished["metrics"]["combinations"]) == 2
 
 
 def test_united_kingdom_uses_local_search_profile():

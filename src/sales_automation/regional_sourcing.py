@@ -260,7 +260,7 @@ _register(
 )
 
 _register(
-    ("united kingdom", "great britain", "britain", "england", "scotland", "wales", "london", "manchester"),
+    ("united kingdom", "uk", "great britain", "britain", "england", "scotland", "wales", "london", "manchester", "英国"),
     key="europe",
     label="United Kingdom enhanced",
     country="GB",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from itertools import product
 from typing import Any, Callable
 
@@ -13,7 +14,7 @@ def plan_combinations(plan: dict[str, Any]) -> list[dict[str, str]]:
         _values(plan.get("regions"), "Global"),
         _values(plan.get("industries"), "luxury retail"),
         _values(plan.get("company_types"), "distributor"),
-        _values(plan.get("role_terms"), "owner OR founder OR managing director"),
+        _role_values(plan.get("role_terms")),
     )
     rows = [
         {"location": region, "industry": industry, "company_keyword": company_type, "role": role}
@@ -57,7 +58,7 @@ class AcquisitionPlannerService:
                     plan_id=int(plan["id"]),
                     status="completed",
                     metrics=metrics,
-                    cursor_advance=len(combinations),
+                    cursor_advance=len(metrics["combinations"]),
                 )
                 summary["completed"] += 1
                 summary["results"] += metrics["results"]
@@ -110,6 +111,16 @@ def _values(value: Any, fallback: str) -> list[str]:
     if not isinstance(value, list):
         value = []
     return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip())) or [fallback]
+
+
+def _role_values(value: Any) -> list[str]:
+    roles = [
+        role.strip()
+        for item in _values(value, "owner")
+        for role in re.split(r"\s+or\s+", item, flags=re.IGNORECASE)
+        if role.strip()
+    ]
+    return list(dict.fromkeys(roles))
 
 
 __all__ = ["AcquisitionPlannerService", "plan_combinations"]

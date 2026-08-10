@@ -94,3 +94,8 @@ def test_unknown_location_uses_global_fallback():
 
     assert profile.key == "global"
     assert profile.country is None
+
+
+def test_detects_uk_abbreviation_and_chinese_name():
+    assert detect_regional_profile("UK").country == "GB"
+    assert detect_regional_profile("英国").country == "GB"
