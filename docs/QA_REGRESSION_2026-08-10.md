@@ -1,26 +1,39 @@
 # QA 发布回归：2026-08-10
 
-基线：`af62d6ec803809ea4becdf23140949a15e004d25`（`main` 从 `367a885` 快进合并）
+基线：`bacb04a`（`main` 从 `dfdfc85` 快进合并；包含 `a18ddfb`、`692c6ec`）
 
 工作树：`codex/test-deploy`
 
 ## 通过项
 
-- `python -m pytest -q`：`265 passed`；metrics 刷新失败降级用例通过。
+- `python -m pytest -q`：`286 passed`。
 - 前端 `npm run check`、`npm run build`：通过。
-- Python wheel 构建：通过；React 静态入口、JS、邮件图片 `outreach_01.png`、`outreach_05.png` 均包含在 package data 和 Docker 镜像中。
+- Python wheel 构建：通过；React 静态入口、JS、legacy controller、邮件图片 `outreach_01.png`、`outreach_05.png` 均包含在 package data 和 Docker 镜像中。
 - Docker CI 栈：构建通过，容器 `healthy`，`/api/live` 通过。
-- 全新数据库迁移：`35/35`；重复执行迁移两次均返回 `applied=[]`。
-- 严格 readiness：使用隔离的 dummy QA 配置通过；CI 默认无生产凭据时 strict 正确返回未就绪。
+- 全新 PostgreSQL 迁移：`37/37`；重复执行迁移两次均返回 `applied=[]`。
+- 严格 readiness：隔离 dummy QA 配置返回 `ready=true`。
+- 真实 RLS：runtime role 下匿名读取为 0；销售用户只能读取本人 private + public；他人 private 插入/更新拒绝；public 仅允许受控 claim、return、所属来源任务富化/入池；管理员可见全部并可写他人 private。
 - CSV 正常导入：真实 Docker API `/api/import/csv` 返回 `200`，且 `metrics_refreshed=true`。
-- CSV metrics 降级：人为触发 `campaign_metrics` 刷新异常时，真实 API 仍返回 `200`，并明确返回 `metrics_refreshed=false`、`warnings=["campaign_metrics_refresh_failed"]`；contact、lead、task 写入保留。
+- CSV metrics 降级：既有端到端回归中人为触发刷新异常仍返回 `200`，明确返回 `metrics_refreshed=false` 与 `campaign_metrics_refresh_failed` warning，contact、lead、task 写入保留。
 - CSV 重试幂等：相同 CSV 重试返回 `200`，数据库保持 1 个 contact、1 个 lead、1 个 open follow-up task，无重复数据。
-- 权限隔离：销售用户只能读取自己的 private contact；跨用户详情为空；跨用户 Profile/Draft 返回 `403 claim_required`；销售用户访问 Flywheel/Migrate/管理员操作返回 `403 admin_required`；管理员 Flywheel、Flywheel run、Migrate 通过。
+- 网络安全：Base 首跳、编码 URL、重定向拦截、共享 `urlopen` gate 共 8 个 targeted tests 通过。
 - QA Docker 容器与卷已清理。
 
 ## 历史缺陷复验
 
 此前 P1：`Repository.refresh_campaign_metrics()` 中未转义的 `LIKE 'negative%'` 曾导致 CSV 导入 500。`af62d6e` 修复后，正常路径和 metrics 失败降级路径均已通过端到端复验。
+
+## 发布阻断缺陷
+
+**P1：public 获客计划全局配额路径失败并部分提交。**
+
+真实 PostgreSQL 验收中，private plan 按用户配额 `2` 执行成功，2 条 contact 入 `pool_type=private` 且 `owner_user_id=2`。public plan 生成 3 条 `pool_type=public`、`owner_user_id=NULL` 的 contact 并扣除全局 source quota，但随后 `run_due` 失败：
+
+```text
+'NoneType' object is not subscriptable
+```
+
+责任模块：`src/sales_automation/db.py` 的 `Repository.consume_global_quota()`（约第 664 行）缺少返回 `UPDATE ... RETURNING` 结果；`src/sales_automation/quotas.py` 的 `QuotaService.consume_global()` 随后对 `usage[field]` 下标访问。该路径已发送给总控，QA 未修改业务实现。
 
 ## 凭据边界
 
@@ -28,4 +41,4 @@
 
 ## 发布结论
 
-**PASS**：本次全量回归、CSV 全链路、幂等、迁移、readiness、Docker 和权限隔离均通过，QA 不再阻断发布。
+**BLOCKED**：除 public 获客计划全局配额路径外，其余全量测试、Docker、37/37 迁移、readiness、真实 RLS、CSV、网络安全均通过；该 P1 需修复并重跑获客计划/配额验收后方可发布。
