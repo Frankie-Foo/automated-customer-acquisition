@@ -1,35 +1,26 @@
 # QA 发布回归：2026-08-10
 
-基线：`2f2a6393460e210c58e232c991d15b954d1fc10c`
+基线：`af62d6ec803809ea4becdf23140949a15e004d25`（`main` 从 `367a885` 快进合并）
 
 工作树：`codex/test-deploy`
 
 ## 通过项
 
-- `python -m pytest -q`：`256 passed`。
+- `python -m pytest -q`：`265 passed`；metrics 刷新失败降级用例通过。
 - 前端 `npm run check`、`npm run build`：通过。
 - Python wheel 构建：通过；React 静态入口、JS、邮件图片 `outreach_01.png`、`outreach_05.png` 均包含在 package data 和 Docker 镜像中。
 - Docker CI 栈：构建通过，容器 `healthy`，`/api/live` 通过。
-- 全新数据库迁移：`34/34`；重复执行迁移两次均返回 `applied=[]`。
+- 全新数据库迁移：`35/35`；重复执行迁移两次均返回 `applied=[]`。
 - 严格 readiness：使用隔离的 dummy QA 配置通过；CI 默认无生产凭据时 strict 正确返回未就绪。
-- 权限隔离：销售用户只能读取自己的 private contact；跨用户详情为空；跨用户 Profile/Draft 返回 `403 claim_required`；销售用户访问 Flywheel/Migrate/管理员操作返回 `403 admin_required`；管理员 Flywheel 读取通过。
+- CSV 正常导入：真实 Docker API `/api/import/csv` 返回 `200`，且 `metrics_refreshed=true`。
+- CSV metrics 降级：人为触发 `campaign_metrics` 刷新异常时，真实 API 仍返回 `200`，并明确返回 `metrics_refreshed=false`、`warnings=["campaign_metrics_refresh_failed"]`；contact、lead、task 写入保留。
+- CSV 重试幂等：相同 CSV 重试返回 `200`，数据库保持 1 个 contact、1 个 lead、1 个 open follow-up task，无重复数据。
+- 权限隔离：销售用户只能读取自己的 private contact；跨用户详情为空；跨用户 Profile/Draft 返回 `403 claim_required`；销售用户访问 Flywheel/Migrate/管理员操作返回 `403 admin_required`；管理员 Flywheel、Flywheel run、Migrate 通过。
 - QA Docker 容器与卷已清理。
 
-## 发布阻断缺陷
+## 历史缺陷复验
 
-**P1：CSV 导入返回 500，且已部分提交数据。**
-
-复现：隔离 Docker CI 栈中，销售用户登录后向 `/api/import/csv` 上传一条新 CSV。
-
-精确错误：
-
-```text
-only '%s', '%b', '%t' are allowed as placeholders, got '%'
-```
-
-根因：`src/sales_automation/db.py` 的 `Repository.refresh_campaign_metrics()` 查询包含未转义的 `LIKE 'negative%'`。psycopg 3 将 `%` 解析为参数占位符。导入已写入 campaign、contact、lead，随后刷新 metrics 失败，接口返回 500，形成部分提交。
-
-责任模块：客户生命周期与飞轮 / DB。已发送给对应模块与项目总控。修复后必须重跑 CSV 导入、全量 pytest、Docker 迁移与权限回归。
+此前 P1：`Repository.refresh_campaign_metrics()` 中未转义的 `LIKE 'negative%'` 曾导致 CSV 导入 500。`af62d6e` 修复后，正常路径和 metrics 失败降级路径均已通过端到端复验。
 
 ## 凭据边界
 
@@ -37,4 +28,4 @@ only '%s', '%b', '%t' are allowed as placeholders, got '%'
 
 ## 发布结论
 
-**BLOCKED**：基础构建、迁移、readiness、权限通过；CSV 导入 P1 未修复，不批准发布。
+**PASS**：本次全量回归、CSV 全链路、幂等、迁移、readiness、Docker 和权限隔离均通过，QA 不再阻断发布。
