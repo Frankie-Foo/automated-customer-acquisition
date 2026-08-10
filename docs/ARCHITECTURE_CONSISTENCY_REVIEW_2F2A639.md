@@ -157,6 +157,33 @@
 
 HTTP/MCP 只调用 application command/query；principal、transaction、audit context 由 command bus/use-case 入口统一创建。
 
+### P1-10｜CSV 主导入已提交，却被派生统计错误报告为失败
+
+**证据**
+
+- `src/sales_automation/web.py:476-493` 将 `LeadWorkflowService.ingest_contacts` 的任何异常统一返回 500。
+- `src/sales_automation/services/pdca.py:43-115` 依次创建 campaign，再逐行写 contact、lead、follow-up task、profile snapshot，最后同步刷新 campaign metrics。
+- 上述每个仓储方法都各自调用 `db.connect()` 并提交；因此不是一个导入事务。`refresh_campaign_metrics` 失败时，之前的数据已经持久化。
+- `src/sales_automation/db.py:4091-4093` 的裸 `LIKE 'negative%'` 被 psycopg3 解释为非法占位符。本次错误发生在派生统计刷新，HTTP 却向客户端宣告整个导入失败。
+- `src/sales_automation/services/pdca.py:322-324` 生成的 lead external id 在 source_type、source_ref、行号和内容不变时可重复；但重试仍会新建 campaign。`src/sales_automation/db.py:4185-4204` 随后会把既有 lead 的 `campaign_id` 更新为新 campaign，留下重复或空 campaign，结果不等价。
+
+**架构判断**
+
+1. **导入接收边界**：不要用一次巨大事务包住整份 CSV。以单行为最小原子单元，在一个事务内完成 contact、lead、task、profile snapshot；batch/import run 记录各行成功或失败。这样坏行不回滚其他有效行，也不会留下半行状态。
+2. **统计刷新边界**：campaign metrics 是可从事实表重建的 projection，不是主导入不变量。刷新失败不得回滚或否定已提交导入；应标记 stale/pending，异步或定时重算。
+3. **重试边界**：API 必须按 owner + import idempotency key 去重。相同 key 返回同一 campaign/import run 和既有结果，不得新建 campaign 或迁移 lead 归属。
+4. **响应边界**：核心行写入成功后返回成功或 `partial_success`，同时返回 committed/failed 行数和 `metrics_status=stale|fresh`。只有主数据事务未提交才返回 500；输入错误返回 422。
+
+**最小生产建议**
+
+1. 生命周期线程修复 `%` 转义并增加真实 psycopg 参数解析回归测试；本架构分支不修改 `db.py`。
+2. 在导入 service 层隔离 metrics refresh 异常：保留导入成功结果，记录单独审计/错误，返回 `metrics_status=stale`。
+3. 复用 scheduler 定时重算近期 active campaign，先不引入新消息队列；流量或延迟证明不足时再加 outbox/worker。
+4. API 接受 `Idempotency-Key`；给 campaign/import run 增加 owner-scoped 唯一 import key。重复请求读取原结果。
+5. 后续把单行四类写入收敛为一个 repository unit-of-work；不要把 projection refresh 放入该事务。
+
+这组最小改动先消除“数据已成功但接口 500”的生产歧义；不要求当前迭代重写完整导入框架。
+
 ## 迁移 031—034 逐项结论
 
 | 迁移 | 结论 | 上线前补强 |
@@ -176,6 +203,7 @@ HTTP/MCP 只调用 application command/query；principal、transaction、audit c
 4. `ADR-004 出站网络数据边界`：统一 transport、redirect policy、域名/IP/路径校验。
 5. `ADR-005 学习决策事务`：证据快照、版本、幂等键、人工回滚、last-known-good。
 6. `ADR-006 Business day`：Asia/Shanghai 的 daily quota/run/statistics 语义。
+7. `ADR-007 导入接收与 projection`：单行原子性、batch 状态、幂等 key、统计最终一致性和响应语义。
 
 ## 推荐实施顺序
 
@@ -187,7 +215,8 @@ HTTP/MCP 只调用 application command/query；principal、transaction、audit c
 6. 修实验计数、学习事务和 last-known-good（P1-02—P1-04）。
 7. 建公司主实体并渐进迁移（P1-01）。
 8. 统一 business day 与 HTTP API 契约（P1-07、P1-08）。
-9. 最后收敛 ports；在上述行为稳定前不做大规模目录重构（P1-09）。
+9. 隔离 CSV 统计刷新、补 import 幂等与单行事务（P1-10）。
+10. 最后收敛 ports；在上述行为稳定前不做大规模目录重构（P1-09）。
 
 ## 合并门禁
 
@@ -197,3 +226,4 @@ HTTP/MCP 只调用 application command/query；principal、transaction、audit c
 - 计划 owner、配额 owner、任务 owner、联系人 owner 的关系由 ADR 和测试固定。
 - flywheel 低样本不替换 last-known-good；学习决策与审计原子且幂等。
 - API 错误状态与幂等重试通过契约测试。
+- CSV 重试复用同一 import run/campaign；统计刷新失败时主导入不返回 500，且 stale metrics 能被 scheduler 修复。
