@@ -15,8 +15,8 @@ def test_plan_combinations_rotates_region_industry_company_and_role():
     }
 
     assert plan_combinations(plan) == [
-        {"location": "United Kingdom", "industry": "luxury cars", "company_keyword": "distributor", "role": "owner"},
-        {"location": "India", "industry": "watches", "company_keyword": "distributor", "role": "owner"},
+        {"location": "United Kingdom", "industry": "luxury cars", "company_type": "distributor", "role": "owner"},
+        {"location": "India", "industry": "watches", "company_type": "distributor", "role": "owner"},
     ]
 
 

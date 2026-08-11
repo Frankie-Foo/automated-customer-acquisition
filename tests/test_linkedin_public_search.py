@@ -107,6 +107,38 @@ def test_build_linkedin_queries_uses_public_profile_site_filter():
     assert '"luxury"' in queries[0]
 
 
+def test_company_type_filters_search_without_becoming_company_identity():
+    criteria = {
+        "role": "Owner",
+        "industry": "luxury retail",
+        "location": "United Arab Emirates",
+        "company_type": "department store",
+    }
+
+    queries = build_linkedin_queries(criteria)
+    parsed = {
+        "raw_title": "Ada Example - Owner - Example Luxury",
+        "raw_snippet": "Owner of a department store in United Arab Emirates",
+        "first_name": "Ada",
+        "last_name": "Example",
+        "job_title": "Owner",
+        "company_name": "Example Luxury",
+        "location": "United Arab Emirates",
+        "linkedin_url": "https://www.linkedin.com/in/ada-example",
+    }
+
+    score, evidence = score_lead_details(parsed, criteria)
+
+    assert any('"department store"' in query for query in queries)
+    assert not any(item["field"] == "company" for item in evidence)
+    assert next(item for item in evidence if item["field"] == "company_type")["matched"] is True
+    assert classify_identity_match({**parsed, "match_confidence": score, "match_evidence": evidence}, criteria) != "mismatch"
+
+    wrong = {**parsed, "raw_snippet": "Owner of a construction company in United Arab Emirates"}
+    wrong_score, wrong_evidence = score_lead_details(wrong, criteria)
+    assert classify_identity_match({**wrong, "match_confidence": wrong_score, "match_evidence": wrong_evidence}, criteria) == "mismatch"
+
+
 def test_exact_person_query_and_scoring_require_name_and_company_match():
     criteria = {
         "full_name": "Ada Lovelace",

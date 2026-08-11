@@ -17,7 +17,7 @@ def plan_combinations(plan: dict[str, Any]) -> list[dict[str, str]]:
         _role_values(plan.get("role_terms")),
     )
     rows = [
-        {"location": region, "industry": industry, "company_keyword": company_type, "role": role}
+        {"location": region, "industry": industry, "company_type": company_type, "role": role}
         for region, industry, company_type, role in product(*dimensions)
     ]
     if not rows:

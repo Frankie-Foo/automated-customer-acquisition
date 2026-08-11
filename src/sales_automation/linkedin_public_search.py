@@ -716,7 +716,8 @@ def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
     industry = _clean(criteria.get("industry"))
     location = _clean(criteria.get("location"))
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_website"))
-    parts = [part for part in [name, role, industry, location, company] if part]
+    company_type = _clean(criteria.get("company_type"))
+    parts = [part for part in [name, role, industry, location, company, company_type] if part]
     queries = []
     if name and company:
         queries.append(f'site:linkedin.com/in "{name}" "{company}"')
@@ -732,13 +733,15 @@ def build_linkedin_queries(criteria: dict[str, Any]) -> list[str]:
         queries.append(f'site:linkedin.com/in "{role}" "{location}"')
     if role and company:
         queries.append(f'site:linkedin.com/in "{role}" "{company}"')
+    if role and company_type:
+        queries.append(f'site:linkedin.com/in "{role}" "{company_type}"')
     if company:
         queries.append(f'site:linkedin.com/in "{company}"')
     for title in role_keywords[:6]:
         if title and company:
             queries.append(f'site:linkedin.com/in "{title}" "{company}"')
     for title in role_keywords[:10]:
-        title_parts = [part for part in [title, industry, location, company] if part]
+        title_parts = [part for part in [title, industry, location, company, company_type] if part]
         if title_parts:
             queries.append("site:linkedin.com/in " + " ".join(f'"{part}"' for part in title_parts))
     if not queries and role:
@@ -1065,6 +1068,7 @@ def score_lead_details(parsed: dict[str, Any], criteria: dict[str, Any]) -> tupl
     role = _clean(criteria.get("role") or criteria.get("title")).lower()
     industry = _clean(criteria.get("industry")).lower()
     location = _clean(criteria.get("location")).lower()
+    company_type = _clean(criteria.get("company_type")).lower()
     company = _clean(criteria.get("company_keyword") or criteria.get("company") or criteria.get("company_name")).lower()
     expected_domain = _domain_from_website(criteria.get("company_website") or "")
     observed_text = " ".join(str(parsed.get(key) or "") for key in ("raw_title", "raw_snippet")).lower()
@@ -1103,6 +1107,11 @@ def score_lead_details(parsed: dict[str, Any], criteria: dict[str, Any]) -> tupl
         evidence.append(_match_evidence("industry", industry, parsed.get("industry") or parsed.get("raw_snippet"), industry_matched, 5))
     if industry_matched:
         score += 5
+    company_type_matched = bool(company_type and company_type in observed_text)
+    if company_type:
+        evidence.append(_match_evidence("company_type", company_type, parsed.get("raw_snippet"), company_type_matched, 10))
+    if company_type_matched:
+        score += 10
     location_matched = bool(location and location in observed_text)
     if location:
         evidence.append(_match_evidence("location", location, parsed.get("location") or parsed.get("raw_snippet"), location_matched, 10))
@@ -1129,9 +1138,12 @@ def classify_identity_match(parsed: dict[str, Any], criteria: dict[str, Any]) ->
     evidence = parsed.get("match_evidence") or []
     name_check = next((item for item in evidence if item.get("field") == "name"), None)
     company_check = next((item for item in evidence if item.get("field") in {"company", "company_domain"}), None)
+    company_type_check = next((item for item in evidence if item.get("field") == "company_type"), None)
     if name_check and not name_check.get("matched"):
         return "mismatch"
     if company_check and not company_check.get("matched"):
+        return "mismatch"
+    if company_type_check and not company_type_check.get("matched"):
         return "mismatch"
     if score >= 85 and (not name_check or name_check.get("matched")) and (not company_check or company_check.get("matched")):
         return "confirmed"
