@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from sales_automation.contactout_queue import (
     ContactOutQueueService,
     ContactOutRateLimited,
 )
+from sales_automation.db import Repository
 
 
 class FakeRepo:
@@ -290,3 +292,66 @@ def test_provider_controls_stop_or_retry_same_account(error, expected_status, ex
     assert run.status == expected_status
     assert run.error_code == expected_code
     assert (repo.retry or repo.blocked)[0][0] == 11
+
+
+class _Rows:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return self.rows
+
+
+class _AccountDb:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    @contextmanager
+    def connect(self):
+        db = self
+
+        class Conn:
+            def execute(self, *_args, **_kwargs):
+                return _Rows(next(db.responses, []))
+
+        yield Conn()
+
+
+def test_disabling_same_assignee_fences_existing_jobs():
+    repo = Repository(_AccountDb([
+        [{"id": 3, "assigned_user_id": 2, "status": "active"}],
+        [{"id": 3, "assigned_user_id": 2, "status": "disabled"}],
+    ]))
+    fenced = []
+    repo._fence_contactout_account_jobs = fenced.append
+
+    repo.upsert_contactout_account(
+        account_key="account-3",
+        display_name="Account 3",
+        masked_identity="a***@example.com",
+        credential_ref="contactout/account-3",
+        assigned_user_id=2,
+        daily_limit=5,
+        authorized_by_user_id=1,
+        status="disabled",
+    )
+
+    assert fenced == [3]
+
+
+def test_provider_challenge_fences_other_jobs_after_account_update():
+    repo = Repository(_AccountDb([
+        [{"id": 11, "account_id": 3, "quota_reserved": False}],
+        [],
+        [],
+    ]))
+    repo._settle_contactout_quota = lambda *_args, **_kwargs: None
+    fenced = []
+    repo._fence_contactout_account_jobs = fenced.append
+
+    repo.block_contactout_job(11, "lease", "challenge_required")
+
+    assert fenced == [3]
