@@ -2483,24 +2483,24 @@ class Repository:
         with self.db.connect() as conn:
             job = conn.execute(
                 """
-                WITH inserted AS (
-                  INSERT INTO contactout_enrichment_jobs(
-                      idempotency_key, contact_id, owner_user_id, account_id, operation, input_hash
-                  )
-                  VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
-                          %(account_id)s, %(operation)s, %(input_hash)s)
-                  ON CONFLICT (idempotency_key) DO NOTHING
-                  RETURNING *
+                INSERT INTO contactout_enrichment_jobs(
+                    idempotency_key, contact_id, owner_user_id, account_id, operation, input_hash
                 )
-                SELECT * FROM inserted
-                UNION ALL
-                SELECT * FROM contactout_enrichment_jobs
-                WHERE idempotency_key = %(idempotency_key)s
-                  AND owner_user_id = %(owner_user_id)s
-                LIMIT 1
+                VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
+                        %(account_id)s, %(operation)s, %(input_hash)s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
                 """,
                 fields,
             ).fetchone()
+            if not job:
+                job = conn.execute(
+                    """
+                    SELECT * FROM contactout_enrichment_jobs
+                    WHERE idempotency_key = %s AND owner_user_id = %s
+                    """,
+                    (fields["idempotency_key"], fields["owner_user_id"]),
+                ).fetchone()
             if not job:
                 raise ValueError("contactout_job_conflict")
             return job
