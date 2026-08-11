@@ -509,14 +509,7 @@ def make_handler(config, repo: Repository):
                     return
 
                 def run_contactout_jobs() -> dict[str, Any]:
-                    service = ContactOutQueueService(config, repo)
-                    runs = []
-                    for _ in range(max(1, min(50, int(payload.get("limit") or 1)))):
-                        run = service.run_next()
-                        if not run:
-                            break
-                        runs.append(vars(run))
-                    return {"runs": runs}
+                    return {"runs": ContactOutQueueService(config, repo).run_many(int(payload.get("limit") or 1))}
 
                 self._json_audit(
                     "run_contactout_enrichment",

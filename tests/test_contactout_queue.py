@@ -10,6 +10,8 @@ from sales_automation.contactout_queue import (
     ContactOutConflict,
     ContactOutQueueService,
     ContactOutRateLimited,
+    ContactOutRun,
+    contactout_bridge_configured,
 )
 from sales_automation.db import Repository
 
@@ -233,6 +235,17 @@ def test_zero_global_limit_fails_closed():
     assert adapter.calls == 0
 
 
+def test_run_many_stops_when_queue_is_empty():
+    service = ContactOutQueueService(config(), FakeRepo(), adapter=Adapter())
+    queued = iter([ContactOutRun(1, "succeeded"), ContactOutRun(2, "no_match"), None])
+    service.run_next = lambda: next(queued)
+
+    assert service.run_many(10) == [
+        {"job_id": 1, "status": "succeeded", "review_required": False, "error_code": None},
+        {"job_id": 2, "status": "no_match", "review_required": False, "error_code": None},
+    ]
+
+
 def test_bridge_uses_one_idempotent_request():
     http = FakeHttp()
     cfg = AppConfig(
@@ -253,6 +266,14 @@ def test_bridge_uses_one_idempotent_request():
     method, url, kwargs = http.calls[0]
     assert (method, url, kwargs["retries"]) == ("POST", "https://bridge.internal/enrich", 1)
     assert kwargs["headers"]["Idempotency-Key"] == "job-key"
+
+
+def test_bridge_configuration_requires_url_and_secret():
+    assert not contactout_bridge_configured(config())
+    assert contactout_bridge_configured(AppConfig(raw={
+        "apis": {"contactout_bridge_key": "secret"},
+        "contactout": {"bridge_url": "https://bridge.internal"},
+    }, root_dir=Path(".")))
 
 
 def test_bridge_maps_http_429_to_rate_limit():

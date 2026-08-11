@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .clients import SlackClient
 from .config import load_config
+from .contactout_queue import ContactOutQueueService, contactout_bridge_configured
 from .db import Database, Repository
 from .health import check_readiness
 from .logging_utils import log
@@ -52,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
 
     acquisition_run = sub.add_parser("acquisition-run", parents=[config_parent])
     acquisition_run.add_argument("--limit", type=int, default=10)
+
+    contactout_run = sub.add_parser("contactout-run", parents=[config_parent])
+    contactout_run.add_argument("--limit", type=int, default=10)
 
     mailbox_poll = sub.add_parser("mailbox-poll", parents=[config_parent])
     mailbox_poll.add_argument("--limit", type=int, default=100)
@@ -139,6 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         synced = service.sync_configured_plans()
         result = service.run_due(limit=args.limit)
         log("acquisition.completed", synced=synced, **result)
+    elif args.command == "contactout-run":
+        if not contactout_bridge_configured(config):
+            log("contactout.skipped", reason="bridge_unconfigured")
+        else:
+            runs = ContactOutQueueService(config, repo).run_many(args.limit)
+            log("contactout.completed", runs=runs, processed=len(runs))
     elif args.command == "mailbox-poll":
         stats = MailboxReplyService(config, repo).poll_once(args.limit)
         log("mailbox.poll", **stats)

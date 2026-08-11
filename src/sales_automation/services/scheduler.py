@@ -26,12 +26,8 @@ class SchedulerService:
                 return
             try:
                 acquisition = AcquisitionPlannerService(self.config, self.repo).run_due()
-                contactout = []
-                for _ in range(max(0, min(50, int(self.config.raw.get("contactout", {}).get("scheduler_limit") or 0)))):
-                    run = ContactOutQueueService(self.config, self.repo).run_next()
-                    if not run:
-                        break
-                    contactout.append(vars(run))
+                contactout_limit = int(self.config.raw.get("contactout", {}).get("scheduler_limit") or 0)
+                contactout = ContactOutQueueService(self.config, self.repo).run_many(contactout_limit) if contactout_limit > 0 else []
                 quota = QuotaService(self.config, self.repo)
                 EnrichmentService(self.config, self.repo).enrich(enrich_limit)
                 QueueService(self.repo).queue(queue_limit)

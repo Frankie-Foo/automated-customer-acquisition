@@ -33,6 +33,11 @@ class ContactOutConflict(RuntimeError):
     pass
 
 
+def contactout_bridge_configured(config: AppConfig) -> bool:
+    cfg = config.raw.get("contactout", {})
+    return bool(str(cfg.get("bridge_url") or "").strip() and str(config.apis.get("contactout_bridge_key") or "").strip())
+
+
 class ContactOutBridgeAdapter:
     """Calls an internal bridge that owns the authorized browser session."""
 
@@ -164,6 +169,15 @@ class ContactOutQueueService:
             self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "provider_error", consumed=True)
             return ContactOutRun(int(job["id"]), "failed", error_code="provider_error")
 
+    def run_many(self, limit: int) -> list[dict[str, Any]]:
+        runs = []
+        for _ in range(max(1, min(50, int(limit)))):
+            run = self.run_next()
+            if not run:
+                break
+            runs.append(vars(run))
+        return runs
+
 
 def _normalize_result(data: dict[str, Any]) -> dict[str, Any]:
     match_status = str(data.get("match_status") or data.get("status") or "matched").lower()
@@ -251,4 +265,5 @@ __all__ = [
     "ContactOutQueueService",
     "ContactOutRateLimited",
     "ContactOutRun",
+    "contactout_bridge_configured",
 ]
