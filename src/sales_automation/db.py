@@ -2442,6 +2442,15 @@ class Repository:
         status: str = "active",
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
+            previous_account = conn.execute(
+                """
+                SELECT id, assigned_user_id
+                FROM contactout_accounts
+                WHERE account_key = %s
+                FOR UPDATE
+                """,
+                (account_key,),
+            ).fetchone()
             account = conn.execute(
                 """
                 INSERT INTO contactout_accounts(
@@ -2467,16 +2476,25 @@ class Repository:
                     assigned_user_id, max(1, int(daily_limit)), authorized_by_user_id, status,
                 ),
             ).fetchone()
-            if status == "active":
+            assignment_changed = bool(
+                previous_account
+                and previous_account["assigned_user_id"] != account["assigned_user_id"]
+            )
+        # Keep account and job locks in separate transactions. Workers lock jobs
+        # before rechecking the account, so this avoids the inverse lock order.
+        if assignment_changed:
+            with self.db.connect() as conn:
                 stale_jobs = conn.execute(
                     """
-                    SELECT * FROM contactout_enrichment_jobs
-                    WHERE account_id = %s
-                      AND owner_user_id IS DISTINCT FROM %s
-                      AND status IN ('queued', 'running', 'retry_wait', 'blocked')
-                    FOR UPDATE
+                    SELECT job.*
+                    FROM contactout_enrichment_jobs job
+                    JOIN contactout_accounts account ON account.id = job.account_id
+                    WHERE job.account_id = %s
+                      AND job.owner_user_id IS DISTINCT FROM account.assigned_user_id
+                      AND job.status IN ('queued', 'running', 'retry_wait', 'blocked')
+                    FOR UPDATE OF job
                     """,
-                    (account["id"], account["assigned_user_id"]),
+                    (account["id"],),
                 ).fetchall()
                 for job in stale_jobs:
                     self._settle_contactout_quota(conn, job, consumed=bool(job.get("quota_reserved")))
@@ -2489,18 +2507,27 @@ class Repository:
                         """,
                         (job["id"],),
                     )
+        if status == "active":
+            with self.db.connect() as conn:
                 conn.execute(
                     """
                     UPDATE contactout_enrichment_jobs
                     SET status = 'retry_wait', attempts = 0, error_code = NULL,
                         next_attempt_at = NOW(), updated_at = NOW()
-                    WHERE account_id = %s AND status = 'blocked'
-                      AND owner_user_id = %s
-                      AND error_code IN ('challenge_required', 'reauth_required')
+                    FROM contacts, contactout_accounts
+                    WHERE contactout_enrichment_jobs.account_id = %s
+                      AND contactout_enrichment_jobs.status = 'blocked'
+                      AND contactout_enrichment_jobs.error_code IN ('challenge_required', 'reauth_required')
+                      AND contacts.id = contactout_enrichment_jobs.contact_id
+                      AND contacts.pool_type = 'private'
+                      AND contacts.owner_user_id = contactout_enrichment_jobs.owner_user_id
+                      AND contactout_accounts.id = contactout_enrichment_jobs.account_id
+                      AND contactout_accounts.status = 'active'
+                      AND contactout_accounts.assigned_user_id = contactout_enrichment_jobs.owner_user_id
                     """,
-                    (account["id"], account["assigned_user_id"]),
+                    (account["id"],),
                 )
-            return account
+        return account
 
     def enqueue_contactout_job(self, **fields: Any) -> dict[str, Any]:
         with self.db.connect() as conn:
@@ -2739,6 +2766,26 @@ class Repository:
                 (job_id, lease_token),
             ).fetchone()
             if not job:
+                return False
+            account = conn.execute(
+                """
+                SELECT id FROM contactout_accounts
+                WHERE id = %s AND status = 'active' AND assigned_user_id = %s
+                FOR UPDATE
+                """,
+                (job["account_id"], job["owner_user_id"]),
+            ).fetchone()
+            if not account:
+                self._settle_contactout_quota(conn, job, consumed=True)
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'account_reassigned', completed_at = NOW(),
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job_id, lease_token),
+                )
                 return False
             contact = conn.execute(
                 """
