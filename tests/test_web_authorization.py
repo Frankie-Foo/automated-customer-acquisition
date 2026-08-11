@@ -7,6 +7,8 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import pytest
+
 from sales_automation import web
 
 
@@ -53,6 +55,8 @@ def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
             "/api/webhook",
             "/api/admin/acquisition-plans",
             "/api/admin/acquisition-plans/run",
+            "/api/admin/contactout/accounts",
+            "/api/admin/contactout/run",
         ):
             req = urllib.request.Request(
                 base_url + path,
@@ -67,6 +71,25 @@ def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
                 assert json.loads(exc.read().decode("utf-8"))["error"] == "admin_required"
             else:
                 raise AssertionError(f"{path} should require admin")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_sales_user_cannot_view_global_resource_usage(monkeypatch):
+    monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
+    handler = web.make_handler(SimpleNamespace(raw={"app": {}}), FakeRepo())
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/admin/resource-usage",
+            headers={"Cookie": "salesbot_session=sales-token"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(req, timeout=5)
+        assert error.value.code == 403
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -89,6 +112,7 @@ def test_sales_user_must_claim_contact_before_ai_mutations(monkeypatch):
             "/api/lifecycle-activity",
             "/api/stage-agent",
             "/api/icp-feedback",
+            "/api/contactout/jobs",
         ):
             req = urllib.request.Request(
                 base_url + path,

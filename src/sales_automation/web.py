@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from .auth import clear_session_cookie, default_admin_credentials, parse_session_cookie, public_user, session_cookie
 from .clients import SlackClient
 from .config import load_config
+from .contactout_queue import ContactOutQueueService
 from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
@@ -238,6 +239,25 @@ def make_handler(config, repo: Repository):
                     return
                 self._json(repo.flywheel_summary)
                 return
+            if parsed.path == "/api/contactout/accounts":
+                self._json(lambda: {"accounts": repo.list_contactout_accounts(user=self._current_user())})
+                return
+            if parsed.path == "/api/contactout/jobs":
+                qs = parse_qs(parsed.query)
+                limit = int(qs.get("limit", ["100"])[0])
+                self._json(lambda: {"jobs": repo.list_contactout_jobs(user=self._current_user(), limit=limit)})
+                return
+            if parsed.path == "/api/admin/resource-usage":
+                admin = self._require_admin()
+                if not admin:
+                    return
+                self._json(lambda: {
+                    "contactout_accounts": repo.list_contactout_accounts(),
+                    "contactout_usage": repo.contactout_usage_today(),
+                    "contactout_jobs": repo.list_contactout_jobs(limit=200),
+                    "llm_usage": repo.llm_gateway_usage_today(),
+                })
+                return
             if parsed.path == "/api/admin/acquisition-plans":
                 admin = self._require_admin()
                 if not admin:
@@ -414,6 +434,79 @@ def make_handler(config, repo: Repository):
             if parsed.path.startswith("/webhooks/"):
                 pass
             elif parsed.path.startswith("/api/") and (not self._require_database() or not self._require_user()):
+                return
+            if parsed.path == "/api/contactout/jobs":
+                user = self._current_user()
+                contact_id = int(payload.get("contact_id") or 0)
+                if not self._require_private_contact_access(contact_id):
+                    return
+                self._json_audit(
+                    "enqueue_contactout_enrichment",
+                    lambda: {"job": ContactOutQueueService(config, repo).enqueue(
+                        contact_id,
+                        owner_user_id=int(user["id"]),
+                        account_id=int(payload.get("account_id") or 0),
+                    )},
+                    target_type="contact",
+                    target_id=contact_id,
+                    summary="Queue authorized ContactOut enrichment",
+                )
+                return
+            if parsed.path == "/api/admin/contactout/accounts":
+                admin = self._require_admin()
+                if not admin:
+                    return
+
+                def save_contactout_account() -> dict[str, Any]:
+                    assigned_user_id = int(payload.get("assigned_user_id") or 0) or None
+                    if assigned_user_id and not repo.get_active_user(assigned_user_id):
+                        raise ValueError("assigned_user_id must reference an active user")
+                    status = str(payload.get("status") or "active")
+                    if status not in {"active", "disabled", "reauth_required", "challenge_required"}:
+                        raise ValueError("invalid contactout account status")
+                    required = ("account_key", "display_name", "masked_identity", "credential_ref")
+                    if any(not str(payload.get(key) or "").strip() for key in required):
+                        raise ValueError("account_key, display_name, masked_identity and credential_ref are required")
+                    return {"account": repo.upsert_contactout_account(
+                        account_key=str(payload["account_key"]).strip(),
+                        display_name=str(payload["display_name"]).strip(),
+                        masked_identity=str(payload["masked_identity"]).strip(),
+                        credential_ref=str(payload["credential_ref"]).strip(),
+                        assigned_user_id=assigned_user_id,
+                        daily_limit=max(0, int(payload.get("daily_limit") or 0)),
+                        authorized_by_user_id=int(admin["id"]),
+                        status=status,
+                    )}
+
+                self._json_audit(
+                    "save_contactout_account",
+                    save_contactout_account,
+                    target_type="contactout_account",
+                    summary="Save authorized ContactOut account",
+                    metadata={"account_key": payload.get("account_key"), "assigned_user_id": payload.get("assigned_user_id")},
+                )
+                return
+            if parsed.path == "/api/admin/contactout/run":
+                admin = self._require_admin()
+                if not admin:
+                    return
+
+                def run_contactout_jobs() -> dict[str, Any]:
+                    service = ContactOutQueueService(config, repo)
+                    runs = []
+                    for _ in range(max(1, min(50, int(payload.get("limit") or 1)))):
+                        run = service.run_next()
+                        if not run:
+                            break
+                        runs.append(vars(run))
+                    return {"runs": runs}
+
+                self._json_audit(
+                    "run_contactout_enrichment",
+                    run_contactout_jobs,
+                    target_type="contactout_job",
+                    summary="Run authorized ContactOut enrichment queue",
+                )
                 return
             if parsed.path == "/api/migrate":
                 admin = self._require_admin()

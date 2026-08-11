@@ -117,6 +117,19 @@ name + website + title + country + industry -> LinkedIn identity evidence -> ver
 
 Default `sender.dry_run: true` prevents real email sends. Set it to `false` only after Resend domain verification and sender address setup are complete.
 
+## Low-token execution
+
+Routine scoring, deduplication, lifecycle rules, follow-up timing, and fallback email drafts run locally without an LLM. Set `llm.mode: high_value` to call DeepSeek/OpenAI only above the configured ICP threshold. Successful outputs are cached, and daily call/input/output budgets stop excess use.
+
+ContactOut enrichment uses a durable queue and an internal authorized-session bridge. The app stores only a `credential_ref`; passwords, cookies, browser profiles, and provider tokens stay in the bridge's OS credential store.
+
+```env
+CONTACTOUT_BRIDGE_URL=https://internal-contactout-bridge.example
+CONTACTOUT_BRIDGE_KEY=replace-with-bridge-service-key
+```
+
+The bridge contract is `POST /enrich` with bearer authentication. It receives `credential_ref` plus minimum contact identity fields and returns `status`, `match_confidence`, `emails[]`, and `phones[]`. `challenge_required` and `reauth_required` stop that account for manual recovery. Only use accounts and subscriptions your organization is authorized to operate; do not automate CAPTCHA or bypass provider limits.
+
 ## Database
 
 Migrations live in `migrations/`. Database credentials are read from `.env`; do not commit real secrets.

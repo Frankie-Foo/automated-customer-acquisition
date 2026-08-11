@@ -14,6 +14,15 @@ const emptyNewUser = {
   daily_send_limit: 200,
 };
 
+const emptyContactOutAccount = {
+  account_key: "",
+  display_name: "",
+  masked_identity: "",
+  credential_ref: "",
+  assigned_user_id: "",
+  daily_limit: 5,
+};
+
 export default function AdminConsolePortal() {
   const [target, setTarget] = useState(null);
 
@@ -35,7 +44,9 @@ function AdminConsole() {
   const [qualityData, setQualityData] = useState(null);
   const [acquisitionPlans, setAcquisitionPlans] = useState([]);
   const [flywheelData, setFlywheelData] = useState(null);
+  const [resourceUsage, setResourceUsage] = useState(null);
   const [newUser, setNewUser] = useState(emptyNewUser);
+  const [newContactOutAccount, setNewContactOutAccount] = useState(emptyContactOutAccount);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -57,8 +68,9 @@ function AdminConsole() {
         api("/api/outbound-quality"),
         api("/api/admin/acquisition-plans"),
         api("/api/flywheel"),
+        api("/api/admin/resource-usage"),
       ]);
-      const [userResult, senderResult, auditResult, runResult, ruleResult, qualityResult, planResult, flywheelResult] = results;
+      const [userResult, senderResult, auditResult, runResult, ruleResult, qualityResult, planResult, flywheelResult, resourceResult] = results;
       if (userResult.status === "fulfilled") setUsers(userResult.value.users || []);
       if (senderResult.status === "fulfilled") setSenders(senderResult.value.senders || []);
       if (auditResult.status === "fulfilled") setAuditLogs(auditResult.value.logs || []);
@@ -67,6 +79,7 @@ function AdminConsole() {
       if (qualityResult.status === "fulfilled") setQualityData(qualityResult.value || null);
       if (planResult.status === "fulfilled") setAcquisitionPlans(planResult.value.plans || []);
       if (flywheelResult.status === "fulfilled") setFlywheelData(flywheelResult.value || null);
+      if (resourceResult.status === "fulfilled") setResourceUsage(resourceResult.value || null);
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length) setError(failures.map((result) => result.reason?.message || "管理数据加载失败").join("；"));
     } catch (err) {
@@ -193,6 +206,38 @@ function AdminConsole() {
     }
   }
 
+  async function saveContactOutAccount() {
+    setError("");
+    setMessage("");
+    try {
+      await api("/api/admin/contactout/accounts", {
+        method: "POST",
+        body: JSON.stringify({
+          ...newContactOutAccount,
+          assigned_user_id: Number(newContactOutAccount.assigned_user_id || 0) || null,
+          daily_limit: Number(newContactOutAccount.daily_limit || 0),
+        }),
+      });
+      setNewContactOutAccount(emptyContactOutAccount);
+      setMessage("授权账户已保存");
+      await loadAdminData();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function runContactOutQueue() {
+    setError("");
+    setMessage("");
+    try {
+      const result = await api("/api/admin/contactout/run", { method: "POST", body: JSON.stringify({ limit: 10 }) });
+      setMessage(`已处理 ${result.runs?.length || 0} 条富化任务`);
+      await loadAdminData();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (!isAdmin) {
     return null;
   }
@@ -220,6 +265,7 @@ function AdminConsole() {
           ["users", "账号与配额"],
           ["senders", "发件账号"],
           ["automation", "获客任务"],
+          ["resources", "资源预算"],
           ["acquisition", "获客与飞轮"],
           ["quality", "质量与实验"],
           ["assignment", "地区分配"],
@@ -287,6 +333,15 @@ function AdminConsole() {
           <div className="card-title-row"><h3>后台获客任务</h3><button type="button" onClick={loadAdminData}>刷新任务</button></div>
           <AutomationRunTable runs={automationRuns} onAction={updateAutomationRun} />
         </section>}
+        {activeSection === "resources" && <ResourceBudgetPanel
+          data={resourceUsage}
+          users={users}
+          form={newContactOutAccount}
+          onChange={setNewContactOutAccount}
+          onSave={saveContactOutAccount}
+          onRun={runContactOutQueue}
+          onRefresh={loadAdminData}
+        />}
         {activeSection === "acquisition" && <AcquisitionControl users={users} plans={acquisitionPlans} flywheel={flywheelData} onRefresh={loadAdminData} />}
         {activeSection === "quality" && <QualityExperimentPanel data={qualityData} onRefresh={loadAdminData} />}
         {activeSection === "assignment" && <section className="admin-card automation-admin-card">
@@ -491,6 +546,48 @@ function calibrationRecommendation(value) {
 
 function experimentStatusLabel(status) {
   return { draft: "草稿", active: "进行中", completed: "已完成", cancelled: "已取消" }[status] || status;
+}
+
+function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRefresh }) {
+  const accounts = data?.contactout_accounts || [];
+  const usage = data?.contactout_usage || [];
+  const jobs = data?.contactout_jobs || [];
+  const llm = data?.llm_usage || [];
+  const globalUsage = usage.find((item) => item.scope_key === "global") || {};
+  const accountUsage = Object.fromEntries(usage.filter((item) => item.scope_key?.startsWith("account:")).map((item) => [item.scope_key.split(":")[1], item]));
+  const llmCalls = llm.reduce((sum, item) => sum + Number(item.calls || 0), 0);
+
+  return <section className="admin-card automation-admin-card">
+    <div className="card-title-row">
+      <div><h3>资源预算</h3><p className="muted">无 AI 也能运行；只给高价值客户调用模型。ContactOut 仅使用已授权账户。</p></div>
+      <div className="row-actions"><button type="button" onClick={onRefresh}>刷新</button><button type="button" className="primary" onClick={onRun}>处理 10 条队列</button></div>
+    </div>
+    <div className="admin-summary">
+      <SummaryCard label="今日 AI 调用" value={llmCalls} hint={`${llm.reduce((sum, item) => sum + Number(item.input_chars || 0), 0)} 输入字符`} />
+      <SummaryCard label="ContactOut 已用" value={globalUsage.used_units || 0} hint={`预留 ${globalUsage.reserved_units || 0} · 拒绝 ${globalUsage.denied_count || 0}`} />
+      <SummaryCard label="授权账户" value={accounts.filter((item) => item.status === "active").length} hint={`共 ${accounts.length} 个`} />
+      <SummaryCard label="待处理任务" value={jobs.filter((item) => ["queued", "retry_wait"].includes(item.status)).length} hint={`需处理异常 ${jobs.filter((item) => ["blocked", "failed"].includes(item.status)).length}`} />
+    </div>
+    <div className="form-grid compact">
+      <label>账户标识<input value={form.account_key} onChange={(event) => onChange({ ...form, account_key: event.target.value })} placeholder="contactout-ivan" /></label>
+      <label>显示名称<input value={form.display_name} onChange={(event) => onChange({ ...form, display_name: event.target.value })} placeholder="Ivan ContactOut" /></label>
+      <label>脱敏身份<input value={form.masked_identity} onChange={(event) => onChange({ ...form, masked_identity: event.target.value })} placeholder="iv***@example.com" /></label>
+      <label>凭据引用<input value={form.credential_ref} onChange={(event) => onChange({ ...form, credential_ref: event.target.value })} placeholder="contactout/ivan" /></label>
+      <label>分配销售<select value={form.assigned_user_id} onChange={(event) => onChange({ ...form, assigned_user_id: event.target.value })}><option value="">未分配</option>{users.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.display_name || item.username}</option>)}</select></label>
+      <label>每日额度<input type="number" min="0" value={form.daily_limit} onChange={(event) => onChange({ ...form, daily_limit: event.target.value })} /></label>
+    </div>
+    <div className="panel-actions"><button type="button" onClick={onSave}>保存授权账户</button></div>
+    <div className="admin-table">
+      <table className="mini-table admin-data-table">
+        <thead><tr><th>账户</th><th>销售</th><th>今日使用</th><th>每日额度</th><th>状态</th><th>最近使用</th></tr></thead>
+        <tbody>{accounts.length ? accounts.map((account) => {
+          const accountDaily = accountUsage[String(account.id)] || {};
+          const owner = users.find((item) => Number(item.id) === Number(account.assigned_user_id));
+          return <tr key={account.id}><td><div className="admin-identity"><strong>{account.display_name}</strong><span>{account.masked_identity}</span></div></td><td>{owner?.display_name || owner?.username || "未分配"}</td><td>{accountDaily.used_units || 0}<span className="muted"> / {account.daily_limit}</span></td><td>{account.daily_limit}</td><td><span className={`status-pill ${account.status === "active" ? "is-active" : "is-paused"}`}>{account.status}</span></td><td>{formatDate(account.last_used_at)}</td></tr>;
+        }) : <tr><td colSpan="6" className="empty-state">暂无授权账户</td></tr>}</tbody>
+      </table>
+    </div>
+  </section>;
 }
 
 function SummaryCard({ label, value, hint }) {

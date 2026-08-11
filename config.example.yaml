@@ -36,6 +36,7 @@ apis:
   google_cse_id: ${GOOGLE_CSE_ID}
   tavily_key: ${TAVILY_API_KEY}
   brave_search_key: ${BRAVE_SEARCH_API_KEY}
+  contactout_bridge_key: ${CONTACTOUT_BRIDGE_KEY}
 
 llm:
   provider: deepseek
@@ -48,6 +49,11 @@ llm:
     daily_input_chars: 200000
     daily_output_chars: 100000
     cache_ttl_seconds: 86400
+
+contactout:
+  bridge_url: ${CONTACTOUT_BRIDGE_URL}
+  global_daily_limit: 50
+  scheduler_limit: 10
 
 sender:
   name: VERTU Global

@@ -2364,6 +2364,378 @@ class Repository:
             ).fetchone()
             return row is not None
 
+    def get_contactout_account(self, account_id: int, *, owner_user_id: int | None = None) -> dict[str, Any] | None:
+        clauses = ["id = %s"]
+        params: list[Any] = [account_id]
+        if owner_user_id is not None:
+            clauses.append("(assigned_user_id IS NULL OR assigned_user_id = %s)")
+            params.append(owner_user_id)
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"SELECT * FROM contactout_accounts WHERE {' AND '.join(clauses)}",
+                tuple(params),
+            ).fetchone()
+
+    def list_contactout_accounts(self, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("assigned_user_id = %s")
+            params.append(int(user["id"]))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, account_key, display_name, masked_identity,
+                       assigned_user_id, status, daily_limit, cooldown_until,
+                       authorized_at, last_used_at, created_at, updated_at
+                FROM contactout_accounts
+                {where}
+                ORDER BY display_name, id
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def contactout_usage_today(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT scope_key, reserved_units, used_units, denied_count, updated_at
+                FROM provider_account_daily_usage
+                WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                ORDER BY scope_key
+                """
+            ).fetchall()
+
+    def llm_gateway_usage_today(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT provider, model, calls, input_chars, output_chars
+                FROM llm_gateway_daily_usage
+                WHERE usage_date = CURRENT_DATE
+                ORDER BY provider, model
+                """
+            ).fetchall()
+
+    def upsert_contactout_account(
+        self,
+        *,
+        account_key: str,
+        display_name: str,
+        masked_identity: str,
+        credential_ref: str,
+        assigned_user_id: int | None,
+        daily_limit: int,
+        authorized_by_user_id: int | None,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO contactout_accounts(
+                    account_key, display_name, masked_identity, credential_ref,
+                    assigned_user_id, daily_limit, authorized_by_user_id, authorized_at, status
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                ON CONFLICT (account_key) DO UPDATE
+                SET display_name = EXCLUDED.display_name,
+                    masked_identity = EXCLUDED.masked_identity,
+                    credential_ref = EXCLUDED.credential_ref,
+                    assigned_user_id = EXCLUDED.assigned_user_id,
+                    daily_limit = EXCLUDED.daily_limit,
+                    status = EXCLUDED.status,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (
+                    account_key, display_name, masked_identity, credential_ref,
+                    assigned_user_id, max(0, int(daily_limit)), authorized_by_user_id, status,
+                ),
+            ).fetchone()
+
+    def enqueue_contactout_job(self, **fields: Any) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                INSERT INTO contactout_enrichment_jobs(
+                    idempotency_key, contact_id, owner_user_id, account_id, operation, input_hash
+                )
+                VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
+                        %(account_id)s, %(operation)s, %(input_hash)s)
+                ON CONFLICT (idempotency_key) DO UPDATE
+                SET updated_at = contactout_enrichment_jobs.updated_at
+                RETURNING *
+                """,
+                fields,
+            ).fetchone()
+
+    def list_contactout_jobs(self, *, user: dict[str, Any] | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("job.owner_user_id = %s")
+            params.append(int(user["id"]))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(500, int(limit))))
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT job.*, account.display_name AS account_name, account.masked_identity,
+                       result.match_status, result.match_confidence, result.review_required
+                FROM contactout_enrichment_jobs job
+                JOIN contactout_accounts account ON account.id = job.account_id
+                LEFT JOIN contactout_enrichment_results result ON result.job_id = job.id
+                {where}
+                ORDER BY job.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def block_expired_contactout_jobs(self) -> int:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                WITH expired AS (
+                  UPDATE contactout_enrichment_jobs
+                  SET status = 'blocked', error_code = 'lease_expired_unknown_charge',
+                      lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                  WHERE status = 'running' AND lease_expires_at < NOW()
+                  RETURNING id
+                )
+                SELECT COUNT(*) AS count FROM expired
+                """
+            ).fetchone()
+            return int(row["count"] or 0)
+
+    def claim_contactout_job(self, *, lease_seconds: int = 300) -> dict[str, Any] | None:
+        token = secrets.token_urlsafe(24)
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE contactout_enrichment_jobs
+                SET status = 'running', attempts = attempts + 1, lease_token = %s,
+                    lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    started_at = COALESCE(started_at, NOW()), updated_at = NOW(), error_code = NULL
+                WHERE id = (
+                  SELECT job.id FROM contactout_enrichment_jobs job
+                  JOIN contactout_accounts account ON account.id = job.account_id
+                  WHERE job.status IN ('queued', 'retry_wait')
+                    AND job.next_attempt_at <= NOW() AND job.attempts < job.max_attempts
+                    AND account.status = 'active'
+                    AND (account.cooldown_until IS NULL OR account.cooldown_until <= NOW())
+                  ORDER BY job.priority DESC, job.created_at
+                  FOR UPDATE OF job SKIP LOCKED
+                  LIMIT 1
+                )
+                RETURNING *
+                """,
+                (token, max(30, int(lease_seconds))),
+            ).fetchone()
+
+    def reserve_contactout_job_quota(self, job_id: int, *, global_limit: int) -> bool:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT job.account_id, job.quota_units, account.daily_limit, account.status, account.cooldown_until
+                FROM contactout_enrichment_jobs job
+                JOIN contactout_accounts account ON account.id = job.account_id
+                WHERE job.id = %s AND job.status = 'running'
+                FOR UPDATE OF job, account
+                """,
+                (job_id,),
+            ).fetchone()
+            if not job or job["status"] != "active" or (job["cooldown_until"] and job["cooldown_until"] > datetime.now(UTC)):
+                return False
+            account_scope = f"account:{job['account_id']}"
+            scopes = [("global", max(0, int(global_limit))), (account_scope, int(job["daily_limit"]))]
+            for scope, _ in scopes:
+                conn.execute(
+                    """
+                    INSERT INTO provider_account_daily_usage(provider, scope_key, usage_date)
+                    VALUES ('contactout', %s, CURRENT_DATE)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (scope,),
+                )
+            rows = {
+                row["scope_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT * FROM provider_account_daily_usage
+                    WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                      AND scope_key IN (%s, %s)
+                    ORDER BY scope_key
+                    FOR UPDATE
+                    """,
+                    ("global", account_scope),
+                ).fetchall()
+            }
+            units = int(job["quota_units"])
+            allowed = all(limit <= 0 or int(rows[scope]["reserved_units"]) + int(rows[scope]["used_units"]) + units <= limit for scope, limit in scopes)
+            if not allowed:
+                conn.execute(
+                    """
+                    UPDATE provider_account_daily_usage
+                    SET denied_count = denied_count + 1, updated_at = NOW()
+                    WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                      AND scope_key IN (%s, %s)
+                    """,
+                    ("global", account_scope),
+                )
+                return False
+            conn.execute(
+                """
+                UPDATE provider_account_daily_usage
+                SET reserved_units = reserved_units + %s, updated_at = NOW()
+                WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                  AND scope_key IN (%s, %s)
+                """,
+                (units, "global", account_scope),
+            )
+            return True
+
+    def complete_contactout_job(self, job_id: int, *, status: str, result: dict[str, Any]) -> None:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM contactout_enrichment_jobs WHERE id = %s AND status = 'running' FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if not job:
+                return
+            contact = conn.execute("SELECT * FROM contacts WHERE id = %s FOR UPDATE", (job["contact_id"],)).fetchone()
+            email_candidates = _merge_contact_candidates(contact.get("email_candidates") or [], result.get("email_candidates") or [], "email")
+            phone_candidates = _merge_contact_candidates(contact.get("phone_candidates") or [], result.get("phone_candidates") or [], "phone")
+            selected = None if result.get("review_required") else next(
+                (
+                    item for item in email_candidates
+                    if item.get("status") == "valid" and item.get("category") == "personal_work"
+                ),
+                None,
+            )
+            conn.execute(
+                """
+                UPDATE contacts
+                SET email_candidates = %s::jsonb,
+                    phone_candidates = %s::jsonb,
+                    email = COALESCE(%s, email),
+                    email_status = CASE WHEN %s::text IS NOT NULL THEN 'valid' ELSE email_status END,
+                    email_source = CASE WHEN %s::text IS NOT NULL THEN 'contactout' ELSE email_source END,
+                    email_confidence = COALESCE(%s, email_confidence),
+                    status = CASE WHEN %s::text IS NOT NULL THEN 'enriched' ELSE status END,
+                    enriched_at = CASE WHEN %s::text IS NOT NULL THEN NOW() ELSE enriched_at END
+                WHERE id = %s
+                """,
+                (
+                    json.dumps(email_candidates), json.dumps(phone_candidates),
+                    selected.get("email") if selected else None,
+                    selected.get("email") if selected else None,
+                    selected.get("email") if selected else None,
+                    selected.get("confidence") if selected else None,
+                    selected.get("email") if selected else None,
+                    selected.get("email") if selected else None,
+                    job["contact_id"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO contactout_enrichment_results(
+                    job_id, contact_id, match_status, match_confidence, review_required,
+                    profile_url, email_candidates, phone_candidates
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                ON CONFLICT (job_id) DO NOTHING
+                """,
+                (
+                    job_id, job["contact_id"], result.get("match_status") or status,
+                    int(result.get("match_confidence") or 0), bool(result.get("review_required")),
+                    result.get("profile_url"), json.dumps(result.get("email_candidates") or []),
+                    json.dumps(result.get("phone_candidates") or []),
+                ),
+            )
+            self._settle_contactout_quota(conn, job, consumed=True)
+            conn.execute(
+                """
+                UPDATE contactout_enrichment_jobs
+                SET status = %s, completed_at = NOW(), updated_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, error_code = NULL
+                WHERE id = %s
+                """,
+                (status, job_id),
+            )
+            conn.execute("UPDATE contactout_accounts SET last_used_at = NOW(), updated_at = NOW() WHERE id = %s", (job["account_id"],))
+
+    def retry_contactout_job(self, job_id: int, error_code: str, *, retry_after_seconds: int) -> None:
+        with self.db.connect() as conn:
+            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            if not job:
+                return
+            self._settle_contactout_quota(conn, job, consumed=False)
+            conn.execute(
+                """
+                UPDATE contactout_enrichment_jobs
+                SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'retry_wait' END,
+                    next_attempt_at = NOW() + (%s * INTERVAL '1 second'), error_code = %s,
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (max(60, int(retry_after_seconds)), error_code, job_id),
+            )
+            if error_code == "rate_limited":
+                conn.execute(
+                    "UPDATE contactout_accounts SET cooldown_until = NOW() + (%s * INTERVAL '1 second'), updated_at = NOW() WHERE id = %s",
+                    (max(60, int(retry_after_seconds)), job["account_id"]),
+                )
+
+    def block_contactout_job(self, job_id: int, error_code: str) -> None:
+        with self.db.connect() as conn:
+            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            if not job:
+                return
+            self._settle_contactout_quota(conn, job, consumed=False)
+            conn.execute(
+                "UPDATE contactout_enrichment_jobs SET status = 'blocked', error_code = %s, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = %s",
+                (error_code, job_id),
+            )
+            if error_code in {"challenge_required", "reauth_required"}:
+                conn.execute(
+                    "UPDATE contactout_accounts SET status = %s, updated_at = NOW() WHERE id = %s",
+                    (error_code, job["account_id"]),
+                )
+
+    def fail_contactout_job(self, job_id: int, error_code: str, *, consumed: bool) -> None:
+        with self.db.connect() as conn:
+            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            if not job:
+                return
+            self._settle_contactout_quota(conn, job, consumed=consumed)
+            conn.execute(
+                """
+                UPDATE contactout_enrichment_jobs
+                SET status = 'failed', error_code = %s, completed_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (error_code, job_id),
+            )
+
+    @staticmethod
+    def _settle_contactout_quota(conn: Any, job: dict[str, Any], *, consumed: bool) -> None:
+        account_scope = f"account:{job['account_id']}"
+        units = int(job.get("quota_units") or 1)
+        conn.execute(
+            """
+            UPDATE provider_account_daily_usage
+            SET reserved_units = GREATEST(0, reserved_units - %s),
+                used_units = used_units + %s,
+                updated_at = NOW()
+            WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+              AND scope_key IN (%s, %s)
+            """,
+            (units, units if consumed else 0, "global", account_scope),
+        )
+
     def list_for_social_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
@@ -4762,6 +5134,24 @@ class Repository:
         writer.writeheader()
         writer.writerows(rows)
         return buffer.getvalue()
+
+
+def _merge_contact_candidates(existing: list[dict[str, Any]], incoming: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    status_rank = {"valid": 5, "accept_all": 4, "risky": 3, "unknown": 2, "unverified": 1}
+    merged: dict[str, dict[str, Any]] = {}
+    for item in [*existing, *incoming]:
+        value = str(item.get(key) or "").strip().lower()
+        if not value:
+            continue
+        current = merged.get(value)
+        better = not current or (
+            status_rank.get(str(item.get("status") or ""), 0), int(item.get("confidence") or 0)
+        ) > (
+            status_rank.get(str(current.get("status") or ""), 0), int(current.get("confidence") or 0)
+        )
+        if better:
+            merged[value] = {**(current or {}), **item}
+    return list(merged.values())
 
 
 def _contact_defaults(contact: dict[str, Any]) -> dict[str, Any]:

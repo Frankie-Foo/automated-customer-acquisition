@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..config import AppConfig
+from ..contactout_queue import ContactOutQueueService
 from ..db import Repository
 from ..logging_utils import log
 from ..quotas import QuotaService
@@ -25,6 +26,12 @@ class SchedulerService:
                 return
             try:
                 acquisition = AcquisitionPlannerService(self.config, self.repo).run_due()
+                contactout = []
+                for _ in range(max(0, min(50, int(self.config.raw.get("contactout", {}).get("scheduler_limit") or 0)))):
+                    run = ContactOutQueueService(self.config, self.repo).run_next()
+                    if not run:
+                        break
+                    contactout.append(vars(run))
                 quota = QuotaService(self.config, self.repo)
                 EnrichmentService(self.config, self.repo).enrich(enrich_limit)
                 QueueService(self.repo).queue(queue_limit)
@@ -40,7 +47,7 @@ class SchedulerService:
                 except Exception as exc:
                     flywheel = {"status": "failed", "error": str(exc)[:500]}
                     log("flywheel.failed", error=str(exc))
-                log("scheduler.completed", acquisition=acquisition, sent=sent, waiting=closed["waiting"], abandoned=closed["abandoned"], recycled=recycled, tasks=tasks, flywheel=flywheel)
+                log("scheduler.completed", acquisition=acquisition, contactout=contactout, sent=sent, waiting=closed["waiting"], abandoned=closed["abandoned"], recycled=recycled, tasks=tasks, flywheel=flywheel)
             finally:
                 conn.execute("SELECT pg_advisory_unlock(20260603)")
 

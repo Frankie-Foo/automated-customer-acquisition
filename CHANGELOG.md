@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-11 - Budgeted AI and authorized contact enrichment
+
+- Route runtime AI generation through one cache and daily-budget gateway; `off`, `high_value`, and `all` modes keep deterministic fallbacks available without model calls.
+- Add durable ContactOut enrichment jobs with fixed authorized accounts, per-account/global daily limits, idempotency, retry/cooldown, audit logs, and fail-closed challenge handling.
+- Promote only exact, high-confidence `personal_work + valid` results; uncertain matches remain review candidates.
+- Add admin resource monitoring for AI use, ContactOut use, account health, and queued or blocked work.
+- Run bounded ContactOut work from the existing scheduler without storing passwords, cookies, or tokens in PostgreSQL.
+
 ## 2026-08-10 - Production acquisition control and sales workflow UX
 
 - Add a shared provider-budget gateway so direct sourcing, LinkedIn public search, and enrichment respect configured daily credit limits before paid API calls.
