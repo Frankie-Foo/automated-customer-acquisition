@@ -2513,27 +2513,33 @@ class Repository:
         with self.db.connect() as conn:
             stale_jobs = conn.execute(
                 """
-                SELECT job.*, account.status AS account_status,
-                       account.assigned_user_id AS current_assigned_user_id
-                FROM contactout_enrichment_jobs job
-                JOIN contactout_accounts account ON account.id = job.account_id
-                WHERE job.account_id = %s
-                  AND (
-                      account.status <> 'active'
-                      OR job.owner_user_id IS DISTINCT FROM account.assigned_user_id
-                  )
-                  AND job.status IN ('queued', 'running', 'retry_wait', 'blocked')
-                FOR UPDATE OF job
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE account_id = %s
+                  AND status IN ('queued', 'running', 'retry_wait', 'blocked')
+                FOR UPDATE
                 """,
                 (account_id,),
             ).fetchall()
+            account = conn.execute(
+                """
+                SELECT status, assigned_user_id
+                FROM contactout_accounts
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (account_id,),
+            ).fetchone()
+            if not account:
+                return
             for job in stale_jobs:
+                if account["status"] == "active" and job["owner_user_id"] == account["assigned_user_id"]:
+                    continue
                 self._settle_contactout_quota(conn, job, consumed=bool(job.get("quota_reserved")))
                 error_code = "account_reassigned"
-                if job["owner_user_id"] == job["current_assigned_user_id"]:
+                if job["owner_user_id"] == account["assigned_user_id"]:
                     error_code = (
-                        job["account_status"]
-                        if job["account_status"] in {"challenge_required", "reauth_required"}
+                        account["status"]
+                        if account["status"] in {"challenge_required", "reauth_required"}
                         else "account_unavailable"
                     )
                 conn.execute(

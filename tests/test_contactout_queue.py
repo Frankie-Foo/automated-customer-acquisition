@@ -355,3 +355,16 @@ def test_provider_challenge_fences_other_jobs_after_account_update():
     repo.block_contactout_job(11, "lease", "challenge_required")
 
     assert fenced == [3]
+
+
+def test_fence_rechecks_account_after_locking_jobs():
+    repo = Repository(_AccountDb([
+        [{"id": 11, "owner_user_id": 2, "quota_reserved": True}],
+        [{"status": "active", "assigned_user_id": 2}],
+    ]))
+    settled = []
+    repo._settle_contactout_quota = lambda *_args, **_kwargs: settled.append(True)
+
+    repo._fence_contactout_account_jobs(3)
+
+    assert settled == []
