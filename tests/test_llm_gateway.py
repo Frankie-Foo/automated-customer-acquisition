@@ -9,11 +9,11 @@ class Repo:
         self.cache = {}
         self.reservations = []
 
-    def get_llm_gateway_cache(self, key):
-        return self.cache.get(key)
+    def get_llm_gateway_cache(self, key, owner_user_id):
+        return self.cache.get((owner_user_id, key))
 
-    def store_llm_gateway_cache(self, key, provider, model, operation, response, ttl_seconds):
-        self.cache[key] = response
+    def store_llm_gateway_cache(self, key, owner_user_id, provider, model, operation, response, ttl_seconds):
+        self.cache[(owner_user_id, key)] = response
 
     def reserve_llm_gateway_budget(self, *args):
         self.reservations.append(args)
@@ -53,9 +53,10 @@ def complete(gateway, *, score=80):
     return gateway.complete(
         operation="draft",
         messages=[{"role": "user", "content": "private prompt"}],
-        contact={"lead_score": score},
+        contact={"lead_score": score, "owner_user_id": 7},
         max_tokens=20,
         temperature=0.2,
+        validate=lambda value: value,
     )
 
 
@@ -80,7 +81,7 @@ def test_success_is_cached_without_second_budget_or_http_call():
     assert len(repo.reservations) == 1
     assert len(http.calls) == 1
     assert list(repo.cache.values()) == ["generated"]
-    assert "private prompt" not in next(iter(repo.cache))
+    assert "private prompt" not in next(iter(repo.cache))[1]
 
 
 def test_missing_key_or_exhausted_budget_returns_fallback_signal_without_call():
@@ -105,3 +106,29 @@ def test_openai_uses_responses_api_default_base_url():
 
     assert complete(gateway) == "openai result"
     assert http.calls[0][0][1] == "https://api.openai.com/v1/responses"
+
+
+def test_cache_is_scoped_by_owner_and_invalid_output_is_not_cached():
+    repo = Repo()
+    http = Http()
+    gateway = LLMGateway(config(mode="all"), repo, http=http)
+    args = {
+        "operation": "draft",
+        "messages": [{"role": "user", "content": "same prompt"}],
+        "max_tokens": 20,
+        "temperature": 0.2,
+        "validate": lambda value: value if value == "generated" else None,
+    }
+
+    assert gateway.complete(contact={"owner_user_id": 1}, **args) == "generated"
+    assert gateway.complete(contact={"owner_user_id": 2}, **args) == "generated"
+    assert len(http.calls) == 2
+    assert len(repo.cache) == 2
+
+    invalid_repo = Repo()
+    invalid_http = Http({"choices": [{"message": {"content": "bad"}}]})
+    assert LLMGateway(config(mode="all"), invalid_repo, http=invalid_http).complete(
+        contact={"owner_user_id": 1},
+        **{**args, "validate": lambda _value: None},
+    ) is None
+    assert invalid_repo.cache == {}

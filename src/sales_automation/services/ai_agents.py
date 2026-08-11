@@ -69,6 +69,7 @@ def _profile_insights_via_llm(gateway: LLMGateway, prompt: str, contact: dict[st
         ],
         max_tokens=820,
         temperature=0.2,
+        validate=_validated_json_text,
     )
     if not text:
         return None
@@ -201,6 +202,7 @@ def _stage_analysis_via_llm(
         ],
         max_tokens=720,
         temperature=0.2,
+        validate=_validated_json_text,
     )
     if not text:
         return None
@@ -303,6 +305,18 @@ def _default_activity_type(stage: str) -> str:
         "agency_agreement": "agreement_review",
         "store_creation": "store_plan",
     }.get(stage, "note")
+
+
+def _validated_json_text(text: str) -> str | None:
+    value = str(text or "").strip()
+    if value.startswith("```"):
+        value = value.strip("`")
+        if value.lower().startswith("json"):
+            value = value[4:].strip()
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        return None
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 __all__ = ["ProfileAgentService", "StageAgentService"]

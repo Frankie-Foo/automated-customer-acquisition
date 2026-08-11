@@ -366,6 +366,7 @@ class PersonalizedEmailService:
             ],
             max_tokens=420,
             temperature=0.35,
+            validate=_validated_draft_text,
         )
         if not text:
             return fallback
@@ -611,6 +612,7 @@ def _ai_opener(gateway: LLMGateway, contact: dict[str, Any]) -> str:
         ],
         max_tokens=60,
         temperature=0.4,
+        validate=_validated_opener_text,
     )
     candidate = " ".join(str(text or "").split())[:500]
     return candidate if candidate and "{" not in candidate and "[" not in candidate else fallback
@@ -619,6 +621,29 @@ def _ai_opener(gateway: LLMGateway, contact: dict[str, Any]) -> str:
 def _reply_to_email(user: dict[str, Any] | None) -> str | None:
     value = str((user or {}).get("reply_to_email") or "").strip()
     if "@" not in value or " " in value:
+        return None
+    return value
+
+
+def _validated_draft_text(text: str) -> str | None:
+    value = str(text or "").strip()
+    if value.startswith("```"):
+        value = value.strip("`")
+        if value.lower().startswith("json"):
+            value = value[4:].strip()
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        return None
+    subject = str(parsed.get("subject") or "").strip()[:160]
+    body = str(parsed.get("body") or "").strip()[:3000]
+    if not subject or not body or contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
+        return None
+    return json.dumps({"subject": subject, "body": body}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _validated_opener_text(text: str) -> str | None:
+    value = " ".join(str(text or "").split())[:500]
+    if not value or "{" in value or "[" in value or contains_internal_outreach_data(value):
         return None
     return value
 

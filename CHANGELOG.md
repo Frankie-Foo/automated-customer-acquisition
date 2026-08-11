@@ -7,6 +7,7 @@
 - Promote only exact, high-confidence `personal_work + valid` results; uncertain matches remain review candidates.
 - Add admin resource monitoring for AI use, ContactOut use, account health, and queued or blocked work.
 - Run bounded ContactOut work from the existing scheduler without storing passwords, cookies, or tokens in PostgreSQL.
+- Isolate cached AI output by owner with PostgreSQL RLS and cache only validated, normalized responses.
 
 ## 2026-08-10 - Production acquisition control and sales workflow UX
 

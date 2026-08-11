@@ -2301,17 +2301,24 @@ class Repository:
                 (provider, operation, lookup_key, status, json.dumps(response), max(1, int(ttl_seconds))),
             )
 
-    def get_llm_gateway_cache(self, cache_key: str) -> str | None:
+    def get_llm_gateway_cache(self, cache_key: str, owner_user_id: int | None) -> str | None:
         with self.db.connect() as conn:
             row = conn.execute(
-                "SELECT response FROM llm_gateway_cache WHERE cache_key = %s AND expires_at > NOW()",
-                (cache_key,),
+                """
+                SELECT response
+                FROM llm_gateway_cache
+                WHERE cache_key = %s
+                  AND owner_user_id IS NOT DISTINCT FROM %s
+                  AND expires_at > NOW()
+                """,
+                (cache_key, owner_user_id),
             ).fetchone()
             return str(row["response"]) if row else None
 
     def store_llm_gateway_cache(
         self,
         cache_key: str,
+        owner_user_id: int | None,
         provider: str,
         model: str,
         operation: str,
@@ -2321,12 +2328,15 @@ class Repository:
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO llm_gateway_cache(cache_key, provider, model, operation, response, expires_at)
-                VALUES (%s, %s, %s, %s, %s, NOW() + (%s * INTERVAL '1 second'))
+                INSERT INTO llm_gateway_cache(cache_key, owner_user_id, provider, model, operation, response, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW() + (%s * INTERVAL '1 second'))
                 ON CONFLICT (cache_key) DO UPDATE
-                SET response = EXCLUDED.response, expires_at = EXCLUDED.expires_at, updated_at = NOW()
+                SET response = EXCLUDED.response,
+                    expires_at = EXCLUDED.expires_at,
+                    updated_at = NOW()
+                WHERE llm_gateway_cache.owner_user_id IS NOT DISTINCT FROM EXCLUDED.owner_user_id
                 """,
-                (cache_key, provider, model, operation, response, max(1, int(ttl_seconds))),
+                (cache_key, owner_user_id, provider, model, operation, response, max(1, int(ttl_seconds))),
             )
 
     def reserve_llm_gateway_budget(

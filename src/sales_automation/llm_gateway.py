@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 from .config import AppConfig
@@ -16,7 +17,6 @@ class LLMGateway:
         self.config = config
         self.repo = repo
         self.http = http or HttpClient()
-        self._memory_cache: dict[str, str] = {}
 
     def complete(
         self,
@@ -26,6 +26,7 @@ class LLMGateway:
         contact: dict[str, Any] | None = None,
         max_tokens: int,
         temperature: float,
+        validate: Callable[[str], str | None],
     ) -> str | None:
         settings = self._settings()
         provider = str(settings["provider"])
@@ -34,8 +35,22 @@ class LLMGateway:
         if not self._allowed(settings, contact):
             self._log(provider, model, calls=0, input_chars=0, output_chars=0, cache_hit=False)
             return None
-        cache_key = self.cache_key(operation=operation, provider=provider, model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
-        cached = self._cached(cache_key)
+        owner_user_id = _owner_user_id(contact)
+        cache_key = self.cache_key(
+            operation=operation,
+            provider=provider,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            owner_user_id=owner_user_id,
+            cache_version=str(settings["cache_version"]),
+        )
+        try:
+            cached = self._cached(cache_key, owner_user_id)
+        except Exception as exc:
+            log("llm.gateway_cache_failed", operation=operation, error=type(exc).__name__)
+            return None
         if cached is not None:
             self._log(provider, model, calls=0, input_chars=0, output_chars=0, cache_hit=True)
             return cached
@@ -43,18 +58,27 @@ class LLMGateway:
         if not api_key:
             self._log(provider, model, calls=0, input_chars=0, output_chars=0, cache_hit=False)
             return None
-        if not self._reserve(provider, model, input_chars, max_tokens * 4, settings):
+        try:
+            allowed = self._reserve(provider, model, input_chars, max_tokens * 4, settings)
+        except Exception as exc:
+            log("llm.gateway_budget_failed", operation=operation, error=type(exc).__name__)
+            return None
+        if not allowed:
             self._log(provider, model, calls=0, input_chars=0, output_chars=0, cache_hit=False)
             return None
         try:
-            text = self._request(provider, model, str(settings["base_url"]), api_key, messages, max_tokens, temperature)
+            raw_text = self._request(provider, model, str(settings["base_url"]), api_key, messages, max_tokens, temperature)
+            text = validate(raw_text) if raw_text else None
         except Exception:
             self._log(provider, model, calls=1, input_chars=input_chars, output_chars=0, cache_hit=False)
             return None
         if not text:
             self._log(provider, model, calls=1, input_chars=input_chars, output_chars=0, cache_hit=False)
             return None
-        self._store(cache_key, provider, model, operation, text, int(settings["cache_ttl_seconds"]))
+        try:
+            self._store(cache_key, owner_user_id, provider, model, operation, text, int(settings["cache_ttl_seconds"]))
+        except Exception as exc:
+            log("llm.gateway_cache_store_failed", operation=operation, error=type(exc).__name__)
         self._log(provider, model, calls=1, input_chars=input_chars, output_chars=len(text), cache_hit=False)
         return text
 
@@ -63,9 +87,28 @@ class LLMGateway:
         return self._allowed(settings, contact) and bool(self._api_key(str(settings["provider"])))
 
     @staticmethod
-    def cache_key(*, operation: str, provider: str, model: str, messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
+    def cache_key(
+        *,
+        operation: str,
+        provider: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        owner_user_id: int | None,
+        cache_version: str,
+    ) -> str:
         value = json.dumps(
-            {"operation": operation, "provider": provider, "model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+            {
+                "operation": operation,
+                "provider": provider,
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "owner_user_id": owner_user_id,
+                "cache_version": cache_version,
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -86,6 +129,7 @@ class LLMGateway:
             "daily_input_chars": int(gateway.get("daily_input_chars", 200000)),
             "daily_output_chars": int(gateway.get("daily_output_chars", 100000)),
             "cache_ttl_seconds": int(gateway.get("cache_ttl_seconds", 86400)),
+            "cache_version": str(gateway.get("cache_version", "1")),
         }
 
     def _allowed(self, settings: dict[str, Any], contact: dict[str, Any] | None) -> bool:
@@ -106,21 +150,15 @@ class LLMGateway:
         apis = getattr(self.config, "apis", {}) or {}
         return str(apis.get(f"{provider}_key", "") or apis.get("openai_key", ""))
 
-    def _cached(self, cache_key: str) -> str | None:
-        if cache_key in self._memory_cache:
-            return self._memory_cache[cache_key]
+    def _cached(self, cache_key: str, owner_user_id: int | None) -> str | None:
         getter = getattr(self.repo, "get_llm_gateway_cache", None)
-        value = getter(cache_key) if getter else None
-        if value:
-            self._memory_cache[cache_key] = str(value)
-            return self._memory_cache[cache_key]
-        return None
+        value = getter(cache_key, owner_user_id) if getter else None
+        return str(value) if value else None
 
-    def _store(self, cache_key: str, provider: str, model: str, operation: str, text: str, ttl_seconds: int) -> None:
-        self._memory_cache[cache_key] = text
+    def _store(self, cache_key: str, owner_user_id: int | None, provider: str, model: str, operation: str, text: str, ttl_seconds: int) -> None:
         store = getattr(self.repo, "store_llm_gateway_cache", None)
         if store:
-            store(cache_key, provider, model, operation, text, max(1, ttl_seconds))
+            store(cache_key, owner_user_id, provider, model, operation, text, max(1, ttl_seconds))
 
     def _reserve(self, provider: str, model: str, input_chars: int, output_chars: int, settings: dict[str, Any]) -> bool:
         reserve = getattr(self.repo, "reserve_llm_gateway_budget", None)
@@ -149,3 +187,11 @@ def _response_text(data: dict[str, Any]) -> str:
             if content.get("type") == "output_text" and content.get("text"):
                 return str(content["text"]).strip()
     return ""
+
+
+def _owner_user_id(contact: dict[str, Any] | None) -> int | None:
+    try:
+        value = int((contact or {}).get("owner_user_id") or 0)
+        return value or None
+    except (TypeError, ValueError):
+        return None

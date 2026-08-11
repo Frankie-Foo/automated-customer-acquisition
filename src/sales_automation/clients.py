@@ -237,6 +237,8 @@ class HunterClient:
 
 
 class LLMClient:
+    """Deprecated deterministic helper; runtime model calls use LLMGateway."""
+
     def __init__(
         self,
         api_key: str,
@@ -246,56 +248,13 @@ class LLMClient:
         model: str = "deepseek-chat",
         http: HttpClient | None = None,
     ):
-        self.api_key = api_key
-        self.provider = provider
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.http = http or HttpClient()
+        del api_key, provider, base_url, model, http
 
     def opener(self, contact: dict[str, Any]) -> str:
-        company = contact.get("company_name") or "your company"
         context = _contact_source_context(contact)
         reason = context.get("seed_reason") or ""
         category = context.get("seed_category") or contact.get("industry") or ""
-        fallback = _fallback_opener(contact, reason=reason, category=category)
-        if not self.api_key:
-            return fallback
-        if contact.get("_fallback"):
-            return fallback
-        prompt = (
-            "Write exactly one concise, specific, non-hype cold email opening sentence. "
-            "You are the sender writing to the recipient; never claim to work at or lead the recipient company. "
-            "Use only the provided fields. Do not use placeholders, brackets, invented competitors, invented tools, or invented facts. "
-            "Do not mention launches, funding, hiring, growth, tools, competitors, case studies, or recent events. "
-            "If an account research note is provided, use it only as a plain observation and do not add claims beyond it. "
-            "A safe pattern is: 'I noticed {company} is in {category} and your role touches that area, so I thought this might be relevant.' "
-            f"Recipient role: {contact.get('job_title')}. Recipient company: {company}. "
-            f"Industry/category: {category}. Account research note: {reason}. "
-            f"LinkedIn URL: {contact.get('linkedin_url')}. Do not invent facts."
-        )
-        if self.provider == "openai":
-            data = self.http.request(
-                "POST",
-                f"{self.base_url or 'https://api.openai.com/v1'}/responses",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json_body={"model": self.model or "gpt-4o-mini", "input": prompt, "max_output_tokens": 60},
-            )
-            return _guard_opener(_extract_response_text(data), fallback)
-        data = self.http.request(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json_body={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "You write concise B2B cold email opening sentences. Do not invent facts."},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 60,
-                "temperature": 0.4,
-            },
-        )
-        return _guard_opener(_extract_chat_text(data), fallback)
+        return _fallback_opener(contact, reason=reason, category=category)
 
 
 OpenAIClient = LLMClient

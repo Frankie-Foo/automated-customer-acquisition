@@ -49,6 +49,7 @@ llm:
     daily_input_chars: 200000
     daily_output_chars: 100000
     cache_ttl_seconds: 86400
+    cache_version: "1"
 
 contactout:
   bridge_url: ${CONTACTOUT_BRIDGE_URL}

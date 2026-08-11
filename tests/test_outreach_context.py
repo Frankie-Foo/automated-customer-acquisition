@@ -19,6 +19,17 @@ def test_llm_opener_fallback_uses_imported_account_context():
     assert "certified pre-owned" in opener
 
 
+def test_legacy_llm_client_never_calls_provider():
+    class Http:
+        def request(self, *_args, **_kwargs):
+            raise AssertionError("legacy client must not call an LLM provider")
+
+    opener = LLMClient("configured-key", http=Http()).opener(
+        {"company_name": "Example", "job_title": "Founder", "industry": "luxury"}
+    )
+    assert "Example" in opener
+
+
 def test_personalized_fallback_draft_uses_imported_account_context():
     class Config:
         sender = {"name": "vertuMay"}
