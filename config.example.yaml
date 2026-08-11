@@ -41,6 +41,13 @@ llm:
   provider: deepseek
   base_url: https://api.deepseek.com
   model: deepseek-chat
+  gateway:
+    mode: high_value # off | high_value | all
+    icp_threshold: 70
+    daily_calls: 200
+    daily_input_chars: 200000
+    daily_output_chars: 100000
+    cache_ttl_seconds: 86400
 
 sender:
   name: VERTU Global

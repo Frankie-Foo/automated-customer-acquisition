@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..clients import LLMClient
 from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile
 from ..db import Repository
-from ..logging_utils import log
+from ..llm_gateway import LLMGateway
 from .quality import OutboundQualityService
 from .flywheel import DataFlywheelService
 
@@ -22,10 +21,7 @@ class ProfileAgentService:
         if not contact:
             raise ValueError("Contact not found")
         fallback = _fallback_profile_insights(contact)
-        llm_cfg = self.config.raw.get("llm", {})
-        provider = llm_cfg.get("provider", "deepseek")
-        api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
-        if not use_llm or not api_key:
+        if not use_llm:
             self.repo.update_profile_summary(contact_id, fallback["summary"], fallback)
             fallback["icp_assessment"] = OutboundQualityService(self.repo).assess_contact(contact)
             return fallback
@@ -47,11 +43,7 @@ class ProfileAgentService:
             f"notes: {contact.get('notes')}; lost reason: {contact.get('lost_reason')}; "
             f"source context: {contact.get('source_context')}; social profiles: {contact.get('social_profiles')}."
         )
-        try:
-            insights = _profile_insights_via_llm(api_key, provider, llm_cfg, prompt) or fallback
-        except Exception as exc:
-            log("profile_agent.failed", contact_id=contact_id, error=str(exc))
-            insights = fallback
+        insights = _profile_insights_via_llm(LLMGateway(self.config, self.repo), prompt, contact) or fallback
         insights = _normalize_profile_insights(insights, fallback)
         flywheel = DataFlywheelService(self.config, self.repo).context_for_contact(contact)
         if flywheel:
@@ -67,31 +59,19 @@ class ProfileAgentService:
         return insights
 
 
-def _profile_insights_via_llm(api_key: str, provider: str, llm_cfg: dict[str, Any], prompt: str) -> dict[str, Any]:
-    client = LLMClient(
-        api_key,
-        provider=provider,
-        base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
-        model=llm_cfg.get("model", "deepseek-chat"),
+def _profile_insights_via_llm(gateway: LLMGateway, prompt: str, contact: dict[str, Any]) -> dict[str, Any] | None:
+    text = gateway.complete(
+        operation="profile_insights",
+        contact=contact,
+        messages=[
+            {"role": "system", "content": "Return strict JSON only. Summarize the customer from provided fields only and do not invent facts."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=820,
+        temperature=0.2,
     )
-    data = client.http.request(
-        "POST",
-        f"{client.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json_body={
-            "model": client.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Return strict JSON only. Summarize the customer from provided fields only and do not invent facts.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": 820,
-            "temperature": 0.2,
-        },
-    )
-    text = str(data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    if not text:
+        return None
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
@@ -180,38 +160,21 @@ class StageAgentService:
         stage = stage or (target or {}).get("lifecycle_stage") or contact.get("lifecycle_stage") or "lead"
         activity_type = activity_type or (target or {}).get("activity_type") or _default_activity_type(stage)
         fallback = _fallback_stage_analysis(contact, stage, activity_type, content)
-        llm_cfg = self.config.raw.get("llm", {})
-        provider = llm_cfg.get("provider", "deepseek")
-        api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
-        if not api_key:
-            return fallback
-        try:
-            analysis = _stage_analysis_via_llm(api_key, provider, llm_cfg, contact, activities, stage, activity_type, content) or fallback
-            analysis = _normalize_stage_analysis(analysis, fallback)
-        except Exception as exc:
-            log("stage_agent.failed", contact_id=contact_id, activity_id=activity_id, error=str(exc))
-            analysis = fallback
+        analysis = _stage_analysis_via_llm(LLMGateway(self.config, self.repo), contact, activities, stage, activity_type, content) or fallback
+        analysis = _normalize_stage_analysis(analysis, fallback)
         if activity_id:
             self.repo.update_lifecycle_activity_analysis(activity_id, analysis)
         return analysis
 
 
 def _stage_analysis_via_llm(
-    api_key: str,
-    provider: str,
-    llm_cfg: dict[str, Any],
+    gateway: LLMGateway,
     contact: dict[str, Any],
     activities: list[dict[str, Any]],
     stage: str,
     activity_type: str,
     content: str,
-) -> dict[str, Any]:
-    client = LLMClient(
-        api_key,
-        provider=provider,
-        base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
-        model=llm_cfg.get("model", "deepseek-chat"),
-    )
+) -> dict[str, Any] | None:
     history = "\n".join(
         f"- [{item.get('lifecycle_stage')}/{item.get('activity_type')}] {item.get('content')}"
         for item in activities[:5]
@@ -229,21 +192,18 @@ def _stage_analysis_via_llm(
         f"location: {contact.get('location')}; industry: {contact.get('industry')}; stage: {stage}; activity type: {activity_type}. "
         f"Current content: {content}\nHistory:\n{history}"
     )
-    data = client.http.request(
-        "POST",
-        f"{client.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json_body={
-            "model": client.model,
-            "messages": [
-                {"role": "system", "content": "Return strict JSON only. You analyze sales lifecycle stages from provided facts only."},
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": 720,
-            "temperature": 0.2,
-        },
+    text = gateway.complete(
+        operation="stage_analysis",
+        contact=contact,
+        messages=[
+            {"role": "system", "content": "Return strict JSON only. You analyze sales lifecycle stages from provided facts only."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=720,
+        temperature=0.2,
     )
-    text = str(data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    if not text:
+        return None
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):

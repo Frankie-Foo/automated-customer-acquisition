@@ -6,10 +6,11 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..clients import LLMClient, MailClient
+from ..clients import MailClient
 from ..config import AppConfig
 from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
+from ..llm_gateway import LLMGateway
 from ..logging_utils import log
 from ..mailbox_accounts import sender_identity_user, sender_transport_for_user
 from ..outbound_identity import outbound_sender, signed_reply_address
@@ -313,10 +314,8 @@ class PersonalizedEmailService:
     ) -> dict[str, str]:
         copy_contact = customer_visible_contact(contact)
         fallback = self._fallback_draft(copy_contact, user=user)
-        llm_cfg = self.config.raw.get("llm", {})
-        provider = llm_cfg.get("provider", "deepseek")
-        api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
-        if not api_key:
+        gateway = LLMGateway(self.config, self.repo)
+        if not gateway.can_generate(contact):
             return fallback
         insights = build_customer_profile(copy_contact)
         source_context = _source_context(copy_contact)
@@ -358,42 +357,31 @@ class PersonalizedEmailService:
             "The experiment instruction may change only the stated experiment variable and must not weaken factual accuracy. "
             f"sender: {self.config.sender.get('name')}."
         )
+        text = gateway.complete(
+            operation="personalized_email_draft",
+            contact=contact,
+            messages=[
+                {"role": "system", "content": "You only output strict JSON for a B2B sales email draft."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=420,
+            temperature=0.35,
+        )
+        if not text:
+            return fallback
         try:
-            client = LLMClient(
-                api_key,
-                provider=provider,
-                base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
-                model=llm_cfg.get("model", "deepseek-chat"),
-            )
-            data = client.http.request(
-                "POST",
-                f"{client.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json_body={
-                    "model": client.model,
-                    "messages": [
-                        {"role": "system", "content": "You only output strict JSON for a B2B sales email draft."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 420,
-                    "temperature": 0.35,
-                },
-            )
-            text = str(data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
             if text.startswith("```"):
                 text = text.strip("`")
                 if text.lower().startswith("json"):
                     text = text[4:].strip()
             draft = json.loads(text)
-            subject = str(draft.get("subject") or fallback["subject"])[:160]
-            body = str(draft.get("body") or fallback["body"])[:3000]
-            if contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
-                log("email_draft.rejected_internal_data", contact_id=contact.get("id"))
-                return fallback
-            return {"subject": subject, "body": body}
-        except Exception as exc:
-            log("email_draft.failed", contact_id=contact.get("id"), error=str(exc))
+        except (TypeError, ValueError, json.JSONDecodeError):
             return fallback
+        subject = str(draft.get("subject") or fallback["subject"])[:160]
+        body = str(draft.get("body") or fallback["body"])[:3000]
+        if contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
+            return fallback
+        return {"subject": subject, "body": body}
 
     def _fallback_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
         contact = customer_visible_contact(contact)
@@ -429,39 +417,28 @@ class OutreachService:
         self.repo = repo
 
     def send_due(self, limit: int, *, user: dict[str, Any] | None = None) -> int:
-        ai = self._ai_client()
+        gateway = LLMGateway(self.config, self.repo)
         sent = 0
         attempted = 0
         for contact in self.repo.due_for_sending(limit, user=user):
             if attempted:
                 sleep_between_sends(self.config)
             attempted += 1
-            if self._send_contact(contact, ai, user=user):
+            if self._send_contact(contact, gateway, user=user):
                 sent += 1
         log("send.completed", sent=sent)
         return sent
 
     def send_contact(self, contact_id: int, *, user: dict[str, Any] | None = None) -> bool:
-        ai = self._ai_client()
+        gateway = LLMGateway(self.config, self.repo)
         contact = self.repo.due_contact_for_sending(contact_id, user=user)
         if not contact:
             return False
-        sent = self._send_contact(contact, ai, user=user)
+        sent = self._send_contact(contact, gateway, user=user)
         log("send.contact_completed", contact_id=contact_id, sent=sent)
         return sent
 
-    def _ai_client(self) -> LLMClient:
-        llm_cfg = self.config.raw.get("llm", {})
-        provider = llm_cfg.get("provider", "deepseek")
-        api_key = self.config.apis.get(f"{provider}_key", "") or self.config.apis.get("openai_key", "")
-        return LLMClient(
-            api_key,
-            provider=provider,
-            base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
-            model=llm_cfg.get("model", "deepseek-chat"),
-        )
-
-    def _send_contact(self, contact: dict[str, Any], ai: LLMClient, *, user: dict[str, Any] | None = None) -> bool:
+    def _send_contact(self, contact: dict[str, Any], gateway: LLMGateway, *, user: dict[str, Any] | None = None) -> bool:
         fresh = self.repo.due_contact_for_sending(int(contact["id"]), user=user)
         if not fresh:
             log("send.skipped_not_due", contact_id=contact.get("id"))
@@ -503,7 +480,7 @@ class OutreachService:
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
-            "ai_opener": ai.opener(contact) if step_cfg.get("ai_opener") else "",
+            "ai_opener": _ai_opener(gateway, contact) if step_cfg.get("ai_opener") else "",
         }
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
@@ -609,6 +586,34 @@ def _fallback_opening(contact: dict[str, Any]) -> str:
     if context.get("seed_category"):
         return f"I noticed {company} is relevant to {context['seed_category']} and thought this might be worth a quick conversation."
     return f"I noticed your work as {contact.get('job_title') or 'a leader'} at {company} and thought this might be relevant."
+
+
+def _ai_opener(gateway: LLMGateway, contact: dict[str, Any]) -> str:
+    company = contact.get("company_name") or "your company"
+    context = _source_context(contact)
+    fallback = _fallback_opening(contact)
+    prompt = (
+        "Write exactly one concise, specific, non-hype cold email opening sentence. "
+        "You are the sender writing to the recipient; never claim to work at or lead the recipient company. "
+        "Use only the provided fields. Do not use placeholders, brackets, invented competitors, invented tools, or invented facts. "
+        "Do not mention launches, funding, hiring, growth, tools, competitors, case studies, or recent events. "
+        "If an account research note is provided, use it only as a plain observation and do not add claims beyond it. "
+        f"Recipient role: {contact.get('job_title')}. Recipient company: {company}. "
+        f"Industry/category: {context.get('seed_category') or contact.get('industry')}. "
+        f"Account research note: {context.get('seed_reason') or ''}."
+    )
+    text = gateway.complete(
+        operation="sequence_opener",
+        contact=contact,
+        messages=[
+            {"role": "system", "content": "You write concise B2B cold email opening sentences. Do not invent facts."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=60,
+        temperature=0.4,
+    )
+    candidate = " ".join(str(text or "").split())[:500]
+    return candidate if candidate and "{" not in candidate and "[" not in candidate else fallback
 
 
 def _reply_to_email(user: dict[str, Any] | None) -> str | None:

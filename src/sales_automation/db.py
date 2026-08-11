@@ -2301,6 +2301,69 @@ class Repository:
                 (provider, operation, lookup_key, status, json.dumps(response), max(1, int(ttl_seconds))),
             )
 
+    def get_llm_gateway_cache(self, cache_key: str) -> str | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT response FROM llm_gateway_cache WHERE cache_key = %s AND expires_at > NOW()",
+                (cache_key,),
+            ).fetchone()
+            return str(row["response"]) if row else None
+
+    def store_llm_gateway_cache(
+        self,
+        cache_key: str,
+        provider: str,
+        model: str,
+        operation: str,
+        response: str,
+        ttl_seconds: int,
+    ) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO llm_gateway_cache(cache_key, provider, model, operation, response, expires_at)
+                VALUES (%s, %s, %s, %s, %s, NOW() + (%s * INTERVAL '1 second'))
+                ON CONFLICT (cache_key) DO UPDATE
+                SET response = EXCLUDED.response, expires_at = EXCLUDED.expires_at, updated_at = NOW()
+                """,
+                (cache_key, provider, model, operation, response, max(1, int(ttl_seconds))),
+            )
+
+    def reserve_llm_gateway_budget(
+        self,
+        provider: str,
+        model: str,
+        input_chars: int,
+        output_chars: int,
+        daily_calls: int,
+        daily_input_chars: int,
+        daily_output_chars: int,
+    ) -> bool:
+        input_chars = max(0, int(input_chars))
+        output_chars = max(0, int(output_chars))
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO llm_gateway_daily_usage(provider, model, usage_date, calls, input_chars, output_chars)
+                SELECT %s, %s, CURRENT_DATE, 1, %s, %s
+                WHERE 1 <= %s AND %s <= %s AND %s <= %s
+                ON CONFLICT (provider, model, usage_date) DO UPDATE
+                SET calls = llm_gateway_daily_usage.calls + 1,
+                    input_chars = llm_gateway_daily_usage.input_chars + EXCLUDED.input_chars,
+                    output_chars = llm_gateway_daily_usage.output_chars + EXCLUDED.output_chars
+                WHERE llm_gateway_daily_usage.calls + 1 <= %s
+                  AND llm_gateway_daily_usage.input_chars + EXCLUDED.input_chars <= %s
+                  AND llm_gateway_daily_usage.output_chars + EXCLUDED.output_chars <= %s
+                RETURNING calls
+                """,
+                (
+                    provider, model, input_chars, output_chars,
+                    max(0, int(daily_calls)), input_chars, max(0, int(daily_input_chars)), output_chars, max(0, int(daily_output_chars)),
+                    max(0, int(daily_calls)), max(0, int(daily_input_chars)), max(0, int(daily_output_chars)),
+                ),
+            ).fetchone()
+            return row is not None
+
     def list_for_social_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         owner_filter, owner_params = self._owner_filter("contacts", user, prefix="AND")
         with self.db.connect() as conn:
