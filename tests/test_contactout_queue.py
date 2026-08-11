@@ -5,6 +5,7 @@ import pytest
 from sales_automation.config import AppConfig
 from sales_automation.contactout_queue import (
     ContactOutBlocked,
+    ContactOutBridgeAdapter,
     ContactOutQueueService,
     ContactOutRateLimited,
 )
@@ -42,21 +43,30 @@ class FakeRepo:
     def claim_contactout_job(self):
         if not self.jobs:
             return None
-        return {"id": 11, "status": "running", "account_id": 3, "contact_id": 7, "owner_user_id": 2}
+        return {
+            "id": 11,
+            "status": "running",
+            "account_id": 3,
+            "contact_id": 7,
+            "owner_user_id": 2,
+            "lease_token": "lease",
+            "idempotency_key": self.jobs[0]["idempotency_key"],
+        }
 
-    def reserve_contactout_job_quota(self, job_id, *, global_limit):
+    def reserve_contactout_job_quota(self, job_id, lease_token, *, global_limit):
         return self.quota_allowed
 
-    def complete_contactout_job(self, job_id, *, status, result):
+    def complete_contactout_job(self, job_id, lease_token, *, status, result):
         self.completed.append((job_id, status, result))
+        return True
 
-    def retry_contactout_job(self, job_id, error_code, *, retry_after_seconds):
+    def retry_contactout_job(self, job_id, lease_token, error_code, *, retry_after_seconds):
         self.retry.append((job_id, error_code, retry_after_seconds))
 
-    def block_contactout_job(self, job_id, error_code):
+    def block_contactout_job(self, job_id, lease_token, error_code):
         self.blocked.append((job_id, error_code))
 
-    def fail_contactout_job(self, job_id, error_code, *, consumed):
+    def fail_contactout_job(self, job_id, lease_token, error_code, *, consumed):
         self.failed.append((job_id, error_code, consumed))
 
 
@@ -66,8 +76,21 @@ class Adapter:
         self.error = error
         self.calls = 0
 
-    def enrich(self, account, contact):
+    def enrich(self, account, contact, *, idempotency_key):
         self.calls += 1
+        if self.error:
+            raise self.error
+        return self.result
+
+
+class FakeHttp:
+    def __init__(self, result=None, error=None):
+        self.result = result or {"status": "matched"}
+        self.error = error
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
         if self.error:
             raise self.error
         return self.result
@@ -137,6 +160,65 @@ def test_quota_denial_does_not_call_provider():
     assert run.status == "retry_wait"
     assert adapter.calls == 0
     assert repo.retry[0][1] == "daily_quota_exhausted"
+
+
+def test_zero_global_limit_fails_closed():
+    repo = FakeRepo()
+
+    def reserve(job_id, lease_token, *, global_limit):
+        return global_limit > 0
+
+    repo.reserve_contactout_job_quota = reserve
+    adapter = Adapter()
+    service = ContactOutQueueService(config(0), repo, adapter=adapter)
+    service.enqueue(7, owner_user_id=2, account_id=3)
+
+    run = service.run_next()
+
+    assert run.status == "retry_wait"
+    assert adapter.calls == 0
+
+
+def test_bridge_uses_one_idempotent_request():
+    http = FakeHttp()
+    cfg = AppConfig(
+        raw={
+            "apis": {"contactout_bridge_key": "bridge-secret"},
+            "contactout": {"bridge_url": "https://bridge.internal/"},
+        },
+        root_dir=Path("."),
+    )
+
+    ContactOutBridgeAdapter(cfg, http=http).enrich(
+        {"credential_ref": "contactout/ada"},
+        {"id": 7, "linkedin_url": "https://linkedin.com/in/ada"},
+        idempotency_key="job-key",
+    )
+
+    assert len(http.calls) == 1
+    method, url, kwargs = http.calls[0]
+    assert (method, url, kwargs["retries"]) == ("POST", "https://bridge.internal/enrich", 1)
+    assert kwargs["headers"]["Idempotency-Key"] == "job-key"
+
+
+def test_bridge_maps_http_429_to_rate_limit():
+    http = FakeHttp(error=RuntimeError("HTTP request failed after 1 attempts: HTTP 429"))
+    cfg = AppConfig(
+        raw={
+            "apis": {"contactout_bridge_key": "bridge-secret"},
+            "contactout": {"bridge_url": "https://bridge.internal"},
+        },
+        root_dir=Path("."),
+    )
+
+    with pytest.raises(ContactOutRateLimited):
+        ContactOutBridgeAdapter(cfg, http=http).enrich(
+            {"credential_ref": "contactout/ada"},
+            {"id": 7},
+            idempotency_key="job-key",
+        )
+
+    assert len(http.calls) == 1
 
 
 @pytest.mark.parametrize(

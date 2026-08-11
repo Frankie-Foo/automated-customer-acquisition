@@ -2378,7 +2378,7 @@ class Repository:
         clauses = ["id = %s"]
         params: list[Any] = [account_id]
         if owner_user_id is not None:
-            clauses.append("(assigned_user_id IS NULL OR assigned_user_id = %s)")
+            clauses.append("assigned_user_id = %s")
             params.append(owner_user_id)
         with self.db.connect() as conn:
             return conn.execute(
@@ -2412,7 +2412,8 @@ class Repository:
                 """
                 SELECT scope_key, reserved_units, used_units, denied_count, updated_at
                 FROM provider_account_daily_usage
-                WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                WHERE provider = 'contactout'
+                  AND usage_date = timezone('Asia/Shanghai', NOW())::date
                 ORDER BY scope_key
                 """
             ).fetchall()
@@ -2441,7 +2442,7 @@ class Repository:
         status: str = "active",
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
-            return conn.execute(
+            account = conn.execute(
                 """
                 INSERT INTO contactout_accounts(
                     account_key, display_name, masked_identity, credential_ref,
@@ -2454,31 +2455,55 @@ class Repository:
                     credential_ref = EXCLUDED.credential_ref,
                     assigned_user_id = EXCLUDED.assigned_user_id,
                     daily_limit = EXCLUDED.daily_limit,
+                    authorized_by_user_id = EXCLUDED.authorized_by_user_id,
+                    authorized_at = NOW(),
                     status = EXCLUDED.status,
+                    cooldown_until = CASE WHEN EXCLUDED.status = 'active' THEN NULL ELSE contactout_accounts.cooldown_until END,
                     updated_at = NOW()
                 RETURNING *
                 """,
                 (
                     account_key, display_name, masked_identity, credential_ref,
-                    assigned_user_id, max(0, int(daily_limit)), authorized_by_user_id, status,
+                    assigned_user_id, max(1, int(daily_limit)), authorized_by_user_id, status,
                 ),
             ).fetchone()
+            if status == "active":
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'retry_wait', error_code = NULL, next_attempt_at = NOW(), updated_at = NOW()
+                    WHERE account_id = %s AND status = 'blocked'
+                      AND error_code IN ('challenge_required', 'reauth_required')
+                    """,
+                    (account["id"],),
+                )
+            return account
 
     def enqueue_contactout_job(self, **fields: Any) -> dict[str, Any]:
         with self.db.connect() as conn:
-            return conn.execute(
+            job = conn.execute(
                 """
-                INSERT INTO contactout_enrichment_jobs(
-                    idempotency_key, contact_id, owner_user_id, account_id, operation, input_hash
+                WITH inserted AS (
+                  INSERT INTO contactout_enrichment_jobs(
+                      idempotency_key, contact_id, owner_user_id, account_id, operation, input_hash
+                  )
+                  VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
+                          %(account_id)s, %(operation)s, %(input_hash)s)
+                  ON CONFLICT (idempotency_key) DO NOTHING
+                  RETURNING *
                 )
-                VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
-                        %(account_id)s, %(operation)s, %(input_hash)s)
-                ON CONFLICT (idempotency_key) DO UPDATE
-                SET updated_at = contactout_enrichment_jobs.updated_at
-                RETURNING *
+                SELECT * FROM inserted
+                UNION ALL
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE idempotency_key = %(idempotency_key)s
+                  AND owner_user_id = %(owner_user_id)s
+                LIMIT 1
                 """,
                 fields,
             ).fetchone()
+            if not job:
+                raise ValueError("contactout_job_conflict")
+            return job
 
     def list_contactout_jobs(self, *, user: dict[str, Any] | None = None, limit: int = 100) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -2505,19 +2530,25 @@ class Repository:
 
     def block_expired_contactout_jobs(self) -> int:
         with self.db.connect() as conn:
-            row = conn.execute(
+            expired = conn.execute(
                 """
-                WITH expired AS (
-                  UPDATE contactout_enrichment_jobs
-                  SET status = 'blocked', error_code = 'lease_expired_unknown_charge',
-                      lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-                  WHERE status = 'running' AND lease_expires_at < NOW()
-                  RETURNING id
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE status = 'running' AND lease_expires_at < NOW()
+                FOR UPDATE
+                """
+            ).fetchall()
+            for job in expired:
+                self._settle_contactout_quota(conn, job, consumed=bool(job.get("quota_reserved")))
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'lease_expired_unknown_charge',
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job["id"], job["lease_token"]),
                 )
-                SELECT COUNT(*) AS count FROM expired
-                """
-            ).fetchone()
-            return int(row["count"] or 0)
+            return len(expired)
 
     def claim_contactout_job(self, *, lease_seconds: int = 300) -> dict[str, Any] | None:
         token = secrets.token_urlsafe(24)
@@ -2525,7 +2556,7 @@ class Repository:
             return conn.execute(
                 """
                 UPDATE contactout_enrichment_jobs
-                SET status = 'running', attempts = attempts + 1, lease_token = %s,
+                SET status = 'running', lease_token = %s,
                     lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
                     started_at = COALESCE(started_at, NOW()), updated_at = NOW(), error_code = NULL
                 WHERE id = (
@@ -2544,7 +2575,7 @@ class Repository:
                 (token, max(30, int(lease_seconds))),
             ).fetchone()
 
-    def reserve_contactout_job_quota(self, job_id: int, *, global_limit: int) -> bool:
+    def reserve_contactout_job_quota(self, job_id: int, lease_token: str, *, global_limit: int) -> bool:
         with self.db.connect() as conn:
             job = conn.execute(
                 """
@@ -2552,19 +2583,22 @@ class Repository:
                 FROM contactout_enrichment_jobs job
                 JOIN contactout_accounts account ON account.id = job.account_id
                 WHERE job.id = %s AND job.status = 'running'
+                  AND job.lease_token = %s AND job.quota_reserved = FALSE
                 FOR UPDATE OF job, account
                 """,
-                (job_id,),
+                (job_id, lease_token),
             ).fetchone()
             if not job or job["status"] != "active" or (job["cooldown_until"] and job["cooldown_until"] > datetime.now(UTC)):
                 return False
             account_scope = f"account:{job['account_id']}"
-            scopes = [("global", max(0, int(global_limit))), (account_scope, int(job["daily_limit"]))]
+            scopes = [("global", int(global_limit)), (account_scope, int(job["daily_limit"]))]
+            if any(limit <= 0 for _, limit in scopes):
+                return False
             for scope, _ in scopes:
                 conn.execute(
                     """
                     INSERT INTO provider_account_daily_usage(provider, scope_key, usage_date)
-                    VALUES ('contactout', %s, CURRENT_DATE)
+                    VALUES ('contactout', %s, timezone('Asia/Shanghai', NOW())::date)
                     ON CONFLICT DO NOTHING
                     """,
                     (scope,),
@@ -2574,7 +2608,8 @@ class Repository:
                 for row in conn.execute(
                     """
                     SELECT * FROM provider_account_daily_usage
-                    WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                    WHERE provider = 'contactout'
+                      AND usage_date = timezone('Asia/Shanghai', NOW())::date
                       AND scope_key IN (%s, %s)
                     ORDER BY scope_key
                     FOR UPDATE
@@ -2583,13 +2618,14 @@ class Repository:
                 ).fetchall()
             }
             units = int(job["quota_units"])
-            allowed = all(limit <= 0 or int(rows[scope]["reserved_units"]) + int(rows[scope]["used_units"]) + units <= limit for scope, limit in scopes)
+            allowed = all(int(rows[scope]["reserved_units"]) + int(rows[scope]["used_units"]) + units <= limit for scope, limit in scopes)
             if not allowed:
                 conn.execute(
                     """
                     UPDATE provider_account_daily_usage
                     SET denied_count = denied_count + 1, updated_at = NOW()
-                    WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                    WHERE provider = 'contactout'
+                      AND usage_date = timezone('Asia/Shanghai', NOW())::date
                       AND scope_key IN (%s, %s)
                     """,
                     ("global", account_scope),
@@ -2599,28 +2635,67 @@ class Repository:
                 """
                 UPDATE provider_account_daily_usage
                 SET reserved_units = reserved_units + %s, updated_at = NOW()
-                WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+                WHERE provider = 'contactout'
+                  AND usage_date = timezone('Asia/Shanghai', NOW())::date
                   AND scope_key IN (%s, %s)
                 """,
                 (units, "global", account_scope),
             )
+            conn.execute(
+                """
+                UPDATE contactout_enrichment_jobs
+                SET attempts = attempts + 1,
+                    quota_reserved = TRUE,
+                    quota_usage_date = timezone('Asia/Shanghai', NOW())::date,
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND quota_reserved = FALSE
+                """,
+                (job_id, lease_token),
+            )
             return True
 
-    def complete_contactout_job(self, job_id: int, *, status: str, result: dict[str, Any]) -> None:
+    def complete_contactout_job(self, job_id: int, lease_token: str, *, status: str, result: dict[str, Any]) -> bool:
         with self.db.connect() as conn:
             job = conn.execute(
-                "SELECT * FROM contactout_enrichment_jobs WHERE id = %s AND status = 'running' FOR UPDATE",
-                (job_id,),
+                """
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
             ).fetchone()
             if not job:
-                return
-            contact = conn.execute("SELECT * FROM contacts WHERE id = %s FOR UPDATE", (job["contact_id"],)).fetchone()
+                return False
+            contact = conn.execute(
+                """
+                SELECT * FROM contacts
+                WHERE id = %s AND pool_type = 'private' AND owner_user_id = %s
+                FOR UPDATE
+                """,
+                (job["contact_id"], job["owner_user_id"]),
+            ).fetchone()
+            if not contact:
+                self._settle_contactout_quota(conn, job, consumed=True)
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'ownership_changed', completed_at = NOW(),
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job_id, lease_token),
+                )
+                return False
             email_candidates = _merge_contact_candidates(contact.get("email_candidates") or [], result.get("email_candidates") or [], "email")
             phone_candidates = _merge_contact_candidates(contact.get("phone_candidates") or [], result.get("phone_candidates") or [], "phone")
             selected = None if result.get("review_required") else next(
                 (
-                    item for item in email_candidates
-                    if item.get("status") == "valid" and item.get("category") == "personal_work"
+                    item for item in result.get("email_candidates") or []
+                    if item.get("source") == "contactout"
+                    and item.get("status") == "valid"
+                    and item.get("category") == "personal_work"
+                    and int(item.get("confidence") or 0) >= 80
                 ),
                 None,
             )
@@ -2635,7 +2710,7 @@ class Repository:
                     email_confidence = COALESCE(%s, email_confidence),
                     status = CASE WHEN %s::text IS NOT NULL THEN 'enriched' ELSE status END,
                     enriched_at = CASE WHEN %s::text IS NOT NULL THEN NOW() ELSE enriched_at END
-                WHERE id = %s
+                WHERE id = %s AND owner_user_id = %s AND pool_type = 'private'
                 """,
                 (
                     json.dumps(email_candidates), json.dumps(phone_candidates),
@@ -2645,7 +2720,7 @@ class Repository:
                     selected.get("confidence") if selected else None,
                     selected.get("email") if selected else None,
                     selected.get("email") if selected else None,
-                    job["contact_id"],
+                    job["contact_id"], job["owner_user_id"],
                 ),
             )
             conn.execute(
@@ -2670,15 +2745,23 @@ class Repository:
                 UPDATE contactout_enrichment_jobs
                 SET status = %s, completed_at = NOW(), updated_at = NOW(),
                     lease_token = NULL, lease_expires_at = NULL, error_code = NULL
-                WHERE id = %s
+                WHERE id = %s AND status = 'running' AND lease_token = %s
                 """,
-                (status, job_id),
+                (status, job_id, lease_token),
             )
             conn.execute("UPDATE contactout_accounts SET last_used_at = NOW(), updated_at = NOW() WHERE id = %s", (job["account_id"],))
+            return True
 
-    def retry_contactout_job(self, job_id: int, error_code: str, *, retry_after_seconds: int) -> None:
+    def retry_contactout_job(self, job_id: int, lease_token: str, error_code: str, *, retry_after_seconds: int) -> None:
         with self.db.connect() as conn:
-            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            job = conn.execute(
+                """
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
+            ).fetchone()
             if not job:
                 return
             self._settle_contactout_quota(conn, job, consumed=False)
@@ -2688,9 +2771,9 @@ class Repository:
                 SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'retry_wait' END,
                     next_attempt_at = NOW() + (%s * INTERVAL '1 second'), error_code = %s,
                     lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s AND status = 'running' AND lease_token = %s
                 """,
-                (max(60, int(retry_after_seconds)), error_code, job_id),
+                (max(60, int(retry_after_seconds)), error_code, job_id, lease_token),
             )
             if error_code == "rate_limited":
                 conn.execute(
@@ -2698,15 +2781,27 @@ class Repository:
                     (max(60, int(retry_after_seconds)), job["account_id"]),
                 )
 
-    def block_contactout_job(self, job_id: int, error_code: str) -> None:
+    def block_contactout_job(self, job_id: int, lease_token: str, error_code: str) -> None:
         with self.db.connect() as conn:
-            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            job = conn.execute(
+                """
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
+            ).fetchone()
             if not job:
                 return
             self._settle_contactout_quota(conn, job, consumed=False)
             conn.execute(
-                "UPDATE contactout_enrichment_jobs SET status = 'blocked', error_code = %s, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = %s",
-                (error_code, job_id),
+                """
+                UPDATE contactout_enrichment_jobs
+                SET status = 'blocked', error_code = %s, lease_token = NULL,
+                    lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                """,
+                (error_code, job_id, lease_token),
             )
             if error_code in {"challenge_required", "reauth_required"}:
                 conn.execute(
@@ -2714,9 +2809,16 @@ class Repository:
                     (error_code, job["account_id"]),
                 )
 
-    def fail_contactout_job(self, job_id: int, error_code: str, *, consumed: bool) -> None:
+    def fail_contactout_job(self, job_id: int, lease_token: str, error_code: str, *, consumed: bool) -> None:
         with self.db.connect() as conn:
-            job = conn.execute("SELECT * FROM contactout_enrichment_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            job = conn.execute(
+                """
+                SELECT * FROM contactout_enrichment_jobs
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
+            ).fetchone()
             if not job:
                 return
             self._settle_contactout_quota(conn, job, consumed=consumed)
@@ -2725,13 +2827,15 @@ class Repository:
                 UPDATE contactout_enrichment_jobs
                 SET status = 'failed', error_code = %s, completed_at = NOW(),
                     lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s AND status = 'running' AND lease_token = %s
                 """,
-                (error_code, job_id),
+                (error_code, job_id, lease_token),
             )
 
     @staticmethod
     def _settle_contactout_quota(conn: Any, job: dict[str, Any], *, consumed: bool) -> None:
+        if not job.get("quota_reserved") or not job.get("quota_usage_date"):
+            return
         account_scope = f"account:{job['account_id']}"
         units = int(job.get("quota_units") or 1)
         conn.execute(
@@ -2740,10 +2844,18 @@ class Repository:
             SET reserved_units = GREATEST(0, reserved_units - %s),
                 used_units = used_units + %s,
                 updated_at = NOW()
-            WHERE provider = 'contactout' AND usage_date = CURRENT_DATE
+            WHERE provider = 'contactout' AND usage_date = %s
               AND scope_key IN (%s, %s)
             """,
-            (units, units if consumed else 0, "global", account_scope),
+            (units, units if consumed else 0, job["quota_usage_date"], "global", account_scope),
+        )
+        conn.execute(
+            """
+            UPDATE contactout_enrichment_jobs
+            SET quota_reserved = FALSE, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (job["id"],),
         )
 
     def list_for_social_enrichment(self, limit: int, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:

@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from .clients import is_full_email
 from .config import AppConfig
@@ -13,7 +14,7 @@ from .logging_utils import log
 
 
 class ContactOutAdapter(Protocol):
-    def enrich(self, account: dict[str, Any], contact: dict[str, Any]) -> dict[str, Any]: ...
+    def enrich(self, account: dict[str, Any], contact: dict[str, Any], *, idempotency_key: str) -> dict[str, Any]: ...
 
 
 class ContactOutBlocked(RuntimeError):
@@ -35,29 +36,35 @@ class ContactOutBridgeAdapter:
         self.config = config
         self.http = http or HttpClient()
 
-    def enrich(self, account: dict[str, Any], contact: dict[str, Any]) -> dict[str, Any]:
+    def enrich(self, account: dict[str, Any], contact: dict[str, Any], *, idempotency_key: str) -> dict[str, Any]:
         cfg = self.config.raw.get("contactout", {})
         url = str(cfg.get("bridge_url") or "").rstrip("/")
         key = str(self.config.apis.get("contactout_bridge_key") or "")
         if not url or not key:
             raise ContactOutBlocked("adapter_unconfigured")
-        data = self.http.request(
-            "POST",
-            f"{url}/enrich",
-            headers={"Authorization": f"Bearer {key}"},
-            json_body={
-                "credential_ref": account["credential_ref"],
-                "contact": {
-                    "id": contact.get("id"),
-                    "first_name": contact.get("first_name"),
-                    "last_name": contact.get("last_name"),
-                    "company_name": contact.get("company_name"),
-                    "company_domain": contact.get("company_domain"),
-                    "job_title": contact.get("job_title"),
-                    "linkedin_url": contact.get("linkedin_url"),
+        try:
+            data = self.http.request(
+                "POST",
+                f"{url}/enrich",
+                headers={"Authorization": f"Bearer {key}", "Idempotency-Key": idempotency_key},
+                json_body={
+                    "credential_ref": account["credential_ref"],
+                    "contact": {
+                        "id": contact.get("id"),
+                        "first_name": contact.get("first_name"),
+                        "last_name": contact.get("last_name"),
+                        "company_name": contact.get("company_name"),
+                        "company_domain": contact.get("company_domain"),
+                        "job_title": contact.get("job_title"),
+                        "linkedin_url": contact.get("linkedin_url"),
+                    },
                 },
-            },
-        )
+                retries=1,
+            )
+        except RuntimeError as exc:
+            if "HTTP 429" in str(exc):
+                raise ContactOutRateLimited() from exc
+            raise
         status = str(data.get("status") or "").lower()
         if status in {"challenge_required", "reauth_required"}:
             raise ContactOutBlocked(status)
@@ -90,7 +97,7 @@ class ContactOutQueueService:
         account = self.repo.get_contactout_account(account_id, owner_user_id=owner_user_id)
         if not account or account.get("status") != "active":
             raise ValueError("contactout_account_unavailable")
-        refresh_window = datetime.now(UTC).strftime("%Y-%m")
+        refresh_window = datetime.now(_BUSINESS_TZ).strftime("%Y-%m")
         input_hash = hashlib.sha256(linkedin_url.encode("utf-8")).hexdigest()
         idempotency_key = hashlib.sha256(
             f"contactout:v1|{contact_id}|{input_hash}|person_enrich|{refresh_window}".encode("utf-8")
@@ -112,29 +119,33 @@ class ContactOutQueueService:
         account = self.repo.get_contactout_account(int(job["account_id"]), owner_user_id=job.get("owner_user_id"))
         contact = self.repo.get_contact(int(job["contact_id"]))
         if not account or not contact:
-            self.repo.fail_contactout_job(int(job["id"]), "missing_account_or_contact", consumed=False)
+            self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "missing_account_or_contact", consumed=False)
             return ContactOutRun(int(job["id"]), "failed", error_code="missing_account_or_contact")
         global_limit = max(0, int(self.config.raw.get("contactout", {}).get("global_daily_limit") or 0))
-        if not self.repo.reserve_contactout_job_quota(int(job["id"]), global_limit=global_limit):
-            self.repo.retry_contactout_job(int(job["id"]), "daily_quota_exhausted", retry_after_seconds=_seconds_until_tomorrow())
+        if not self.repo.reserve_contactout_job_quota(
+            int(job["id"]), str(job["lease_token"]), global_limit=global_limit
+        ):
+            self.repo.retry_contactout_job(int(job["id"]), str(job["lease_token"]), "daily_quota_exhausted", retry_after_seconds=_seconds_until_tomorrow())
             return ContactOutRun(int(job["id"]), "retry_wait", error_code="daily_quota_exhausted")
         try:
-            raw = self.adapter.enrich(account, contact)
+            raw = self.adapter.enrich(account, contact, idempotency_key=str(job["idempotency_key"]))
             normalized = _normalize_result(raw)
             if normalized["match_status"] == "no_match":
-                self.repo.complete_contactout_job(int(job["id"]), status="no_match", result=normalized)
+                if not self.repo.complete_contactout_job(int(job["id"]), str(job["lease_token"]), status="no_match", result=normalized):
+                    return ContactOutRun(int(job["id"]), "blocked", error_code="ownership_changed")
                 return ContactOutRun(int(job["id"]), "no_match")
-            self.repo.complete_contactout_job(int(job["id"]), status="succeeded", result=normalized)
+            if not self.repo.complete_contactout_job(int(job["id"]), str(job["lease_token"]), status="succeeded", result=normalized):
+                return ContactOutRun(int(job["id"]), "blocked", error_code="ownership_changed")
             return ContactOutRun(int(job["id"]), "succeeded", normalized["review_required"])
         except ContactOutRateLimited as exc:
-            self.repo.retry_contactout_job(int(job["id"]), "rate_limited", retry_after_seconds=exc.retry_after_seconds)
+            self.repo.retry_contactout_job(int(job["id"]), str(job["lease_token"]), "rate_limited", retry_after_seconds=exc.retry_after_seconds)
             return ContactOutRun(int(job["id"]), "retry_wait", error_code="rate_limited")
         except ContactOutBlocked as exc:
-            self.repo.block_contactout_job(int(job["id"]), exc.code)
+            self.repo.block_contactout_job(int(job["id"]), str(job["lease_token"]), exc.code)
             return ContactOutRun(int(job["id"]), "blocked", error_code=exc.code)
         except Exception as exc:
             log("contactout.failed", job_id=job["id"], error_type=type(exc).__name__)
-            self.repo.fail_contactout_job(int(job["id"]), "provider_error", consumed=True)
+            self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "provider_error", consumed=True)
             return ContactOutRun(int(job["id"]), "failed", error_code="provider_error")
 
 
@@ -164,7 +175,7 @@ def _normalize_result(data: dict[str, Any]) -> dict[str, Any]:
                 "status": str(item.get("status") or "unverified").lower(),
                 "confidence": max(0, min(100, int(item.get("confidence") or confidence))),
                 "category": str(item.get("category") or "personal"),
-                "discovered_at": datetime.now(UTC).isoformat(),
+                "discovered_at": datetime.now(_BUSINESS_TZ).isoformat(),
             }
         )
     phones = []
@@ -208,9 +219,12 @@ def _dedupe(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
 
 
 def _seconds_until_tomorrow() -> int:
-    now = datetime.now(UTC)
+    now = datetime.now(_BUSINESS_TZ)
     tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
     return max(60, int((tomorrow - now).total_seconds()))
+
+
+_BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 
 
 __all__ = [

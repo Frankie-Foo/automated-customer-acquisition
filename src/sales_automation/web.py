@@ -43,6 +43,16 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _api_error_status(exc: Exception) -> int:
+    if isinstance(exc, ProviderBudgetExceeded):
+        return 429
+    if isinstance(exc, ValueError):
+        return 400
+    if isinstance(exc, PermissionError):
+        return 403
+    return 500
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         value = value.replace(";", ",").split(",")
@@ -459,7 +469,9 @@ def make_handler(config, repo: Repository):
 
                 def save_contactout_account() -> dict[str, Any]:
                     assigned_user_id = int(payload.get("assigned_user_id") or 0) or None
-                    if assigned_user_id and not repo.get_active_user(assigned_user_id):
+                    if not assigned_user_id:
+                        raise ValueError("assigned_user_id is required")
+                    if not repo.get_active_user(assigned_user_id):
                         raise ValueError("assigned_user_id must reference an active user")
                     status = str(payload.get("status") or "active")
                     if status not in {"active", "disabled", "reauth_required", "challenge_required"}:
@@ -467,13 +479,16 @@ def make_handler(config, repo: Repository):
                     required = ("account_key", "display_name", "masked_identity", "credential_ref")
                     if any(not str(payload.get(key) or "").strip() for key in required):
                         raise ValueError("account_key, display_name, masked_identity and credential_ref are required")
+                    daily_limit = int(payload.get("daily_limit") or 5)
+                    if daily_limit <= 0:
+                        raise ValueError("daily_limit must be positive")
                     return {"account": repo.upsert_contactout_account(
                         account_key=str(payload["account_key"]).strip(),
                         display_name=str(payload["display_name"]).strip(),
                         masked_identity=str(payload["masked_identity"]).strip(),
                         credential_ref=str(payload["credential_ref"]).strip(),
                         assigned_user_id=assigned_user_id,
-                        daily_limit=max(0, int(payload.get("daily_limit") or 0)),
+                        daily_limit=daily_limit,
                         authorized_by_user_id=int(admin["id"]),
                         status=status,
                     )}
@@ -1492,7 +1507,7 @@ def make_handler(config, repo: Repository):
             try:
                 self._send_json({"ok": True, "data": fn()})
             except Exception as exc:
-                self._send_json({"ok": False, "error": str(exc)}, status=429 if isinstance(exc, ProviderBudgetExceeded) else 500)
+                self._send_json({"ok": False, "error": str(exc)}, status=_api_error_status(exc))
 
         def _json_audit(
             self,
@@ -1512,7 +1527,7 @@ def make_handler(config, repo: Repository):
                 self._send_json({"ok": True, "data": data})
             except Exception as exc:
                 self._audit(action, target_type=target_type, target_id=None if callable(target_id) else target_id, summary=summary, success=False, error=str(exc))
-                self._send_json({"ok": False, "error": str(exc)}, status=429 if isinstance(exc, ProviderBudgetExceeded) else 500)
+                self._send_json({"ok": False, "error": str(exc)}, status=_api_error_status(exc))
 
         def _audit(
             self,
