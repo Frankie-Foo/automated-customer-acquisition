@@ -32,6 +32,46 @@ def test_plan_combinations_split_or_roles_into_searchable_titles():
     assert [item["role"] for item in plan_combinations(plan)] == ["owner", "founder"]
 
 
+def test_configured_plans_are_created_once_and_use_shared_defaults():
+    class Repo:
+        def __init__(self):
+            self.created = []
+
+        def list_acquisition_plans(self, limit):
+            return [{"name": "Existing"}]
+
+        def create_acquisition_plan(self, **values):
+            self.created.append(values)
+
+    config = SimpleNamespace(raw={"acquisition": {
+        "regions": ["UAE", "India"],
+        "role_terms": ["owner", "CEO"],
+        "pool_type": "public",
+        "daily_lead_limit": 8,
+        "combinations_per_run": 8,
+        "plans": [
+            {"name": "Existing", "industries": ["watches"], "company_types": ["retailer"]},
+            {"name": "New", "industries": ["luxury cars"], "company_types": ["dealer"]},
+        ],
+    }})
+    repo = Repo()
+
+    summary = AcquisitionPlannerService(config, repo).sync_configured_plans()
+
+    assert summary == {"configured": 2, "created": 1, "existing": 1}
+    assert repo.created == [{
+        "name": "New",
+        "regions": ["UAE", "India"],
+        "industries": ["luxury cars"],
+        "company_types": ["dealer"],
+        "role_terms": ["owner", "CEO"],
+        "owner_user_id": None,
+        "pool_type": "public",
+        "daily_lead_limit": 8,
+        "combinations_per_run": 8,
+    }]
+
+
 def test_due_plan_respects_actual_usage_and_never_sends_email():
     class Repo:
         def list_due_acquisition_plans(self, limit):

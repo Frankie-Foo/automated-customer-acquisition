@@ -43,6 +43,40 @@ class AcquisitionPlannerService:
         self.search_factory = search_factory
         self.quota_factory = quota_factory
 
+    def sync_configured_plans(self) -> dict[str, int]:
+        section = self.config.raw.get("acquisition", {})
+        configured = section.get("plans", []) if isinstance(section, dict) else []
+        if not isinstance(configured, list):
+            return {"configured": 0, "created": 0, "existing": 0}
+        existing_names = {
+            str(plan.get("name") or "").strip()
+            for plan in self.repo.list_acquisition_plans(limit=500)
+        }
+        summary = {"configured": len(configured), "created": 0, "existing": 0}
+        for item in configured:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            if name in existing_names:
+                summary["existing"] += 1
+                continue
+            self.repo.create_acquisition_plan(
+                name=name,
+                regions=_values(item.get("regions") or section.get("regions"), "Global"),
+                industries=_values(item.get("industries"), "luxury retail"),
+                company_types=_values(item.get("company_types"), "distributor"),
+                role_terms=_values(item.get("role_terms") or section.get("role_terms"), "owner"),
+                owner_user_id=item.get("owner_user_id"),
+                pool_type=str(item.get("pool_type") or section.get("pool_type") or "public"),
+                daily_lead_limit=int(item.get("daily_lead_limit") or section.get("daily_lead_limit") or 8),
+                combinations_per_run=int(item.get("combinations_per_run") or section.get("combinations_per_run") or 8),
+            )
+            existing_names.add(name)
+            summary["created"] += 1
+        return summary
+
     def run_due(self, *, limit: int = 10) -> dict[str, Any]:
         summary = {"plans": 0, "completed": 0, "failed": 0, "results": 0, "promoted": 0}
         for plan in self.repo.list_due_acquisition_plans(limit=max(1, min(int(limit), 50))):

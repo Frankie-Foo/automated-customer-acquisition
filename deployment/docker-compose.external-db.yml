@@ -30,10 +30,32 @@ services:
     environment:
       SALESBOT_REQUIRE_PRODUCTION_READY: "true"
       SALESBOT_DB_WAIT_TIMEOUT: 120
+    healthcheck:
+      disable: true
     command: >
       sh -c 'while true; do
         salesbot mailbox-poll --config config.yaml --limit 200 || true;
         sleep "$${MAILBOX_POLL_INTERVAL_SECONDS:-60}";
+      done'
+
+  acquisition-worker:
+    image: ${SALESBOT_IMAGE:-salesbot:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      SALESBOT_REQUIRE_PRODUCTION_READY: "true"
+      SALESBOT_DB_WAIT_TIMEOUT: 120
+    healthcheck:
+      disable: true
+    command: >
+      sh -c 'while true; do
+        salesbot acquisition-run --config config.yaml --limit 10 || true;
+        sleep "$${ACQUISITION_POLL_INTERVAL_SECONDS:-900}";
       done'
 
   caddy:

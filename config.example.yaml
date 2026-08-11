@@ -260,6 +260,62 @@ sourcing:
     max_results_per_query: 5
     stop_after_first_match: true
 
+acquisition:
+  pool_type: public
+  daily_lead_limit: 8
+  combinations_per_run: 8
+  regions:
+    - United Arab Emirates
+    - Saudi Arabia
+    - Qatar
+    - Kuwait
+    - Bahrain
+    - India
+    - Singapore
+    - Malaysia
+    - Thailand
+    - Indonesia
+    - Vietnam
+    - Philippines
+    - Kazakhstan
+    - Uzbekistan
+    - Azerbaijan
+    - United Kingdom
+    - Switzerland
+    - United States
+    - Mexico
+    - Brazil
+    - South Africa
+    - Turkey
+  role_terms:
+    - Owner
+    - Founder
+    - CEO
+    - Managing Director
+    - Commercial Director
+    - Buying Director
+    - Category Director
+    - Partnerships Director
+  plans:
+    - name: VERTU Daily - Luxury Retail
+      industries: [luxury retail]
+      company_types: [department store]
+    - name: VERTU Daily - Watches and Jewelry
+      industries: [luxury watches and jewelry]
+      company_types: [jewelry retailer]
+    - name: VERTU Daily - Luxury Automotive
+      industries: [luxury and exotic cars]
+      company_types: [car dealer]
+    - name: VERTU Daily - Premium Electronics
+      industries: [premium mobile consumer electronics]
+      company_types: [electronics distributor]
+    - name: VERTU Daily - Duty Free
+      industries: [airport duty free travel retail]
+      company_types: [duty free]
+    - name: VERTU Daily - Luxury Hospitality
+      industries: [five-star luxury hospitality]
+      company_types: [luxury hotel]
+
 email_discovery:
   providers:
     - prospeo

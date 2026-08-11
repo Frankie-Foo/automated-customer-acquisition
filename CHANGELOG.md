@@ -2,6 +2,8 @@
 
 ## 2026-08-11 - Budgeted AI and authorized contact enrichment
 
+- Add six VERTU acquisition tracks covering 22 countries, six luxury verticals, and eight decision-maker roles with daily rotation into the public customer pool.
+- Run due acquisition plans in a dedicated production worker that never enters the email sending pipeline.
 - Route runtime AI generation through one cache and daily-budget gateway; `off`, `high_value`, and `all` modes keep deterministic fallbacks available without model calls.
 - Add durable ContactOut enrichment jobs with fixed authorized accounts, per-account/global daily limits, idempotency, retry/cooldown, audit logs, and fail-closed challenge handling.
 - Promote only exact, high-confidence `personal_work + valid` results; uncertain matches remain review candidates.

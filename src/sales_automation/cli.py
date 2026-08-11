@@ -9,7 +9,7 @@ from .db import Database, Repository
 from .health import check_readiness
 from .logging_utils import log
 from .quotas import QuotaService
-from .services import EnrichmentService, MailboxReplyService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
+from .services import AcquisitionPlannerService, EnrichmentService, MailboxReplyService, OutreachService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, WebhookService
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     scheduler.add_argument("--enrich-limit", type=int, default=100)
     scheduler.add_argument("--queue-limit", type=int, default=100)
     scheduler.add_argument("--send-limit", type=int, default=100)
+
+    acquisition_run = sub.add_parser("acquisition-run", parents=[config_parent])
+    acquisition_run.add_argument("--limit", type=int, default=10)
 
     mailbox_poll = sub.add_parser("mailbox-poll", parents=[config_parent])
     mailbox_poll.add_argument("--limit", type=int, default=100)
@@ -131,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         log("quota.global_send_consumed", sent=sent)
     elif args.command == "scheduler":
         SchedulerService(config, repo).run_once(args.enrich_limit, args.queue_limit, args.send_limit)
+    elif args.command == "acquisition-run":
+        service = AcquisitionPlannerService(config, repo)
+        synced = service.sync_configured_plans()
+        result = service.run_due(limit=args.limit)
+        log("acquisition.completed", synced=synced, **result)
     elif args.command == "mailbox-poll":
         stats = MailboxReplyService(config, repo).poll_once(args.limit)
         log("mailbox.poll", **stats)
