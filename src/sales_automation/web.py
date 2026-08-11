@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from .auth import clear_session_cookie, default_admin_credentials, parse_session_cookie, public_user, session_cookie
 from .clients import SlackClient
 from .config import load_config
-from .contactout_queue import ContactOutQueueService
+from .contactout_queue import ContactOutConflict, ContactOutQueueService
 from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
@@ -46,6 +46,8 @@ def _truthy(value: Any) -> bool:
 def _api_error_status(exc: Exception) -> int:
     if isinstance(exc, ProviderBudgetExceeded):
         return 429
+    if isinstance(exc, ContactOutConflict):
+        return 409
     if isinstance(exc, ValueError):
         return 400
     if isinstance(exc, PermissionError):

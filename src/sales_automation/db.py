@@ -2468,14 +2468,37 @@ class Repository:
                 ),
             ).fetchone()
             if status == "active":
+                stale_jobs = conn.execute(
+                    """
+                    SELECT * FROM contactout_enrichment_jobs
+                    WHERE account_id = %s
+                      AND owner_user_id IS DISTINCT FROM %s
+                      AND status IN ('queued', 'running', 'retry_wait', 'blocked')
+                    FOR UPDATE
+                    """,
+                    (account["id"], account["assigned_user_id"]),
+                ).fetchall()
+                for job in stale_jobs:
+                    self._settle_contactout_quota(conn, job, consumed=bool(job.get("quota_reserved")))
+                    conn.execute(
+                        """
+                        UPDATE contactout_enrichment_jobs
+                        SET status = 'blocked', error_code = 'account_reassigned',
+                            lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (job["id"],),
+                    )
                 conn.execute(
                     """
                     UPDATE contactout_enrichment_jobs
-                    SET status = 'retry_wait', error_code = NULL, next_attempt_at = NOW(), updated_at = NOW()
+                    SET status = 'retry_wait', attempts = 0, error_code = NULL,
+                        next_attempt_at = NOW(), updated_at = NOW()
                     WHERE account_id = %s AND status = 'blocked'
+                      AND owner_user_id = %s
                       AND error_code IN ('challenge_required', 'reauth_required')
                     """,
-                    (account["id"],),
+                    (account["id"], account["assigned_user_id"]),
                 )
             return account
 
@@ -2575,25 +2598,74 @@ class Repository:
                 (token, max(30, int(lease_seconds))),
             ).fetchone()
 
-    def reserve_contactout_job_quota(self, job_id: int, lease_token: str, *, global_limit: int) -> bool:
+    def reserve_contactout_job_quota(self, job_id: int, lease_token: str, *, global_limit: int) -> str:
         with self.db.connect() as conn:
             job = conn.execute(
                 """
-                SELECT job.account_id, job.quota_units, account.daily_limit, account.status, account.cooldown_until
+                SELECT job.*, account.daily_limit, account.status AS account_status,
+                       account.cooldown_until, account.assigned_user_id,
+                       contact.owner_user_id AS contact_owner_user_id,
+                       contact.pool_type AS contact_pool_type
                 FROM contactout_enrichment_jobs job
                 JOIN contactout_accounts account ON account.id = job.account_id
+                JOIN contacts contact ON contact.id = job.contact_id
                 WHERE job.id = %s AND job.status = 'running'
                   AND job.lease_token = %s AND job.quota_reserved = FALSE
-                FOR UPDATE OF job, account
+                FOR UPDATE OF job, account, contact
                 """,
                 (job_id, lease_token),
             ).fetchone()
-            if not job or job["status"] != "active" or (job["cooldown_until"] and job["cooldown_until"] > datetime.now(UTC)):
-                return False
+            if not job:
+                return "stale_lease"
+            if job["lease_expires_at"] <= datetime.now(UTC):
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'lease_expired_unknown_charge',
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job_id, lease_token),
+                )
+                return "lease_expired_unknown_charge"
+            if job["account_status"] != "active" or job["assigned_user_id"] != job["owner_user_id"]:
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'account_assignment_changed',
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job_id, lease_token),
+                )
+                return "account_assignment_changed"
+            if job["contact_pool_type"] != "private" or job["contact_owner_user_id"] != job["owner_user_id"]:
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'blocked', error_code = 'ownership_changed',
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job_id, lease_token),
+                )
+                return "ownership_changed"
+            if job["cooldown_until"] and job["cooldown_until"] > datetime.now(UTC):
+                conn.execute(
+                    """
+                    UPDATE contactout_enrichment_jobs
+                    SET status = 'retry_wait', error_code = 'account_cooldown',
+                        next_attempt_at = %s, lease_token = NULL,
+                        lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s AND status = 'running' AND lease_token = %s
+                    """,
+                    (job["cooldown_until"], job_id, lease_token),
+                )
+                return "account_cooldown"
             account_scope = f"account:{job['account_id']}"
             scopes = [("global", int(global_limit)), (account_scope, int(job["daily_limit"]))]
             if any(limit <= 0 for _, limit in scopes):
-                return False
+                return "daily_quota_exhausted"
             for scope, _ in scopes:
                 conn.execute(
                     """
@@ -2630,7 +2702,7 @@ class Repository:
                     """,
                     ("global", account_scope),
                 )
-                return False
+                return "daily_quota_exhausted"
             conn.execute(
                 """
                 UPDATE provider_account_daily_usage
@@ -2653,7 +2725,7 @@ class Repository:
                 """,
                 (job_id, lease_token),
             )
-            return True
+            return "reserved"
 
     def complete_contactout_job(self, job_id: int, lease_token: str, *, status: str, result: dict[str, Any]) -> bool:
         with self.db.connect() as conn:
@@ -2661,6 +2733,7 @@ class Repository:
                 """
                 SELECT * FROM contactout_enrichment_jobs
                 WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND lease_expires_at > NOW()
                 FOR UPDATE
                 """,
                 (job_id, lease_token),
@@ -2758,6 +2831,7 @@ class Repository:
                 """
                 SELECT * FROM contactout_enrichment_jobs
                 WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND lease_expires_at > NOW()
                 FOR UPDATE
                 """,
                 (job_id, lease_token),
@@ -2787,6 +2861,7 @@ class Repository:
                 """
                 SELECT * FROM contactout_enrichment_jobs
                 WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND lease_expires_at > NOW()
                 FOR UPDATE
                 """,
                 (job_id, lease_token),
@@ -2815,6 +2890,7 @@ class Repository:
                 """
                 SELECT * FROM contactout_enrichment_jobs
                 WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND lease_expires_at > NOW()
                 FOR UPDATE
                 """,
                 (job_id, lease_token),

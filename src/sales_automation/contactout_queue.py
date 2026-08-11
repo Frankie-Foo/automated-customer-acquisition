@@ -29,6 +29,10 @@ class ContactOutRateLimited(RuntimeError):
         super().__init__("rate_limited")
 
 
+class ContactOutConflict(RuntimeError):
+    pass
+
+
 class ContactOutBridgeAdapter:
     """Calls an internal bridge that owns the authorized browser session."""
 
@@ -102,14 +106,19 @@ class ContactOutQueueService:
         idempotency_key = hashlib.sha256(
             f"contactout:v1|{contact_id}|{input_hash}|person_enrich|{refresh_window}".encode("utf-8")
         ).hexdigest()
-        return self.repo.enqueue_contactout_job(
-            contact_id=contact_id,
-            owner_user_id=owner_user_id,
-            account_id=account_id,
-            operation="person_enrich",
-            input_hash=input_hash,
-            idempotency_key=idempotency_key,
-        )
+        try:
+            return self.repo.enqueue_contactout_job(
+                contact_id=contact_id,
+                owner_user_id=owner_user_id,
+                account_id=account_id,
+                operation="person_enrich",
+                input_hash=input_hash,
+                idempotency_key=idempotency_key,
+            )
+        except ValueError as exc:
+            if str(exc) == "contactout_job_conflict":
+                raise ContactOutConflict("contactout_job_conflict") from exc
+            raise
 
     def run_next(self) -> ContactOutRun | None:
         self.repo.block_expired_contactout_jobs()
@@ -122,20 +131,27 @@ class ContactOutQueueService:
             self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "missing_account_or_contact", consumed=False)
             return ContactOutRun(int(job["id"]), "failed", error_code="missing_account_or_contact")
         global_limit = max(0, int(self.config.raw.get("contactout", {}).get("global_daily_limit") or 0))
-        if not self.repo.reserve_contactout_job_quota(
+        reservation = self.repo.reserve_contactout_job_quota(
             int(job["id"]), str(job["lease_token"]), global_limit=global_limit
-        ):
+        )
+        if reservation == "daily_quota_exhausted":
             self.repo.retry_contactout_job(int(job["id"]), str(job["lease_token"]), "daily_quota_exhausted", retry_after_seconds=_seconds_until_tomorrow())
             return ContactOutRun(int(job["id"]), "retry_wait", error_code="daily_quota_exhausted")
+        if reservation == "account_cooldown":
+            return ContactOutRun(int(job["id"]), "retry_wait", error_code="account_cooldown")
+        if reservation != "reserved":
+            return ContactOutRun(int(job["id"]), "blocked", error_code=reservation)
         try:
             raw = self.adapter.enrich(account, contact, idempotency_key=str(job["idempotency_key"]))
             normalized = _normalize_result(raw)
             if normalized["match_status"] == "no_match":
                 if not self.repo.complete_contactout_job(int(job["id"]), str(job["lease_token"]), status="no_match", result=normalized):
-                    return ContactOutRun(int(job["id"]), "blocked", error_code="ownership_changed")
+                    self.repo.block_expired_contactout_jobs()
+                    return ContactOutRun(int(job["id"]), "blocked", error_code="stale_lease_or_ownership_changed")
                 return ContactOutRun(int(job["id"]), "no_match")
             if not self.repo.complete_contactout_job(int(job["id"]), str(job["lease_token"]), status="succeeded", result=normalized):
-                return ContactOutRun(int(job["id"]), "blocked", error_code="ownership_changed")
+                self.repo.block_expired_contactout_jobs()
+                return ContactOutRun(int(job["id"]), "blocked", error_code="stale_lease_or_ownership_changed")
             return ContactOutRun(int(job["id"]), "succeeded", normalized["review_required"])
         except ContactOutRateLimited as exc:
             self.repo.retry_contactout_job(int(job["id"]), str(job["lease_token"]), "rate_limited", retry_after_seconds=exc.retry_after_seconds)
@@ -173,7 +189,7 @@ def _normalize_result(data: dict[str, Any]) -> dict[str, Any]:
                 "email": email,
                 "source": "contactout",
                 "status": str(item.get("status") or "unverified").lower(),
-                "confidence": max(0, min(100, int(item.get("confidence") or confidence))),
+                "confidence": max(0, min(100, int(confidence if item.get("confidence") is None else item["confidence"]))),
                 "category": str(item.get("category") or "personal"),
                 "discovered_at": datetime.now(_BUSINESS_TZ).isoformat(),
             }
@@ -231,6 +247,7 @@ __all__ = [
     "ContactOutAdapter",
     "ContactOutBlocked",
     "ContactOutBridgeAdapter",
+    "ContactOutConflict",
     "ContactOutQueueService",
     "ContactOutRateLimited",
     "ContactOutRun",

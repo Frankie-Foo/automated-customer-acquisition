@@ -6,6 +6,7 @@ from sales_automation.config import AppConfig
 from sales_automation.contactout_queue import (
     ContactOutBlocked,
     ContactOutBridgeAdapter,
+    ContactOutConflict,
     ContactOutQueueService,
     ContactOutRateLimited,
 )
@@ -54,7 +55,7 @@ class FakeRepo:
         }
 
     def reserve_contactout_job_quota(self, job_id, lease_token, *, global_limit):
-        return self.quota_allowed
+        return "reserved" if self.quota_allowed else "daily_quota_exhausted"
 
     def complete_contactout_job(self, job_id, lease_token, *, status, result):
         self.completed.append((job_id, status, result))
@@ -100,6 +101,21 @@ def config(limit=50):
     return AppConfig(raw={"contactout": {"global_daily_limit": limit}}, root_dir=Path("."))
 
 
+def test_sales_enqueue_policy_fixes_server_controlled_fields():
+    sql = (Path(__file__).parents[1] / "migrations" / "042_contactout_queue_fencing.sql").read_text(encoding="utf-8")
+
+    for clause in (
+        "operation = 'person_enrich'",
+        "status = 'queued'",
+        "priority = 0",
+        "attempts = 0",
+        "max_attempts = 3",
+        "quota_units = 1",
+        "quota_reserved = FALSE",
+    ):
+        assert clause in sql
+
+
 def test_enqueue_is_stable_and_requires_linkedin_url():
     repo = FakeRepo()
     service = ContactOutQueueService(config(), repo, adapter=Adapter())
@@ -111,6 +127,19 @@ def test_enqueue_is_stable_and_requires_linkedin_url():
 
     repo.contact["linkedin_url"] = ""
     with pytest.raises(ValueError, match="linkedin_url_required"):
+        service.enqueue(7, owner_user_id=2, account_id=3)
+
+
+def test_enqueue_conflict_has_stable_error_type():
+    repo = FakeRepo()
+
+    def conflict(**fields):
+        raise ValueError("contactout_job_conflict")
+
+    repo.enqueue_contactout_job = conflict
+    service = ContactOutQueueService(config(), repo, adapter=Adapter())
+
+    with pytest.raises(ContactOutConflict, match="contactout_job_conflict"):
         service.enqueue(7, owner_user_id=2, account_id=3)
 
 
@@ -133,6 +162,29 @@ def test_exact_match_is_structured_for_conservative_promotion():
     result = repo.completed[0][2]
     assert result["review_required"] is False
     assert result["email_candidates"][0]["email"] == "ada@example.com"
+
+
+def test_explicit_zero_candidate_confidence_is_not_inherited():
+    repo = FakeRepo()
+    service = ContactOutQueueService(
+        config(),
+        repo,
+        adapter=Adapter({
+            "status": "matched",
+            "match_confidence": 95,
+            "emails": [{
+                "email": "ada@example.com",
+                "status": "valid",
+                "category": "personal_work",
+                "confidence": 0,
+            }],
+        }),
+    )
+    service.enqueue(7, owner_user_id=2, account_id=3)
+
+    service.run_next()
+
+    assert repo.completed[0][2]["email_candidates"][0]["confidence"] == 0
 
 
 def test_low_confidence_requires_review():
@@ -166,7 +218,7 @@ def test_zero_global_limit_fails_closed():
     repo = FakeRepo()
 
     def reserve(job_id, lease_token, *, global_limit):
-        return global_limit > 0
+        return "reserved" if global_limit > 0 else "daily_quota_exhausted"
 
     repo.reserve_contactout_job_quota = reserve
     adapter = Adapter()

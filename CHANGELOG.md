@@ -9,6 +9,7 @@
 - Run bounded ContactOut work from the existing scheduler without storing passwords, cookies, or tokens in PostgreSQL.
 - Isolate cached AI output by owner with PostgreSQL RLS and cache only validated, normalized responses.
 - Harden ContactOut jobs with sales-safe idempotent enqueue, fixed account ownership, positive fail-closed quotas, one-shot bridge calls, lease fencing, ownership-change protection, and recoverable reauthorization.
+- Recheck account assignment, contact ownership, quota, and lease before every enrichment run; reject sales-controlled task fields and concurrent duplicate conflicts without partial writes.
 
 ## 2026-08-10 - Production acquisition control and sales workflow UX
 
