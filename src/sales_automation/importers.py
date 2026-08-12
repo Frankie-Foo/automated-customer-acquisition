@@ -35,6 +35,13 @@ COMPANY_SEED_ALIASES = {
 }
 
 
+# A supplied LinkedIn profile is an exact person seed. Treat it as the
+# source website so the existing company-seed workflow can preserve it.
+COMPANY_SEED_ALIASES["website"].extend(
+    ["linkedin", "linkedin url", "linkedin profile", "linkedin profile url", "\u9886\u82f1", "\u9886\u82f1\u94fe\u63a5", "\u9886\u82f1\u4e3b\u9875"]
+)
+
+
 def parse_contacts_csv(text: str, *, default_source: str = "csv_import") -> list[dict[str, Any]]:
     stream = io.StringIO(text)
     sample = text[:2048]

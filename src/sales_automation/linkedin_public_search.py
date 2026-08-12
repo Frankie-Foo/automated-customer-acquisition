@@ -1392,6 +1392,10 @@ def normalize_company_seed_identity(seed: dict[str, Any]) -> dict[str, Any]:
         normalized["source_company_name"] = company_name
     if is_linkedin_profile:
         normalized["known_profile_url"] = website
+        # This is a person profile, not an employer domain. Do not waste
+        # domain lookup/enrichment credits against linkedin.com.
+        normalized["website"] = ""
+        normalized["company_domain"] = ""
 
     candidates = [dict(item) for item in seed.get("email_candidates") or []]
     email = _clean(seed.get("email"))

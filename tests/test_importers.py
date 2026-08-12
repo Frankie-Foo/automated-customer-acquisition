@@ -1,4 +1,5 @@
 from sales_automation.importers import parse_company_seed_csv, parse_contacts_csv
+from sales_automation.linkedin_public_search import company_seed_to_search_criteria
 
 
 def test_parse_contacts_csv_maps_common_headers():
@@ -63,4 +64,16 @@ def test_parse_company_seed_csv_maps_iran_company_headers_without_website():
     assert seeds[0]["location"] == "Iran"
     assert seeds[0]["job_titles"] == ["CEO"]
     assert seeds[0]["reason"] == "Premium retail fit"
+
+
+def test_parse_company_seed_csv_maps_chinese_linkedin_profile_as_known_person():
+    seeds = parse_company_seed_csv(
+        "\u516c\u53f8,\u9886\u82f1\u94fe\u63a5\n"
+        "Bless Luxury,https://www.linkedin.com/in/cihangir-h%C4%B1zl%C4%B1-90bbb1351/\n"
+    )
+
+    criteria = company_seed_to_search_criteria(seeds[0])
+    assert criteria["company_keyword"] == "Bless Luxury"
+    assert criteria["known_profile_url"].rstrip("/") == "https://www.linkedin.com/in/cihangir-h%C4%B1zl%C4%B1-90bbb1351"
+    assert criteria["company_website"] == ""
 
