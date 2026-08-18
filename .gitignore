@@ -14,6 +14,7 @@ work/
 deployment/production.env
 deployment/.deployed-image
 deployment/backups/
+deployment/secrets/
 *.egg-info/
 build/
 node_modules/

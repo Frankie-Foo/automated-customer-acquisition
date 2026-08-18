@@ -1,0 +1,8 @@
+{
+  "accounts": {
+    "contactout-account-01": {
+      "email": "authorized-account@example.com",
+      "password": "replace-in-server-secret-file"
+    }
+  }
+}

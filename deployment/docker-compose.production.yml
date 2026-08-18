@@ -113,6 +113,27 @@ services:
         sleep "$${CONTACTOUT_POLL_INTERVAL_SECONDS:-60}";
       done'
 
+  contactout-bridge:
+    profiles: ["contactout"]
+    build:
+      context: ../contactout_bridge
+      dockerfile: Dockerfile
+    image: ${CONTACTOUT_BRIDGE_IMAGE:-salesbot-contactout-bridge:local}
+    restart: unless-stopped
+    env_file:
+      - path: ./production.env
+        required: false
+    environment:
+      CONTACTOUT_CREDENTIALS_FILE: /run/secrets/contactout-accounts.json
+      CONTACTOUT_BRIDGE_DB: /data/idempotency.sqlite3
+      CONTACTOUT_SESSION_DIR: /data/sessions
+      CONTACTOUT_BROWSER_HEADLESS: "false"
+    expose:
+      - "8790"
+    volumes:
+      - ${CONTACTOUT_CREDENTIALS_FILE_HOST:-./secrets/contactout-accounts.json}:/run/secrets/contactout-accounts.json:ro
+      - contactout_bridge_data:/data
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -154,3 +175,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  contactout_bridge_data:
