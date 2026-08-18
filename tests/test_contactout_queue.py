@@ -500,8 +500,7 @@ def test_contactout_candidate_order_uses_existing_contact_timestamps():
     assert "LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'" in database.connection.query
     assert "available_account.assigned_user_id = c.owner_user_id" not in database.connection.query
     assert "available_account.status = 'active'" in database.connection.query
-    assert "account_usage.reserved_units + account_usage.used_units" in database.connection.query
-    assert "pending_job.status IN ('queued', 'retry_wait')" in database.connection.query
+    assert "provider_account_daily_usage" not in database.connection.query
 
 
 def test_contactout_account_selection_uses_actual_usage_columns():
@@ -533,6 +532,8 @@ def test_contactout_account_selection_uses_actual_usage_columns():
     assert "account_usage.used_units" in database.connection.query
     assert "account_usage.consumed_units" not in database.connection.query
     assert "account.assigned_user_id =" not in database.connection.query
+    assert "pending.pending_units" in database.connection.query
+    assert "< account.daily_limit" not in database.connection.query
 
 
 def test_company_pool_migration_keeps_contact_ownership_and_removes_account_owner_gate():

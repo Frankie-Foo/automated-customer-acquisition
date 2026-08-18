@@ -2,7 +2,7 @@
 
 ## 2026-08-18 - Unattended acquisition and feedback-safe outreach
 
-- Schedule ContactOut enrichment from one company-wide authorized account pool; customer ownership and result visibility remain isolated by salesperson.
+- Schedule ContactOut enrichment from one company-wide authorized account pool; customer ownership and result visibility remain isolated by salesperson, and work can queue safely after today's provider capacity is allocated.
 - Run scheduled region-by-industry acquisition as durable per-item jobs with leases, bounded retries, resumable progress, and partial-run visibility.
 - Execute independent email providers concurrently within per-contact and daily credit budgets; reuse cached or existing valid work emails before paid calls.
 - Auto-queue only authorized ContactOut candidates when the bridge is configured, while keeping account quotas, ownership, challenge state, and delivery isolated from email sending.

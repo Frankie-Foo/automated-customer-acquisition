@@ -2576,9 +2576,6 @@ class Repository:
                 WHERE account.status = 'active'
                   AND account.daily_limit > 0
                   AND (account.cooldown_until IS NULL OR account.cooldown_until <= NOW())
-                  AND COALESCE(account_usage.reserved_units, 0)
-                      + COALESCE(account_usage.used_units, 0)
-                      + COALESCE(pending.pending_units, 0) < account.daily_limit
                 ORDER BY
                     COALESCE(account_usage.reserved_units, 0)
                       + COALESCE(account_usage.used_units, 0)
@@ -2608,14 +2605,7 @@ class Repository:
             "WHERE available_account.status = 'active' "
             "AND available_account.daily_limit > 0 "
             "AND (available_account.cooldown_until IS NULL OR available_account.cooldown_until <= NOW()) "
-            "AND COALESCE((SELECT account_usage.reserved_units + account_usage.used_units "
-            "FROM provider_account_daily_usage account_usage "
-            "WHERE account_usage.provider = 'contactout' "
-            "AND account_usage.scope_key = CONCAT('account:', available_account.id::text) "
-            "AND account_usage.usage_date = timezone('Asia/Shanghai', NOW())::date), 0) "
-            "+ (SELECT COUNT(*) FROM contactout_enrichment_jobs pending_job "
-            "WHERE pending_job.account_id = available_account.id "
-            "AND pending_job.status IN ('queued', 'retry_wait')) < available_account.daily_limit)",
+            ")",
             "NOT EXISTS (SELECT 1 FROM contactout_enrichment_jobs existing_job "
             "WHERE existing_job.contact_id = c.id "
             "AND existing_job.created_at >= (date_trunc('month', timezone('Asia/Shanghai', NOW())) "
