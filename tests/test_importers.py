@@ -77,3 +77,20 @@ def test_parse_company_seed_csv_maps_chinese_linkedin_profile_as_known_person():
     assert criteria["known_profile_url"].rstrip("/") == "https://www.linkedin.com/in/cihangir-h%C4%B1zl%C4%B1-90bbb1351"
     assert criteria["company_website"] == ""
 
+
+def test_parse_company_seed_csv_recovers_named_person_email_from_notes():
+    seeds = parse_company_seed_csv(
+        "姓名,公司,职位,LinkedIn,备注\n"
+        "Aakriti Singh,Ethos Watch Boutiques,Head of Strategy,"
+        "https://www.linkedin.com/in/aakriti-singh-371b6199/,"
+        "内部推动者；邮箱 aakriti.singh@ethoswatches.com\n"
+    )
+
+    assert seeds[0]["person_name"] == "Aakriti Singh"
+    assert seeds[0]["email"] == "aakriti.singh@ethoswatches.com"
+    assert seeds[0]["email_candidates"][0]["email"] == "aakriti.singh@ethoswatches.com"
+    criteria = company_seed_to_search_criteria(seeds[0])
+    assert criteria["person_name"] == "Aakriti Singh"
+    assert criteria["known_profile_url"].rstrip("/") == "https://www.linkedin.com/in/aakriti-singh-371b6199"
+    assert criteria["company_website"] == "ethoswatches.com"
+
