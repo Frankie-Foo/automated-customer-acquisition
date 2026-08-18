@@ -54,7 +54,7 @@ class FakeRepo:
     def get_contactout_account(self, account_id, *, owner_user_id=None):
         return self.account if account_id == 3 else None
 
-    def select_contactout_account(self, *, owner_user_id):
+    def select_contactout_account(self):
         return self.selected_account
 
     def list_contactout_candidates(self, *, limit, user=None):
@@ -169,7 +169,7 @@ def test_enqueue_conflict_has_stable_error_type():
         service.enqueue(7, owner_user_id=2, account_id=3)
 
 
-def test_auto_enqueue_uses_assigned_account_without_manual_account_id():
+def test_auto_enqueue_uses_company_pool_without_manual_account_id():
     repo = FakeRepo()
     repo.candidates = [{"id": 7, "owner_user_id": 2}]
     repo.selected_account = {"id": 3, "status": "active"}
@@ -498,7 +498,7 @@ def test_contactout_candidate_order_uses_existing_contact_timestamps():
     assert "COALESCE(c.profile_updated_at, c.enriched_at, c.created_at)" in database.connection.query
     assert "c.updated_at" not in database.connection.query
     assert "LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'" in database.connection.query
-    assert "available_account.assigned_user_id = c.owner_user_id" in database.connection.query
+    assert "available_account.assigned_user_id = c.owner_user_id" not in database.connection.query
     assert "available_account.status = 'active'" in database.connection.query
     assert "account_usage.reserved_units + account_usage.used_units" in database.connection.query
     assert "pending_job.status IN ('queued', 'retry_wait')" in database.connection.query
@@ -527,8 +527,17 @@ def test_contactout_account_selection_uses_actual_usage_columns():
 
     database = Database()
 
-    Repository(database).select_contactout_account(owner_user_id=2)
+    Repository(database).select_contactout_account()
 
     assert "account_usage.reserved_units" in database.connection.query
     assert "account_usage.used_units" in database.connection.query
     assert "account_usage.consumed_units" not in database.connection.query
+    assert "account.assigned_user_id =" not in database.connection.query
+
+
+def test_company_pool_migration_keeps_contact_ownership_and_removes_account_owner_gate():
+    sql = (Path(__file__).parents[1] / "migrations" / "044_contactout_company_pool.sql").read_text(encoding="utf-8")
+
+    assert "contact.owner_user_id = sales_actor_id()" in sql
+    assert "account.assigned_user_id = sales_actor_id()" not in sql
+    assert "sales_actor_role() IN ('admin', 'system', 'sales')" in sql

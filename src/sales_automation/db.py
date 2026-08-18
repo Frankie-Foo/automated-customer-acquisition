@@ -2546,8 +2546,8 @@ class Repository:
                 tuple(params),
             ).fetchone()
 
-    def select_contactout_account(self, *, owner_user_id: int) -> dict[str, Any] | None:
-        """Select the least-loaded active account assigned to a sales user.
+    def select_contactout_account(self) -> dict[str, Any] | None:
+        """Select the least-loaded active account from the company pool.
 
         Queued jobs are included in the score so repeated auto-enqueue calls
         spread work across an authorized account pool before a worker reserves
@@ -2573,8 +2573,7 @@ class Repository:
                  AND account_usage.scope_key = CONCAT('account:', account.id::text)
                  AND account_usage.usage_date = timezone('Asia/Shanghai', NOW())::date
                 LEFT JOIN pending ON pending.account_id = account.id
-                WHERE account.assigned_user_id = %s
-                  AND account.status = 'active'
+                WHERE account.status = 'active'
                   AND account.daily_limit > 0
                   AND (account.cooldown_until IS NULL OR account.cooldown_until <= NOW())
                   AND COALESCE(account_usage.reserved_units, 0)
@@ -2589,7 +2588,7 @@ class Repository:
                     account.id
                 LIMIT 1
                 """,
-                (owner_user_id,),
+                (),
             ).fetchone()
 
     def list_contactout_candidates(
@@ -2606,8 +2605,7 @@ class Repository:
             "LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'",
             "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
             "EXISTS (SELECT 1 FROM contactout_accounts available_account "
-            "WHERE available_account.assigned_user_id = c.owner_user_id "
-            "AND available_account.status = 'active' "
+            "WHERE available_account.status = 'active' "
             "AND available_account.daily_limit > 0 "
             "AND (available_account.cooldown_until IS NULL OR available_account.cooldown_until <= NOW()) "
             "AND COALESCE((SELECT account_usage.reserved_units + account_usage.used_units "
@@ -2644,9 +2642,8 @@ class Repository:
     def list_contactout_accounts(self, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
-        if user and user.get("role") != "admin":
-            clauses.append("assigned_user_id = %s")
-            params.append(int(user["id"]))
+        # ContactOut accounts are company resources. Sales users only receive
+        # the masked account metadata selected below; credentials stay server-side.
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.db.connect() as conn:
             return conn.execute(
@@ -2731,13 +2728,7 @@ class Repository:
                     assigned_user_id, max(1, int(daily_limit)), authorized_by_user_id, status,
                 ),
             ).fetchone()
-            needs_fence = bool(
-                previous_account
-                and (
-                    previous_account["assigned_user_id"] != account["assigned_user_id"]
-                    or account["status"] != "active"
-                )
-            )
+            needs_fence = bool(previous_account and account["status"] != "active")
         # Keep account and job locks in separate transactions. Workers lock jobs
         # before rechecking the account, so this avoids the inverse lock order.
         if needs_fence:
@@ -2758,7 +2749,6 @@ class Repository:
                       AND contacts.owner_user_id = contactout_enrichment_jobs.owner_user_id
                       AND contactout_accounts.id = contactout_enrichment_jobs.account_id
                       AND contactout_accounts.status = 'active'
-                      AND contactout_accounts.assigned_user_id = contactout_enrichment_jobs.owner_user_id
                     """,
                     (account["id"],),
                 )
@@ -2777,7 +2767,7 @@ class Repository:
             ).fetchall()
             account = conn.execute(
                 """
-                SELECT status, assigned_user_id
+                SELECT status
                 FROM contactout_accounts
                 WHERE id = %s
                 FOR UPDATE
@@ -2787,16 +2777,14 @@ class Repository:
             if not account:
                 return
             for job in stale_jobs:
-                if account["status"] == "active" and job["owner_user_id"] == account["assigned_user_id"]:
+                if account["status"] == "active":
                     continue
                 self._settle_contactout_quota(conn, job, consumed=bool(job.get("quota_reserved")))
-                error_code = "account_reassigned"
-                if job["owner_user_id"] == account["assigned_user_id"]:
-                    error_code = (
-                        account["status"]
-                        if account["status"] in {"challenge_required", "reauth_required"}
-                        else "account_unavailable"
-                    )
+                error_code = (
+                    account["status"]
+                    if account["status"] in {"challenge_required", "reauth_required"}
+                    else "account_unavailable"
+                )
                 conn.execute(
                     """
                     UPDATE contactout_enrichment_jobs
@@ -2933,17 +2921,17 @@ class Repository:
                     (job_id, lease_token),
                 )
                 return "lease_expired_unknown_charge"
-            if job["account_status"] != "active" or job["assigned_user_id"] != job["owner_user_id"]:
+            if job["account_status"] != "active":
                 conn.execute(
                     """
                     UPDATE contactout_enrichment_jobs
-                    SET status = 'blocked', error_code = 'account_assignment_changed',
+                    SET status = 'blocked', error_code = 'account_unavailable',
                         lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
                     WHERE id = %s AND status = 'running' AND lease_token = %s
                     """,
                     (job_id, lease_token),
                 )
-                return "account_assignment_changed"
+                return "account_unavailable"
             if job["contact_pool_type"] != "private" or job["contact_owner_user_id"] != job["owner_user_id"]:
                 conn.execute(
                     """
@@ -3048,17 +3036,17 @@ class Repository:
             account = conn.execute(
                 """
                 SELECT id FROM contactout_accounts
-                WHERE id = %s AND status = 'active' AND assigned_user_id = %s
+                WHERE id = %s AND status = 'active'
                 FOR UPDATE
                 """,
-                (job["account_id"], job["owner_user_id"]),
+                (job["account_id"],),
             ).fetchone()
             if not account:
                 self._settle_contactout_quota(conn, job, consumed=True)
                 conn.execute(
                     """
                     UPDATE contactout_enrichment_jobs
-                    SET status = 'blocked', error_code = 'account_reassigned', completed_at = NOW(),
+                    SET status = 'blocked', error_code = 'account_unavailable', completed_at = NOW(),
                         lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
                     WHERE id = %s AND status = 'running' AND lease_token = %s
                     """,

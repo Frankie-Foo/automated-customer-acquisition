@@ -104,7 +104,7 @@ class ContactOutQueueService:
         linkedin_url = _normalize_linkedin(contact.get("linkedin_url"))
         if not linkedin_url:
             raise ValueError("linkedin_url_required")
-        account = self.repo.get_contactout_account(account_id, owner_user_id=owner_user_id)
+        account = self.repo.get_contactout_account(account_id)
         if not account or account.get("status") != "active":
             raise ValueError("contactout_account_unavailable")
         refresh_window = datetime.now(_BUSINESS_TZ).strftime("%Y-%m")
@@ -127,8 +127,8 @@ class ContactOutQueueService:
             raise
 
     def enqueue_auto(self, contact_id: int, *, owner_user_id: int) -> dict[str, Any]:
-        """Enqueue with the least-loaded active account assigned to the user."""
-        account = self.repo.select_contactout_account(owner_user_id=owner_user_id)
+        """Enqueue with the least-loaded active account in the company pool."""
+        account = self.repo.select_contactout_account()
         if not account:
             raise ValueError("contactout_account_unavailable")
         return self.enqueue(
@@ -165,7 +165,7 @@ class ContactOutQueueService:
         job = self.repo.claim_contactout_job()
         if not job:
             return None
-        account = self.repo.get_contactout_account(int(job["account_id"]), owner_user_id=job.get("owner_user_id"))
+        account = self.repo.get_contactout_account(int(job["account_id"]))
         contact = self.repo.get_contact(int(job["contact_id"]))
         if not account or not contact:
             self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "missing_account_or_contact", consumed=False)
