@@ -5673,10 +5673,14 @@ class Repository:
         return buffer.getvalue()
 
 
-def _merge_contact_candidates(existing: list[dict[str, Any]], incoming: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+def _merge_contact_candidates(existing: list[Any], incoming: list[Any], key: str) -> list[dict[str, Any]]:
     status_rank = {"valid": 5, "accept_all": 4, "risky": 3, "unknown": 2, "unverified": 1}
     merged: dict[str, dict[str, Any]] = {}
     for item in [*existing, *incoming]:
+        if isinstance(item, str):
+            item = {key: item, "status": "unverified"}
+        if not isinstance(item, dict):
+            continue
         value = str(item.get(key) or "").strip().lower()
         if not value:
             continue

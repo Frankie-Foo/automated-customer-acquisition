@@ -13,7 +13,20 @@ from sales_automation.contactout_queue import (
     ContactOutRun,
     contactout_bridge_configured,
 )
-from sales_automation.db import Repository
+from sales_automation.db import Repository, _merge_contact_candidates
+
+
+def test_contactout_candidate_merge_accepts_legacy_string_values():
+    merged = _merge_contact_candidates(
+        ["legacy@example.com", None],
+        [{"email": "new@example.com", "status": "valid", "confidence": 90}],
+        "email",
+    )
+
+    assert merged == [
+        {"email": "legacy@example.com", "status": "unverified"},
+        {"email": "new@example.com", "status": "valid", "confidence": 90},
+    ]
 
 
 class FakeRepo:
