@@ -104,7 +104,7 @@ class AutomationRunService:
                 result["tasks"].extend(batch.get("tasks") or [])
                 for field in ("results", "promoted", "skipped", "phone_attached", "hiring_signals"):
                     result[field] = int(result.get(field) or 0) + int(batch.get(field) or 0)
-                used = int(batch.get("results") or 0)
+                used = int(batch.get("promoted") or 0)
                 if used:
                     QuotaService(self.config, self.repo).consume(owner, "source", used)
                 self.repo.update_automation_run_progress(

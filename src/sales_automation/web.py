@@ -680,7 +680,7 @@ def make_handler(config, repo: Repository):
                         [int(item["task_id"]) for item in result.get("tasks", []) if item.get("task_id")],
                         user=user,
                     )
-                    quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("results") or 0))
+                    quota_result = QuotaService(config, repo).consume(user, "source", int(result.get("promoted") or 0))
                     queued = sent = 0
                     if payload.get("auto_queue") or payload.get("auto_send"):
                         queued = QueueService(repo).queue(int(result.get("promoted") or 0), user=user)

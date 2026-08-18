@@ -100,7 +100,30 @@ def test_automation_run_processes_each_company_and_waits_for_approval(monkeypatc
     assert [item[0] for item in repo.progress] == [1, 2, 2]
     assert repo.finished[-1][0] == "awaiting_approval"
     assert result["result"]["promoted"] == 2
-    assert FakeQuotaService.consumed == [(2, "source", 2), (2, "source", 2)]
+    assert FakeQuotaService.consumed == [(2, "source", 1), (2, "source", 1)]
+
+
+def test_automation_run_does_not_charge_source_quota_for_duplicates(monkeypatch):
+    class DuplicateSearchService(FakeSearchService):
+        def run_company_seeds(self, seeds, *, per_company_limit, user, auto_queue):
+            result = super().run_company_seeds(
+                seeds,
+                per_company_limit=per_company_limit,
+                user=user,
+                auto_queue=auto_queue,
+            )
+            return {**result, "promoted": 0, "skipped": result["results"]}
+
+    repo = FakeRepo()
+    FakeQuotaService.consumed = []
+    monkeypatch.setattr(automation, "LinkedInPublicSearchService", DuplicateSearchService)
+    monkeypatch.setattr(automation, "QuotaService", FakeQuotaService)
+
+    result = AutomationRunService(SimpleNamespace(), repo).process(7)
+
+    assert result["result"]["promoted"] == 0
+    assert result["result"]["skipped"] == 4
+    assert FakeQuotaService.consumed == []
 
 
 def test_automation_run_honors_pause_between_companies(monkeypatch):
