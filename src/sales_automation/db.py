@@ -2603,6 +2603,7 @@ class Repository:
             "c.pool_type = 'private'",
             "c.owner_user_id IS NOT NULL",
             "NULLIF(BTRIM(c.linkedin_url), '') IS NOT NULL",
+            "LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'",
             "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
             "EXISTS (SELECT 1 FROM contactout_accounts available_account "
             "WHERE available_account.assigned_user_id = c.owner_user_id "
