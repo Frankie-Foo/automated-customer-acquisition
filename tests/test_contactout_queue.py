@@ -454,6 +454,8 @@ def test_contactout_candidate_order_uses_existing_contact_timestamps():
 
     assert "COALESCE(c.profile_updated_at, c.enriched_at, c.created_at)" in database.connection.query
     assert "c.updated_at" not in database.connection.query
+    assert "available_account.assigned_user_id = c.owner_user_id" in database.connection.query
+    assert "available_account.status = 'active'" in database.connection.query
 
 
 def test_contactout_account_selection_uses_actual_usage_columns():

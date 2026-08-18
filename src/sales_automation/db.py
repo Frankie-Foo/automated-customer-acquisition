@@ -2604,6 +2604,11 @@ class Repository:
             "c.owner_user_id IS NOT NULL",
             "NULLIF(BTRIM(c.linkedin_url), '') IS NOT NULL",
             "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
+            "EXISTS (SELECT 1 FROM contactout_accounts available_account "
+            "WHERE available_account.assigned_user_id = c.owner_user_id "
+            "AND available_account.status = 'active' "
+            "AND available_account.daily_limit > 0 "
+            "AND (available_account.cooldown_until IS NULL OR available_account.cooldown_until <= NOW()))",
             "NOT EXISTS (SELECT 1 FROM contactout_enrichment_jobs existing_job "
             "WHERE existing_job.contact_id = c.id "
             "AND existing_job.created_at >= (date_trunc('month', timezone('Asia/Shanghai', NOW())) "
