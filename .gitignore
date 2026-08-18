@@ -17,6 +17,8 @@ deployment/backups/
 deployment/secrets/
 *.egg-info/
 build/
+/dist/
+.playwright-cli/
 node_modules/
 frontend/node_modules/
 frontend/dist/

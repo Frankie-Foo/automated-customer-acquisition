@@ -1,0 +1,14 @@
+{
+  "name": "Outbound Ops",
+  "short_name": "Outbound Ops",
+  "description": "海外销售获客、核验、邮件触达与客户生命周期工作台",
+  "start_url": "/#dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f9",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "/static/icons/app-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/static/icons/app-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

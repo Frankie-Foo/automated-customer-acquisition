@@ -5866,3 +5866,37 @@ main,
     grid-template-columns: 1fr;
   }
 }
+
+.pwa-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--primary-light);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.pwa-status.is-offline {
+  border-color: #f59e0b;
+}
+
+.pwa-status button {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}

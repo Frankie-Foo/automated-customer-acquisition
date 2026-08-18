@@ -1704,6 +1704,8 @@ def make_handler(config, repo: Repository):
                 self.send_header("Cache-Control", "public, max-age=31536000, immutable")
             else:
                 self.send_header("Cache-Control", "no-cache")
+            if path.name == "sw.js":
+                self.send_header("Service-Worker-Allowed", "/")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

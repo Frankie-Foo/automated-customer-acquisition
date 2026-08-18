@@ -6,6 +6,7 @@ import CustomerWorkspacePortal from "./CustomerWorkspace.jsx";
 import WorkbenchPortal from "./Workbench.jsx";
 import DashboardViewsPortal from "./DashboardViews.jsx";
 import SentEmailsPortal from "./SentEmails.jsx";
+import PwaStatus from "./PwaStatus.jsx";
 import legacyMarkup from "./legacyMarkup.html?raw";
 import "./legacy-styles.css";
 
@@ -76,6 +77,7 @@ export default function App() {
     <>
       <LegacyShell />
       <AuthGatePortal onSessionChange={setSessionUser} />
+      <PwaStatus />
       {sessionUser && !sessionUser.must_change_password && (
         <>
           {activePage === "admin" && <AdminConsolePortal />}
