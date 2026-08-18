@@ -65,3 +65,16 @@ docker compose --profile contactout \
 预期 `/ready` 返回 `ok=true` 和已加载账号数。先用一个授权账号、一个精确 LinkedIn 线索验收；确认结果、额度和幂等记录正确后再启用其他账号。
 
 若返回 `challenge_required` 或 `reauth_required`，暂停该账号并人工完成平台要求的验证，不自动绕过。
+
+## 5. 首次登录并保存会话
+
+在可显示浏览器的受信任电脑执行。命令会自动填写账号密码；平台要求验证码时，在打开的窗口完成一次验证。此步骤不搜索联系人、不消耗 Reveal 额度。
+
+```powershell
+python -m contactout_bridge.bootstrap_sessions `
+  --credentials "C:\secure\contactout-accounts.txt" `
+  --session-dir "$env:LOCALAPPDATA\salesbot\contactout-sessions" `
+  --timeout 300
+```
+
+凭据文件可使用上方 JSON 格式，或按“邮箱一行、密码一行”交替排列。密码不放命令行。生成的会话文件不得进入 Git；复制到生产 `contactout-bridge` 的 `/data/sessions` 后权限设为 `0600`。会话失效时重新执行，不绕过验证码或平台风控。

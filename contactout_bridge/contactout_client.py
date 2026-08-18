@@ -48,7 +48,7 @@ class ContactOutClient:
         )
         return session
 
-    def login(self, email: str, password: str) -> None:
+    def login(self, email: str, password: str, *, timeout_seconds: int = 30) -> None:
         from patchright.sync_api import sync_playwright
 
         session = self._new_session()
@@ -60,7 +60,7 @@ class ContactOutClient:
             try:
                 page = browser.new_page()
                 page.goto(f"{self.BASE}/login", timeout=60_000, wait_until="domcontentloaded")
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + timeout_seconds
                 while time.monotonic() < deadline:
                     token = page.evaluate(
                         "() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value || ''"
@@ -73,7 +73,9 @@ class ContactOutClient:
                 page.fill('input[name="email"]', email)
                 page.fill('input[name="password"]', password)
                 page.click('button[type="submit"]')
-                page.wait_for_timeout(4_000)
+                deadline = time.monotonic() + timeout_seconds
+                while time.monotonic() < deadline and "/login" in page.url:
+                    page.wait_for_timeout(1_000)
                 if "/login" in page.url:
                     raise ProviderError("reauth_required")
                 for cookie in page.context.cookies():
