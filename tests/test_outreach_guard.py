@@ -115,3 +115,20 @@ def test_lead_quality_score_can_be_inferred_from_contact_context():
     }
 
     assert lead_quality_score(contact) >= 80
+
+
+def test_send_readiness_uses_current_icp_assessment_instead_of_stale_import_score():
+    contact = {
+        "first_name": "Frank",
+        "job_title": "Test Recipient",
+        "company_name": "VERTU Internal QA",
+        "email": "frank.fu@vertu.cn",
+        "email_status": "valid",
+        "lead_score": 35,
+        "icp_assessment": {"score": 62},
+    }
+
+    readiness = send_readiness(contact)
+
+    assert readiness["ok"]
+    assert readiness["score"] == 62

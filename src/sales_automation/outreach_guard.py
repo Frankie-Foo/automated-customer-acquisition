@@ -66,6 +66,14 @@ def is_sendable_email(value: str | None) -> bool:
 
 
 def lead_quality_score(contact: dict[str, Any]) -> int:
+    assessment = contact.get("icp_assessment")
+    if isinstance(assessment, dict):
+        assessed = assessment.get("score")
+        if assessed not in {None, ""}:
+            try:
+                return max(0, min(100, int(assessed)))
+            except (TypeError, ValueError):
+                pass
     explicit = contact.get("lead_score")
     if explicit not in {None, ""}:
         try:
