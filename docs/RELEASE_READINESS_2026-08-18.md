@@ -14,7 +14,7 @@ This release closes the unattended acquisition-to-sales-handoff path:
 
 ## Verified release gates
 
-- Python: `326 passed`
+- Python: `340 passed`
 - Frontend: test-mode and production Vite builds pass
 - Python package: bundled `web_static` is present; no `.env` is included
 - PostgreSQL: 43 migrations applied; repeated migration returns `applied=[]`

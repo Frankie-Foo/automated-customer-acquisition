@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .clients import SlackClient
 from .config import load_config
-from .contactout_queue import ContactOutQueueService, contactout_bridge_configured
+from .contactout_queue import ContactOutQueueService, contactout_bridge_configured, summarize_contactout_batch
 from .db import Database, Repository
 from .health import check_readiness
 from .logging_utils import log
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             service = ContactOutQueueService(config, repo)
             auto_queue = service.auto_enqueue(args.limit)
             runs = service.run_many(args.limit)
-            log("contactout.completed", auto_queue=auto_queue, runs=runs, processed=len(runs))
+            log("contactout.completed", **summarize_contactout_batch(auto_queue, runs))
     elif args.command == "mailbox-poll":
         stats = MailboxReplyService(config, repo).poll_once(args.limit)
         log("mailbox.poll", **stats)

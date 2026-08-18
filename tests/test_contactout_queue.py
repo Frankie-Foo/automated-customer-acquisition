@@ -12,6 +12,7 @@ from sales_automation.contactout_queue import (
     ContactOutRateLimited,
     ContactOutRun,
     contactout_bridge_configured,
+    summarize_contactout_batch,
 )
 from sales_automation.db import Repository, _merge_contact_candidates
 
@@ -293,6 +294,35 @@ def test_run_many_stops_when_queue_is_empty():
         {"job_id": 1, "status": "succeeded", "review_required": False, "error_code": None},
         {"job_id": 2, "status": "no_match", "review_required": False, "error_code": None},
     ]
+
+
+def test_batch_summary_excludes_contact_and_job_payloads():
+    summary = summarize_contactout_batch(
+        {
+            "requested": 10,
+            "candidates": 4,
+            "queued": 2,
+            "skipped": [
+                {"contact_id": 7, "reason": "contactout_account_unavailable"},
+                {"contact_id": 8, "reason": "contactout_account_unavailable"},
+            ],
+            "jobs": [{"id": 11, "contact_id": 7}],
+        },
+        [
+            {"job_id": 11, "status": "succeeded", "review_required": False, "error_code": None},
+            {"job_id": 12, "status": "retry_wait", "review_required": False, "error_code": "rate_limited"},
+        ],
+    )
+
+    assert summary == {
+        "requested": 10,
+        "candidates": 4,
+        "queued": 2,
+        "processed": 2,
+        "run_statuses": {"retry_wait": 1, "succeeded": 1},
+        "skip_reasons": {"contactout_account_unavailable": 2},
+    }
+    assert "jobs" not in summary
 
 
 def test_bridge_uses_one_idempotent_request():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -213,6 +214,18 @@ class ContactOutQueueService:
         return runs
 
 
+def summarize_contactout_batch(auto_queue: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return an operations-safe batch summary without contact or job payloads."""
+    return {
+        "requested": int(auto_queue.get("requested") or 0),
+        "candidates": int(auto_queue.get("candidates") or 0),
+        "queued": int(auto_queue.get("queued") or 0),
+        "processed": len(runs),
+        "run_statuses": dict(sorted(Counter(str(item.get("status") or "unknown") for item in runs).items())),
+        "skip_reasons": dict(sorted(Counter(str(item.get("reason") or "unknown") for item in auto_queue.get("skipped") or []).items())),
+    }
+
+
 def _normalize_result(data: dict[str, Any]) -> dict[str, Any]:
     match_status = str(data.get("match_status") or data.get("status") or "matched").lower()
     if match_status in {"no_match", "not_found"}:
@@ -300,4 +313,5 @@ __all__ = [
     "ContactOutRateLimited",
     "ContactOutRun",
     "contactout_bridge_configured",
+    "summarize_contactout_batch",
 ]

@@ -50,6 +50,7 @@ function AdminConsole() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [contactOutRunning, setContactOutRunning] = useState(false);
   const [activeSection, setActiveSection] = useState("users");
 
   const isAdmin = user?.role === "admin";
@@ -229,12 +230,19 @@ function AdminConsole() {
   async function runContactOutQueue() {
     setError("");
     setMessage("");
+    setContactOutRunning(true);
     try {
       const result = await api("/api/admin/contactout/run", { method: "POST", body: JSON.stringify({ limit: 10 }) });
-      setMessage(`已处理 ${result.runs?.length || 0} 条富化任务`);
+      const runs = result.runs || [];
+      const count = (status) => runs.filter((item) => item.status === status).length;
+      const waiting = count("retry_wait") + count("blocked");
+      const failed = count("failed");
+      setMessage(`已入队 ${result.auto_queue?.queued || 0} 条，处理 ${runs.length} 条：成功 ${count("succeeded")}，未匹配 ${count("no_match")}，等待 ${waiting}，异常 ${failed}`);
       await loadAdminData();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setContactOutRunning(false);
     }
   }
 
@@ -340,6 +348,7 @@ function AdminConsole() {
           onChange={setNewContactOutAccount}
           onSave={saveContactOutAccount}
           onRun={runContactOutQueue}
+          running={contactOutRunning}
           onRefresh={loadAdminData}
         />}
         {activeSection === "acquisition" && <AcquisitionControl users={users} plans={acquisitionPlans} flywheel={flywheelData} onRefresh={loadAdminData} />}
@@ -548,7 +557,7 @@ function experimentStatusLabel(status) {
   return { draft: "草稿", active: "进行中", completed: "已完成", cancelled: "已取消" }[status] || status;
 }
 
-function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRefresh }) {
+function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRefresh, running }) {
   const accounts = data?.contactout_accounts || [];
   const usage = data?.contactout_usage || [];
   const jobs = data?.contactout_jobs || [];
@@ -560,7 +569,7 @@ function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRef
   return <section className="admin-card automation-admin-card">
     <div className="card-title-row">
       <div><h3>资源预算</h3><p className="muted">无 AI 也能运行；只给高价值客户调用模型。ContactOut 仅使用已授权账户。</p></div>
-      <div className="row-actions"><button type="button" onClick={onRefresh}>刷新</button><button type="button" className="primary" onClick={onRun}>处理 10 条队列</button></div>
+      <div className="row-actions"><button type="button" onClick={onRefresh}>刷新</button><button type="button" className="primary" onClick={onRun} disabled={running}>{running ? "处理中..." : "处理 10 条队列"}</button></div>
     </div>
     <div className="admin-summary">
       <SummaryCard label="今日 AI 调用" value={llmCalls} hint={`${llm.reduce((sum, item) => sum + Number(item.input_chars || 0), 0)} 输入字符`} />
