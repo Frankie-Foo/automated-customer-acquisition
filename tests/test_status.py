@@ -1,4 +1,4 @@
-from sales_automation.status import can_transition, next_sent_status, validate_status
+from sales_automation.status import advance_outreach_status, can_transition, next_sent_status, validate_status
 
 
 def test_state_machine_allows_expected_flow():
@@ -22,4 +22,12 @@ def test_validate_rejects_unknown():
         assert "Unknown" in str(exc)
     else:
         raise AssertionError("validate_status should reject invalid status")
+
+
+def test_outreach_event_state_never_regresses_on_late_webhooks():
+    assert advance_outreach_status("sent", "delivered") == "delivered"
+    assert advance_outreach_status("opened", "delivered") == "opened"
+    assert advance_outreach_status("replied", "opened") == "replied"
+    assert advance_outreach_status("opened", "failed") == "bounced"
+    assert advance_outreach_status("replied", "complained") == "complained"
 

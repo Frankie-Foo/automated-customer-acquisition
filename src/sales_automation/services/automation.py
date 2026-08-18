@@ -30,6 +30,7 @@ class AutomationRunService:
         user: dict[str, Any],
         idempotency_key: str,
         auto_prepare_drafts: bool = True,
+        source_filename: str = "",
     ) -> dict[str, Any]:
         if not seeds:
             raise ValueError("No company seeds found in the uploaded file")
@@ -45,6 +46,7 @@ class AutomationRunService:
                 "seeds": seeds,
                 "per_company_limit": per_company_limit,
                 "auto_prepare_drafts": bool(auto_prepare_drafts),
+                "source_filename": str(source_filename or "").strip()[:255],
             },
             progress_total=len(seeds),
             user=user,
@@ -129,6 +131,16 @@ class AutomationRunService:
     ) -> dict[str, Any]:
         task_ids = [int(item["task_id"]) for item in result.get("tasks", []) if item.get("task_id")]
         contacts = self.repo.list_contacts_for_search_tasks(task_ids)
+        known_ids = {int(contact["id"]) for contact in contacts}
+        for task in result.get("tasks", []):
+            for contact_id in task.get("contact_ids") or []:
+                contact_id = int(contact_id)
+                if contact_id in known_ids:
+                    continue
+                contact = self.repo.get_contact(contact_id)
+                if contact:
+                    contacts.append(contact)
+                    known_ids.add(contact_id)
         contact_ids = [int(contact["id"]) for contact in contacts]
         result.update(profiled=0, drafted=0, preparation_errors=[])
 
@@ -158,7 +170,7 @@ class AutomationRunService:
         result["workflow_linked"] = workflow["linked"]
         result["tasks_created"] = workflow["tasks_created"]
         result["quality_scorecard"] = OutboundQualityService(self.repo).score_list(
-            self.repo.list_contacts_for_search_tasks(task_ids)
+            contacts
         )
         if not payload.get("auto_prepare_drafts", True) or not assignment.get("assigned"):
             self.repo.update_automation_run_progress(

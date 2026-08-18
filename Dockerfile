@@ -24,7 +24,11 @@ COPY scripts ./scripts
 COPY tools ./tools
 COPY config.example.yaml ./config.yaml
 
-RUN pip install --no-cache-dir .
+RUN for attempt in 1 2 3; do \
+      pip install --no-cache-dir . && break; \
+      [ "$attempt" = 3 ] && exit 1; \
+      sleep $((attempt * 5)); \
+    done
 RUN chmod +x /app/scripts/docker-entrypoint.sh
 
 EXPOSE 8765

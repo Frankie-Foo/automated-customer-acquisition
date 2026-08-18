@@ -147,8 +147,10 @@ def main(argv: list[str] | None = None) -> int:
         if not contactout_bridge_configured(config):
             log("contactout.skipped", reason="bridge_unconfigured")
         else:
-            runs = ContactOutQueueService(config, repo).run_many(args.limit)
-            log("contactout.completed", runs=runs, processed=len(runs))
+            service = ContactOutQueueService(config, repo)
+            auto_queue = service.auto_enqueue(args.limit)
+            runs = service.run_many(args.limit)
+            log("contactout.completed", auto_queue=auto_queue, runs=runs, processed=len(runs))
     elif args.command == "mailbox-poll":
         stats = MailboxReplyService(config, repo).poll_once(args.limit)
         log("mailbox.poll", **stats)

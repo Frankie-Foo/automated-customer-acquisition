@@ -125,6 +125,40 @@ class ContactOutQueueService:
                 raise ContactOutConflict("contactout_job_conflict") from exc
             raise
 
+    def enqueue_auto(self, contact_id: int, *, owner_user_id: int) -> dict[str, Any]:
+        """Enqueue with the least-loaded active account assigned to the user."""
+        account = self.repo.select_contactout_account(owner_user_id=owner_user_id)
+        if not account:
+            raise ValueError("contactout_account_unavailable")
+        return self.enqueue(
+            contact_id,
+            owner_user_id=owner_user_id,
+            account_id=int(account["id"]),
+        )
+
+    def auto_enqueue(self, limit: int = 40, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Queue eligible private LinkedIn contacts without exposing credentials."""
+        limit = max(1, min(200, int(limit)))
+        candidates = self.repo.list_contactout_candidates(limit=limit, user=user)
+        jobs: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for candidate in candidates:
+            contact_id = int(candidate["id"])
+            owner_user_id = int(candidate["owner_user_id"])
+            try:
+                jobs.append(self.enqueue_auto(contact_id, owner_user_id=owner_user_id))
+            except ContactOutConflict:
+                skipped.append({"contact_id": contact_id, "reason": "already_queued"})
+            except ValueError as exc:
+                skipped.append({"contact_id": contact_id, "reason": str(exc)})
+        return {
+            "requested": limit,
+            "candidates": len(candidates),
+            "queued": len(jobs),
+            "skipped": skipped,
+            "jobs": jobs,
+        }
+
     def run_next(self) -> ContactOutRun | None:
         self.repo.block_expired_contactout_jobs()
         job = self.repo.claim_contactout_job()

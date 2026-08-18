@@ -328,7 +328,7 @@ def test_run_company_seeds_keeps_provided_company_email_candidates(monkeypatch):
     service.russia_hiring_signals.enrich_seed = lambda seed: seed
     service.southeast_asia_hiring_signals.enrich_seed = lambda seed: seed
     service.domain_resolver.resolve = lambda *args, **kwargs: "example.com"
-    service.run = lambda criteria, limit, user: {
+    service.run = lambda criteria, limit, *, user, pool_type: {
         "task_id": 1,
         "results": 0,
         "promoted": 0,
@@ -359,6 +359,64 @@ def test_run_company_seeds_keeps_provided_company_email_candidates(monkeypatch):
         "category": "company_generic",
         "confidence": 50,
     }]
+
+
+def test_run_company_seeds_uses_supplied_linkedin_profile_without_public_search():
+    class Config:
+        apis = {}
+        raw = {"sourcing": {"linkedin_public_search": {}}}
+
+    class Repo:
+        def __init__(self):
+            self.upserts = []
+            self.completed = []
+            self.inserted = False
+
+        def create_lead_search_task(self, **kwargs):
+            return {"id": 7}
+
+        def create_lead_search_result(self, task_id, parsed, *, status):
+            return {"id": 8, "task_id": task_id, **parsed}
+
+        def find_duplicate_contact(self, contact):
+            return None
+
+        def upsert_contacts(self, contacts, *, owner_user_id=None, pool_type=None):
+            self.upserts.append((contacts, owner_user_id, pool_type))
+            self.inserted = True
+            return 1, 0
+
+        def get_contact_by_linkedin_url(self, url):
+            return {"id": 9, "linkedin_url": url} if self.inserted else None
+
+        def claim_public_contact(self, contact_id, user):
+            return {"id": contact_id, "pool_type": "private", "owner_user_id": user["id"]}
+
+        def mark_lead_search_result_promoted(self, result_id, contact_id):
+            pass
+
+        def complete_lead_search_task(self, task_id, **kwargs):
+            self.completed.append((task_id, kwargs))
+
+    repo = Repo()
+    service = LinkedInPublicSearchService(Config(), repo)
+    service.domain_resolver.resolve = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("domain lookup should be skipped"))
+
+    result = service.run_company_seeds(
+        [{
+            "company_name": "Bless Luxury",
+            "website": "https://www.linkedin.com/in/cihangir-h%C4%B1zl%C4%B1-90bbb1351/",
+            "location": "Turkey",
+        }],
+        per_company_limit=5,
+        user={"id": 12, "role": "sales", "display_name": "Chris"},
+    )
+
+    assert result["results"] == 1
+    assert result["promoted"] == 1
+    assert result["tasks"][0]["task_id"] == 7
+    assert repo.completed[0][1]["query_count"] == 0
+    assert repo.upserts[0][1:] == (12, "private")
 
 
 def test_company_seed_to_search_criteria_keeps_automatic_hiring_evidence():

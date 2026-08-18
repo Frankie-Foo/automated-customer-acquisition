@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-18 - Unattended acquisition and feedback-safe outreach
+
+- Run scheduled region-by-industry acquisition as durable per-item jobs with leases, bounded retries, resumable progress, and partial-run visibility.
+- Execute independent email providers concurrently within per-contact and daily credit budgets; reuse cached or existing valid work emails before paid calls.
+- Auto-queue only authorized ContactOut candidates when the bridge is configured, while keeping account quotas, ownership, challenge state, and delivery isolated from email sending.
+- Make delivery feedback monotonic so delayed provider events cannot regress a replied or opened message to an earlier state.
+- Advance actionable replies into the replied lifecycle, record the interaction, stop obsolete follow-ups, and generate the next sales task; automatic and non-actionable replies do not advance the customer.
+- Enforce customer-detail and contact-action authorization consistently: sales can read their private customers and the public pool, but cannot read or mutate another salesperson's private customers.
+- Add import progress and actionable work-queue feedback to the sales UI, plus Docker dependency-install retries for transient package-index failures.
+- Certify 326 Python tests, frontend production build, packaged static assets, 43 idempotent PostgreSQL migrations, Docker health, strict readiness, CSV idempotency, customer-pool isolation, and the draft approval path.
+
 ## 2026-08-11 - Budgeted AI and authorized contact enrichment
 
 - Add six VERTU acquisition tracks covering 22 countries, six luxury verticals, and eight decision-maker roles with daily rotation into the public customer pool.

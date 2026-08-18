@@ -103,7 +103,21 @@ export default function AcquisitionControl({ users, plans, flywheel, onRefresh }
 
 function PlanTable({ plans }) {
   if (!plans.length) return <div className="empty-state">暂无自动获客计划。</div>;
-  return <div className="table-shell"><table className="admin-data-table compact-table"><thead><tr><th>计划</th><th>负责人</th><th>范围</th><th>上限</th><th>最近执行</th><th>状态</th></tr></thead><tbody>{plans.map((plan) => <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{plan.display_name || plan.username}</td><td>{[...(plan.regions || []), ...(plan.industries || [])].join(" · ") || "--"}</td><td>{plan.daily_lead_limit}/天</td><td>{plan.last_run_completed_at ? formatDate(plan.last_run_completed_at) : "尚未执行"}</td><td><span className={`status-pill ${plan.status === "active" ? "is-active" : "is-paused"}`}>{plan.status === "active" ? "运行中" : plan.status}</span></td></tr>)}</tbody></table></div>;
+  return <div className="table-shell"><table className="admin-data-table compact-table"><thead><tr><th>计划</th><th>负责人</th><th>范围</th><th>上限</th><th>最近执行</th><th>执行结果</th></tr></thead><tbody>{plans.map((plan) => { const metrics = plan.last_run_metrics || {}; const done = Number(metrics.completed_items || 0) + Number(metrics.failed_items || 0); const total = Number(metrics.items || 0); return <tr key={plan.id}><td><strong>{plan.name}</strong><div className="muted">{plan.status === "active" ? "已启用" : plan.status}</div></td><td>{plan.display_name || plan.username || "公共池"}</td><td>{[...(plan.regions || []), ...(plan.industries || [])].join(" · ") || "--"}</td><td>{plan.daily_lead_limit}/天</td><td>{plan.last_run_completed_at ? formatDate(plan.last_run_completed_at) : plan.last_run_status ? "执行中" : "尚未执行"}</td><td><span className={`status-pill ${runStatusClass(plan.last_run_status)}`}>{runStatusLabel(plan.last_run_status)}</span>{total > 0 && <div className="muted">组合 {done}/{total} · 入库 {Number(metrics.promoted || 0)}</div>}</td></tr>; })}</tbody></table></div>;
+}
+
+function runStatusLabel(status) {
+  return {
+    queued: "排队中", running: "处理中", completed: "已完成",
+    completed_partial: "部分完成", retry_wait: "等待重试",
+    blocked: "需处理", failed: "失败", cancelled: "已取消",
+  }[status] || "尚未执行";
+}
+
+function runStatusClass(status) {
+  if (status === "completed") return "is-active";
+  if (["queued", "running", "retry_wait"].includes(status)) return "is-paused";
+  return status ? "is-error" : "";
 }
 
 function FlywheelSummary({ data }) {

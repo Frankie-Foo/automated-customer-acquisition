@@ -5,6 +5,7 @@ import hashlib
 import json
 import smtplib
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
@@ -239,6 +240,7 @@ class EmailDiscoveryEngine:
         cache_writer: Callable[[str, str, str, str, list[dict[str, Any]], int], None] | None = None,
         valid_cache_days: int = 90,
         no_match_cache_hours: int = 24,
+        parallel_workers: int = 4,
     ):
         self.providers = providers
         self.max_candidates = max_candidates
@@ -250,16 +252,31 @@ class EmailDiscoveryEngine:
         self.cache_writer = cache_writer
         self.valid_cache_seconds = max(1, int(valid_cache_days)) * 86400
         self.no_match_cache_seconds = max(1, int(no_match_cache_hours)) * 3600
+        self.parallel_workers = max(1, int(parallel_workers))
 
     def discover(self, contact: dict[str, Any], domain: str | None) -> dict[str, Any]:
         all_candidates: list[EmailCandidate] = []
         selected: EmailCandidate | None = None
-        paid_credits = 0
+        planned_paid_credits = 0
         warnings: list[str] = []
+        pending: list[tuple[EmailProvider, str, int, str, int | None]] = []
         for provider in self.providers:
             provider_name = _provider_name(provider)
+            if provider_name == "existing":
+                candidates = provider.discover(contact, domain)
+                all_candidates.extend(candidates)
+                selected = selected or _select_valid_personal(candidates)
+                self._record_provider(
+                    provider_name,
+                    calls=1,
+                    candidates=len(candidates),
+                    valid_candidates=sum(1 for item in candidates if item.status == "valid"),
+                    selected=1 if selected else 0,
+                    credits_used=0,
+                )
+                continue
             credit_cost = _provider_credit_cost(provider_name)
-            if credit_cost and (selected or paid_credits + credit_cost > self.max_paid_credits):
+            if credit_cost and (selected or planned_paid_credits + credit_cost > self.max_paid_credits):
                 self._record_provider(provider_name, calls=0, skipped=1, credits_used=0)
                 continue
             lookup_key = _provider_lookup_key(contact, domain) if credit_cost else ""
@@ -275,15 +292,31 @@ class EmailDiscoveryEngine:
                     warnings.append(f"{provider_name}:provider_daily_budget_exhausted")
                     self._record_provider(provider_name, calls=0, skipped=1, credits_used=0, last_error="provider_daily_budget_exhausted")
                     continue
-            try:
-                candidates = provider.discover(contact, domain)
-            except Exception as exc:
-                paid_credits += credit_cost
+            planned_paid_credits += credit_cost
+            pending.append((provider, provider_name, credit_cost, lookup_key, daily_limit))
+
+        results: dict[int, tuple[list[EmailCandidate], Exception | None]] = {}
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(self.parallel_workers, len(pending)), thread_name_prefix="email-discovery") as executor:
+                futures = {
+                    executor.submit(provider.discover, contact, domain): index
+                    for index, (provider, _provider_name, _credit_cost, _lookup_key, _daily_limit) in enumerate(pending)
+                }
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        results[index] = (future.result(), None)
+                    except Exception as exc:
+                        results[index] = ([], exc)
+
+        for index, (_provider, provider_name, credit_cost, lookup_key, daily_limit) in enumerate(pending):
+            candidates, error = results[index]
+            if error is not None:
+                exc = error
                 if credit_cost and _is_rate_limited_error(exc):
                     warnings.append(f"{provider_name}:provider_rate_limited")
                 self._record_provider(provider_name, calls=1, errors=1, last_error=str(exc)[:500], credits_used=0 if daily_limit is not None else credit_cost)
                 continue
-            paid_credits += credit_cost
             if credit_cost and self.cache_writer:
                 ttl = self.valid_cache_seconds if _select_valid_personal(candidates) else self.no_match_cache_seconds
                 self.cache_writer(
@@ -342,7 +375,7 @@ def build_email_discovery_engine(
     discovery_cfg = config.raw.get("email_discovery", {})
     provider_names = discovery_cfg.get("providers") or ["prospeo", "ninjapear", "hunter", "pattern_guess", "public_website"]
     max_candidates = int(discovery_cfg.get("max_candidates") or 10)
-    max_paid_credits = int(discovery_cfg.get("max_paid_credits_per_contact") or 2)
+    max_paid_credits = int(discovery_cfg.get("max_paid_credits_per_contact") or 3)
     daily_credit_limits = {
         str(name): max(0, int(limit))
         for name, limit in (discovery_cfg.get("provider_daily_credit_limits") or {}).items()
@@ -379,6 +412,7 @@ def build_email_discovery_engine(
         cache_writer=cache_writer,
         valid_cache_days=int(discovery_cfg.get("valid_cache_days") or 90),
         no_match_cache_hours=int(discovery_cfg.get("no_match_cache_hours") or 24),
+        parallel_workers=int(discovery_cfg.get("parallel_workers") or 4),
     )
 
 

@@ -91,6 +91,8 @@ function ContactsPipeline() {
   const [actionFeedback, setActionFeedback] = useState(null);
   const [bulkBusy, setBulkBusy] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [taskId, setTaskId] = useState(null);
+  const [taskContext, setTaskContext] = useState(null);
 
   useEffect(() => {
     const resize = () => setPageSize(window.innerWidth <= 720 ? 10 : window.innerWidth <= 1120 ? 15 : 25);
@@ -103,8 +105,9 @@ function ContactsPipeline() {
     if (status) params.set("status", status);
     if (filter) params.set("filter", filter);
     if (search.trim()) params.set("search", search.trim());
+    if (taskId?.length) taskId.forEach((value) => params.append("task_id", String(value)));
     return params.toString();
-  }, [status, filter, search]);
+  }, [status, filter, search, taskId]);
 
   const pageCount = Math.max(1, Math.ceil(contacts.length / pageSize));
   const visibleContacts = useMemo(() => contacts.slice((page - 1) * pageSize, page * pageSize), [contacts, page]);
@@ -146,11 +149,18 @@ function ContactsPipeline() {
       setStatus("");
       setSearch("");
       setFilter(event.detail?.filter || "");
+      setTaskId(Array.isArray(event.detail?.task_ids) ? event.detail.task_ids.map(Number).filter(Boolean) : null);
+      setTaskContext(event.detail?.task_context || null);
     };
     window.addEventListener("salesbot:session", handleSession);
     window.addEventListener("salesbot:refresh", handleRefresh);
     window.addEventListener("salesbot:contacts-refresh", handleRefresh);
     window.addEventListener("salesbot:contact-filter", handleFilter);
+    const pendingScope = window.SALESBOT_PENDING_TASK_SCOPE;
+    if (pendingScope) {
+      handleFilter({ detail: pendingScope });
+      delete window.SALESBOT_PENDING_TASK_SCOPE;
+    }
     return () => {
       window.removeEventListener("salesbot:session", handleSession);
       window.removeEventListener("salesbot:refresh", handleRefresh);
@@ -292,10 +302,16 @@ function ContactsPipeline() {
     openContactWorkspace(contactId);
   }
 
+  function clearTaskScope() {
+    setTaskId(null);
+    setTaskContext(null);
+  }
+
   if (!sessionUser) return null;
 
   return (
     <>
+      {taskId?.length > 0 && <TaskScopeBanner taskIds={taskId} context={taskContext} contactCount={contacts.length} onClear={clearTaskScope} />}
       <div className="section-head">
         <div>
           <span className="eyebrow">Pipeline</span>
@@ -304,7 +320,7 @@ function ContactsPipeline() {
         </div>
         <div className="toolbar">
           <label htmlFor="contact-status-filter">Status<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
-          <label htmlFor="contact-view-filter">视图<select id="contact-view-filter" name="contact_view" value={filter} onChange={(event) => setFilter(event.target.value)}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
+          <label htmlFor="contact-view-filter">视图<select id="contact-view-filter" name="contact_view" value={filter} onChange={(event) => { clearTaskScope(); setFilter(event.target.value); }}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
           <label htmlFor="contact-search">Search<input id="contact-search" name="contact_search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" /></label>
         </div>
       </div>
@@ -317,9 +333,9 @@ function ContactsPipeline() {
           ["missing_draft", "待写草稿"],
           ["draft_pending", "待审核"],
           ["draft_approved", "可发送"],
-        ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} aria-pressed={filter === value} onClick={() => { setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
+        ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} aria-pressed={filter === value} onClick={() => { clearTaskScope(); setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
       </nav>
-      <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} canBulkProcess={filter !== "public_pool"} />
+      <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { clearTaskScope(); setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} canBulkProcess={filter !== "public_pool"} />
       {actionFeedback && <ActionFeedback feedback={actionFeedback} onNext={() => openContact(actionFeedback.contactId)} onDismiss={() => setActionFeedback(null)} />}
       <ImportBatchReport report={importReport} />
       {error && <div className="admin-alert is-error" role="alert">{error}</div>}
@@ -341,6 +357,23 @@ function ContactsPipeline() {
       </div>
       {contacts.length > pageSize && <div className="table-pagination"><span>共 {contacts.length} 条，每页 {pageSize} 条</span><div><button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><b>{page} / {pageCount}</b><button type="button" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div></div>}
     </>
+  );
+}
+
+function TaskScopeBanner({ taskIds, context, contactCount, onClear }) {
+  const companies = context?.companies || [];
+  const companySummary = companies.length > 4
+    ? `${companies.slice(0, 4).join("、")} 等 ${companies.length} 家`
+    : companies.join("、") || "本批客户已按任务编号筛选";
+  return (
+    <section className="task-scope-banner" aria-label="当前批次筛选">
+      <div>
+        <span className="eyebrow">当前批次</span>
+        <strong>{context?.run_id ? `批次 #${context.run_id}` : `搜索任务 ${taskIds.join(", ")}`} · {context?.source_filename || "历史批次（文件名未记录）"}</strong>
+        <p>负责人：{context?.owner || "未分配"} · 当前显示 {contactCount} 个客户 · {companySummary}</p>
+      </div>
+      <button type="button" onClick={onClear}>查看全部客户</button>
+    </section>
   );
 }
 

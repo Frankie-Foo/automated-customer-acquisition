@@ -16,7 +16,7 @@ from .config import AppConfig
 from .customer_intelligence import build_customer_profile
 from .outbound_quality import assess_icp, calibration_summary, default_icp_profile, summarize_experiment
 from .sabcd import stage_from_payload
-from .status import validate_status
+from .status import advance_outreach_status, validate_status
 
 
 def _psycopg():
@@ -1010,7 +1010,7 @@ class Repository:
                 f"""
                 SELECT * FROM contacts
                 WHERE (
-                    status = 'new'
+                    (status = 'new' AND (enriched_at IS NULL OR enriched_at < NOW() - INTERVAL '24 hours'))
                     OR (status = 'enriched' AND (enriched_at IS NULL OR enriched_at < NOW() - INTERVAL '30 days'))
                   )
                   {owner_filter}
@@ -1266,6 +1266,7 @@ class Repository:
         limit: int = 100,
         user: dict[str, Any] | None = None,
         filter_key: str | None = None,
+        search_task_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -1278,6 +1279,9 @@ class Repository:
             params.append(status)
         if filter_key:
             self._append_contact_filter(clauses, filter_key)
+        if search_task_ids:
+            clauses.append("c.search_task_id = ANY(%s)")
+            params.append([int(task_id) for task_id in search_task_ids])
         if search:
             clauses.append(
                 "(c.first_name ILIKE %s OR c.last_name ILIKE %s OR c.email ILIKE %s OR c.phone ILIKE %s OR c.company_name ILIKE %s OR c.job_title ILIKE %s)"
@@ -1819,18 +1823,167 @@ class Repository:
         combinations: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         with self.db.connect() as conn:
-            return conn.execute(
+            resumable = conn.execute(
                 """
-                INSERT INTO acquisition_plan_runs(plan_id, combinations)
-                VALUES (%s, %s::jsonb)
+                SELECT * FROM acquisition_plan_runs
+                WHERE plan_id = %s AND status IN ('queued', 'running', 'retry_wait')
+                ORDER BY run_date, id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+                """,
+                (plan_id,),
+            ).fetchone()
+            if resumable:
+                conn.execute(
+                    """
+                    UPDATE acquisition_plan_runs
+                    SET status = 'queued', error = NULL, next_attempt_at = NOW(),
+                        lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (resumable["id"],),
+                )
+                return {**resumable, "status": "queued"}
+            run = conn.execute(
+                """
+                INSERT INTO acquisition_plan_runs(plan_id, combinations, status)
+                VALUES (%s, %s::jsonb, 'queued')
                 ON CONFLICT(plan_id, run_date) DO UPDATE
-                SET status = 'running', combinations = EXCLUDED.combinations,
-                    metrics = '{}'::jsonb, error = NULL, started_at = NOW(), completed_at = NULL
-                WHERE acquisition_plan_runs.status = 'failed'
+                SET status = 'queued', error = NULL, next_attempt_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE acquisition_plan_runs.status = 'retry_wait'
                 RETURNING *
                 """,
                 (plan_id, json.dumps(combinations, ensure_ascii=False)),
             ).fetchone()
+            if not run:
+                return None
+            for ordinal, criteria in enumerate(combinations):
+                conn.execute(
+                    """
+                    INSERT INTO acquisition_run_items(run_id, ordinal, criteria)
+                    VALUES (%s, %s, %s::jsonb)
+                    ON CONFLICT(run_id, ordinal) DO NOTHING
+                    """,
+                    (run["id"], ordinal, json.dumps(criteria, ensure_ascii=False)),
+                )
+            return run
+
+    def claim_acquisition_run_item(self, run_id: int, *, lease_seconds: int = 300) -> dict[str, Any] | None:
+        token = secrets.token_urlsafe(24)
+        with self.db.connect() as conn:
+            item = conn.execute(
+                """
+                UPDATE acquisition_run_items
+                SET status = 'running', attempts = attempts + 1, lease_token = %s,
+                    lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    heartbeat_at = NOW(), started_at = COALESCE(started_at, NOW()),
+                    error = NULL, updated_at = NOW()
+                WHERE id = (
+                  SELECT id FROM acquisition_run_items
+                  WHERE run_id = %s
+                    AND attempts < max_attempts
+                    AND (
+                      (status IN ('queued', 'retry_wait') AND next_attempt_at <= NOW())
+                      OR (status = 'running' AND lease_expires_at <= NOW())
+                    )
+                  ORDER BY ordinal
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT 1
+                )
+                RETURNING *
+                """,
+                (token, max(30, int(lease_seconds)), run_id),
+            ).fetchone()
+            if item:
+                conn.execute(
+                    """
+                    UPDATE acquisition_plan_runs
+                    SET status = 'running', attempts = attempts + 1, stage = %s,
+                        heartbeat_at = NOW(), updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (item["stage"], run_id),
+                )
+            return item
+
+    def complete_acquisition_run_item(
+        self,
+        item_id: int,
+        lease_token: str,
+        metrics: dict[str, Any],
+    ) -> bool:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE acquisition_run_items
+                SET status = 'completed', metrics = %s::jsonb, completed_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, heartbeat_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                  AND lease_expires_at > NOW()
+                RETURNING id
+                """,
+                (json.dumps(metrics, ensure_ascii=False), item_id, lease_token),
+            ).fetchone()
+            return bool(row)
+
+    def retry_acquisition_run_item(
+        self,
+        item_id: int,
+        lease_token: str,
+        error: str,
+        *,
+        retry_after_seconds: int = 900,
+    ) -> bool:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE acquisition_run_items
+                SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'retry_wait' END,
+                    next_attempt_at = NOW() + (%s * INTERVAL '1 second'), error = %s,
+                    completed_at = CASE WHEN attempts >= max_attempts THEN NOW() ELSE NULL END,
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s AND status = 'running' AND lease_token = %s
+                RETURNING id
+                """,
+                (max(60, int(retry_after_seconds)), error[:2000], item_id, lease_token),
+            ).fetchone()
+            return bool(row)
+
+    def summarize_acquisition_plan_run(self, run_id: int) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ordinal, criteria, status, attempts, metrics, error
+                FROM acquisition_run_items
+                WHERE run_id = %s
+                ORDER BY ordinal
+                """,
+                (run_id,),
+            ).fetchall()
+        combinations = []
+        results = promoted = completed = failed = pending = 0
+        for row in rows:
+            metrics = row.get("metrics") or {}
+            if row["status"] == "completed":
+                completed += 1
+                results += max(0, int(metrics.get("results") or 0))
+                promoted += max(0, int(metrics.get("promoted") or 0))
+                combinations.append(metrics)
+            elif row["status"] in {"failed", "blocked", "cancelled"}:
+                failed += 1
+            else:
+                pending += 1
+        return {
+            "results": results,
+            "promoted": promoted,
+            "combinations": combinations,
+            "items": len(rows),
+            "completed_items": completed,
+            "failed_items": failed,
+            "pending_items": pending,
+        }
 
     def finish_acquisition_plan_run(
         self,
@@ -1842,26 +1995,33 @@ class Repository:
         cursor_advance: int,
         error: str | None = None,
     ) -> None:
-        if status not in {"completed", "failed"}:
+        if status not in {"completed", "completed_partial", "retry_wait", "blocked", "failed", "cancelled"}:
             raise ValueError("Invalid acquisition plan run status")
         with self.db.connect() as conn:
             conn.execute(
                 """
                 UPDATE acquisition_plan_runs
-                SET status = %s, metrics = %s::jsonb, error = %s, completed_at = NOW()
+                SET status = %s, metrics = %s::jsonb, error = %s,
+                    completed_at = CASE WHEN %s IN ('completed', 'completed_partial', 'failed', 'cancelled') THEN NOW() ELSE NULL END,
+                    next_attempt_at = CASE WHEN %s = 'retry_wait' THEN NOW() + INTERVAL '15 minutes' ELSE next_attempt_at END,
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
                 WHERE id = %s AND plan_id = %s
                 """,
-                (status, json.dumps(metrics, ensure_ascii=False), error, run_id, plan_id),
+                (status, json.dumps(metrics, ensure_ascii=False), error, status, status, run_id, plan_id),
             )
             conn.execute(
                 """
                 UPDATE acquisition_plans
                 SET cursor_position = cursor_position + %s,
-                    next_run_at = CASE WHEN %s = 'completed' THEN NOW() + INTERVAL '1 day' ELSE NOW() + INTERVAL '1 hour' END,
+                    next_run_at = CASE
+                      WHEN %s IN ('completed', 'completed_partial') THEN NOW() + INTERVAL '1 day'
+                      WHEN %s = 'retry_wait' THEN NOW() + INTERVAL '15 minutes'
+                      ELSE NOW() + INTERVAL '1 hour'
+                    END,
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (max(0, int(cursor_advance)), status, plan_id),
+                (max(0, int(cursor_advance)), status, status, plan_id),
             )
 
     def create_automation_run(
@@ -2385,6 +2545,83 @@ class Repository:
                 f"SELECT * FROM contactout_accounts WHERE {' AND '.join(clauses)}",
                 tuple(params),
             ).fetchone()
+
+    def select_contactout_account(self, *, owner_user_id: int) -> dict[str, Any] | None:
+        """Select the least-loaded active account assigned to a sales user.
+
+        Queued jobs are included in the score so repeated auto-enqueue calls
+        spread work across an authorized account pool before a worker reserves
+        provider quota. Final enforcement still happens in
+        ``reserve_contactout_job_quota``.
+        """
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                WITH pending AS (
+                    SELECT account_id, COUNT(*)::integer AS pending_units
+                    FROM contactout_enrichment_jobs
+                    WHERE status IN ('queued', 'retry_wait')
+                    GROUP BY account_id
+                )
+                SELECT account.*,
+                       COALESCE(account_usage.consumed_units, 0) AS consumed_units,
+                       COALESCE(pending.pending_units, 0) AS pending_units
+                FROM contactout_accounts account
+                LEFT JOIN provider_account_daily_usage account_usage
+                  ON account_usage.provider = 'contactout'
+                 AND account_usage.scope_key = CONCAT('account:', account.id::text)
+                 AND account_usage.usage_date = timezone('Asia/Shanghai', NOW())::date
+                LEFT JOIN pending ON pending.account_id = account.id
+                WHERE account.assigned_user_id = %s
+                  AND account.status = 'active'
+                  AND account.daily_limit > 0
+                  AND (account.cooldown_until IS NULL OR account.cooldown_until <= NOW())
+                  AND COALESCE(account_usage.consumed_units, 0)
+                      + COALESCE(pending.pending_units, 0) < account.daily_limit
+                ORDER BY
+                    COALESCE(account_usage.consumed_units, 0) + COALESCE(pending.pending_units, 0),
+                    account.last_used_at NULLS FIRST,
+                    account.last_used_at,
+                    account.id
+                LIMIT 1
+                """,
+                (owner_user_id,),
+            ).fetchone()
+
+    def list_contactout_candidates(
+        self,
+        *,
+        limit: int = 40,
+        user: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return private LinkedIn contacts needing ContactOut this month."""
+        clauses = [
+            "c.pool_type = 'private'",
+            "c.owner_user_id IS NOT NULL",
+            "NULLIF(BTRIM(c.linkedin_url), '') IS NOT NULL",
+            "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
+            "NOT EXISTS (SELECT 1 FROM contactout_enrichment_jobs existing_job "
+            "WHERE existing_job.contact_id = c.id "
+            "AND existing_job.created_at >= (date_trunc('month', timezone('Asia/Shanghai', NOW())) "
+            "AT TIME ZONE 'Asia/Shanghai'))",
+        ]
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("c.owner_user_id = %s")
+            params.append(int(user["id"]))
+        params.append(max(1, min(200, int(limit))))
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT c.id, c.owner_user_id, c.linkedin_url, c.first_name,
+                       c.last_name, c.company_name, c.job_title, c.location
+                FROM contacts c
+                WHERE {' AND '.join(clauses)}
+                ORDER BY c.updated_at NULLS FIRST, c.id
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
 
     def list_contactout_accounts(self, *, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -5331,7 +5568,7 @@ class Repository:
         event_type: str,
         error: str | None = None,
     ) -> None:
-        event_columns = {
+        event_columns: dict[str, str | None] = {
             "sent": "sent_at",
             "delivered": "delivered_at",
             "opened": "opened_at",
@@ -5340,27 +5577,38 @@ class Repository:
             "bounced": "bounced_at",
             "bounce": "bounced_at",
             "failed": "bounced_at",
+            "suppressed": "bounced_at",
+            "unsubscribed": None,
+            "complained": None,
         }
-        column = event_columns.get(event_type)
-        if not column:
+        if event_type not in event_columns:
             return
-        status = {
-            "bounce": "bounced",
-            "failed": "bounced",
-            "clicked": "opened",
-        }.get(event_type, event_type)
+        column = event_columns[event_type]
         with self.db.connect() as conn:
+            current = conn.execute(
+                """
+                SELECT id, status, campaign_id
+                FROM outreach_messages
+                WHERE provider = %s AND provider_message_id = %s
+                FOR UPDATE
+                """,
+                (provider, provider_message_id),
+            ).fetchone()
+            if not current:
+                return
+            status = advance_outreach_status(current.get("status"), event_type)
+            timestamp_update = f", {column} = COALESCE({column}, NOW())" if column else ""
             row = conn.execute(
                 f"""
                 UPDATE outreach_messages
                 SET status = %s,
-                    {column} = COALESCE({column}, NOW()),
-                    error = COALESCE(%s, error),
+                    error = COALESCE(%s, error)
+                    {timestamp_update},
                     updated_at = NOW()
-                WHERE provider = %s AND provider_message_id = %s
+                WHERE id = %s
                 RETURNING campaign_id
                 """,
-                (status, error, provider, provider_message_id),
+                (status, error, current["id"]),
             ).fetchone()
         if row and row.get("campaign_id"):
             self.refresh_campaign_metrics(int(row["campaign_id"]))

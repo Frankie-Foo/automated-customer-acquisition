@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 from sales_automation.email_discovery import EmailCandidate, EmailDiscoveryEngine, GitHubCommitsEmailProvider, GravatarEmailProvider, SmtpVerifyProvider, _provider_lookup_key
@@ -100,7 +101,7 @@ def test_provider_stats_recorder_is_called():
     assert stats[0][1]["selected"] == 1
 
 
-def test_paid_waterfall_stops_after_a_valid_personal_email():
+def test_paid_provider_over_contact_budget_is_skipped():
     PaidFallbackProvider.called = 0
     stats = []
 
@@ -111,7 +112,58 @@ def test_paid_waterfall_stops_after_a_valid_personal_email():
 
     assert result["email"] == "ada@example.com"
     assert PaidFallbackProvider.called == 0
-    assert stats[-1] == ("hunter", {"calls": 0, "skipped": 1, "credits_used": 0})
+    assert ("hunter", {"calls": 0, "skipped": 1, "credits_used": 0}) in stats
+
+
+def test_three_credit_budget_reaches_hunter_after_prospeo_miss():
+    class ProspeoMiss:
+        name = "prospeo"
+
+        def discover(self, contact, domain):
+            return []
+
+    class HunterHit:
+        name = "hunter"
+
+        def discover(self, contact, domain):
+            return [EmailCandidate.build("ada@example.com", self.name, "valid", 90, "personal_work")]
+
+    result = EmailDiscoveryEngine([ProspeoMiss(), HunterHit()], max_paid_credits=3).discover({}, "example.com")
+
+    assert result["email"] == "ada@example.com"
+    assert result["email_source"] == "hunter"
+
+
+def test_eligible_providers_run_in_parallel_and_selection_remains_ordered():
+    barrier = threading.Barrier(2)
+
+    class ProspeoHit:
+        name = "prospeo"
+
+        def discover(self, contact, domain):
+            barrier.wait(timeout=1)
+            return [EmailCandidate.build("first@example.com", self.name, "valid", 90, "personal_work")]
+
+    class NinjaPearHit:
+        name = "ninjapear"
+
+        def discover(self, contact, domain):
+            barrier.wait(timeout=1)
+            return [EmailCandidate.build("second@example.com", self.name, "valid", 95, "personal_work")]
+
+    result = EmailDiscoveryEngine([ProspeoHit(), NinjaPearHit()], max_paid_credits=2).discover({}, "example.com")
+
+    assert result["email"] == "first@example.com"
+    assert {item["email"] for item in result["email_candidates"]} == {"first@example.com", "second@example.com"}
+
+
+def test_existing_valid_email_avoids_paid_provider_calls():
+    provider = CountingPaidProvider()
+
+    result = EmailDiscoveryEngine([type("Existing", (), {"name": "existing", "discover": lambda self, contact, domain: [EmailCandidate.build("known@example.com", "existing", "valid", 100, "personal_work")]})(), provider]).discover({}, "example.com")
+
+    assert result["email"] == "known@example.com"
+    assert provider.calls == 0
 
 
 def test_paid_provider_cache_hit_skips_api_and_budget():

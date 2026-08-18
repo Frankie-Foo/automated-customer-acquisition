@@ -309,3 +309,76 @@ def test_united_kingdom_uses_local_search_profile():
     assert profile.key == "europe"
     assert profile.country == "GB"
     assert "head of buying" in profile.role_terms
+
+
+def test_recoverable_plan_persists_each_combination_and_retries_only_failed_item():
+    class Repo:
+        def __init__(self):
+            self.items = [
+                {"id": 1, "criteria": {"location": "India"}, "status": "queued", "attempts": 0},
+                {"id": 2, "criteria": {"location": "UAE"}, "status": "queued", "attempts": 0},
+            ]
+            self.finished = None
+
+        def list_due_acquisition_plans(self, limit):
+            return [{
+                "id": 4, "pool_type": "public", "regions": ["India", "UAE"],
+                "industries": ["watches"], "company_types": ["dealer"],
+                "role_terms": ["owner"], "daily_lead_limit": 4,
+                "combinations_per_run": 2,
+            }]
+
+        def begin_acquisition_plan_run(self, plan_id, combinations):
+            return {"id": 9}
+
+        def claim_acquisition_run_item(self, run_id):
+            item = next((item for item in self.items if item["status"] == "queued"), None)
+            if not item:
+                return None
+            item.update(status="running", lease_token=f"lease-{item['id']}", attempts=item["attempts"] + 1)
+            return dict(item)
+
+        def complete_acquisition_run_item(self, item_id, lease_token, metrics):
+            item = next(item for item in self.items if item["id"] == item_id)
+            item.update(status="completed", metrics=metrics)
+            return True
+
+        def retry_acquisition_run_item(self, item_id, lease_token, error):
+            item = next(item for item in self.items if item["id"] == item_id)
+            item.update(status="retry_wait", error=error)
+            return True
+
+        def summarize_acquisition_plan_run(self, run_id):
+            completed = [item for item in self.items if item["status"] == "completed"]
+            pending = [item for item in self.items if item["status"] in {"queued", "running", "retry_wait"}]
+            return {
+                "results": sum(item.get("metrics", {}).get("results", 0) for item in completed),
+                "promoted": sum(item.get("metrics", {}).get("promoted", 0) for item in completed),
+                "combinations": [item["metrics"] for item in completed],
+                "items": len(self.items), "completed_items": len(completed),
+                "failed_items": 0, "pending_items": len(pending),
+            }
+
+        def finish_acquisition_plan_run(self, run_id, **kwargs):
+            self.finished = kwargs
+
+    class Quota:
+        def __init__(self, config, repo): pass
+        def remaining_global(self, kind): return 4
+        def consume_global(self, kind, amount): pass
+
+    class Search:
+        def __init__(self, config, repo): pass
+        def run(self, criteria, limit, user, pool_type):
+            if criteria["location"] == "India":
+                raise RuntimeError("temporary provider outage")
+            return {"results": 2, "promoted": 1}
+
+    repo = Repo()
+    result = AcquisitionPlannerService(SimpleNamespace(), repo, search_factory=Search, quota_factory=Quota).run_due()
+
+    assert result["failed"] == 1
+    assert repo.items[0]["status"] == "retry_wait"
+    assert repo.items[1]["status"] == "completed"
+    assert repo.finished["status"] == "retry_wait"
+    assert repo.finished["cursor_advance"] == 0

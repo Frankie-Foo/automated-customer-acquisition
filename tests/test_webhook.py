@@ -93,6 +93,7 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
         def __init__(self):
             self.events = []
             self.activities = []
+            self.lifecycle_updates = []
 
         def find_contact_id_by_message_id(self, message_id):
             return None
@@ -105,6 +106,9 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
 
         def add_lifecycle_activity(self, contact_id, **kwargs):
             self.activities.append((contact_id, kwargs))
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.lifecycle_updates.append((contact_id, kwargs))
 
     class Http:
         def request(self, method, url, **kwargs):
@@ -131,6 +135,7 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
     assert event == "replied"
     assert repo.events[0][2]["data"]["text"] == "Please send the price list."
     assert repo.activities[0][1]["content"] == "Please send the price list."
+    assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "replied", "disposition": "active"})]
 
 
 def test_reply_uses_in_reply_to_before_sender_email_and_updates_original_message():

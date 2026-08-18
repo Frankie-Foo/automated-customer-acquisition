@@ -34,3 +34,30 @@ def next_sent_status(step: int) -> str:
         raise ValueError("sequence step must be 1, 2, or 3")
     return f"sent_{step}"
 
+
+_OUTREACH_STATUS_RANK = {
+    "draft": 0,
+    "approved": 1,
+    "queued": 2,
+    "sent": 3,
+    "delivered": 4,
+    "opened": 5,
+    "replied": 6,
+    "bounced": 7,
+    "unsubscribed": 8,
+    "complained": 8,
+    "suppressed": 8,
+}
+
+
+def advance_outreach_status(current: str | None, event_type: str) -> str:
+    incoming = {
+        "bounce": "bounced",
+        "failed": "bounced",
+        "clicked": "opened",
+    }.get(event_type, event_type)
+    if incoming not in _OUTREACH_STATUS_RANK:
+        return str(current or "draft")
+    current = str(current or "draft")
+    return incoming if _OUTREACH_STATUS_RANK[incoming] >= _OUTREACH_STATUS_RANK.get(current, -1) else current
+

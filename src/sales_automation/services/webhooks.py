@@ -68,6 +68,9 @@ class WebhookService:
                 self.repo.update_icp_from_reply(contact_id, reply_classification)
         payload = annotate_delivery_payload(event_type, payload)
         self.repo.record_event(contact_id, event_type, payload)
+        actionable_reply = bool(reply_classification and reply_classification.get("should_advance"))
+        if event_type == "replied" and actionable_reply and hasattr(self.repo, "update_lifecycle"):
+            self.repo.update_lifecycle(contact_id, lifecycle_stage="replied", disposition="active")
         message_id = _extract_message_id(payload)
         outbound_message_id = _extract_in_reply_to(payload) if event_type == "replied" else message_id
         if outbound_message_id and hasattr(self.repo, "update_outreach_message_event"):
@@ -92,7 +95,6 @@ class WebhookService:
                 trigger_rule="opened_no_reply",
                 metadata={"provider": provider, "message_id": message_id},
             )
-        actionable_reply = bool(reply_classification and reply_classification.get("should_advance"))
         should_close_tasks = event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"}
         if contact and should_close_tasks:
             if hasattr(self.repo, "close_open_followup_tasks"):

@@ -241,15 +241,17 @@ class LinkedInPublicSearchService:
                 [contact], owner_user_id=contact_owner_user_id, pool_type=pool_type
             )
 
-        criteria = self.india_hiring_signals.enrich_criteria(criteria)
-        criteria = self.iran_hiring_signals.enrich_criteria(criteria)
-        criteria = self.russia_hiring_signals.enrich_criteria(criteria)
-        criteria = self.southeast_asia_hiring_signals.enrich_criteria(criteria)
+        direct_profile_only = bool(criteria.get("direct_profile_only"))
+        if not direct_profile_only:
+            criteria = self.india_hiring_signals.enrich_criteria(criteria)
+            criteria = self.iran_hiring_signals.enrich_criteria(criteria)
+            criteria = self.russia_hiring_signals.enrich_criteria(criteria)
+            criteria = self.southeast_asia_hiring_signals.enrich_criteria(criteria)
         hunter_key = self.config.apis.get("hunter_key", "")
         prospeo_key = self.config.apis.get("prospeo_key", "")
-        hunter = HunterClient(hunter_key) if hunter_key else None
-        prospeo = ProspeoClient(prospeo_key) if prospeo_key else None
-        if not self.client and not hunter and not prospeo:
+        hunter = HunterClient(hunter_key) if hunter_key and not direct_profile_only else None
+        prospeo = ProspeoClient(prospeo_key) if prospeo_key and not direct_profile_only else None
+        if not direct_profile_only and not self.client and not hunter and not prospeo:
             raise RuntimeError("Missing company discovery config: set PROSPEO_API_KEY, HUNTER_KEY, or a public search API key")
         max_queries = int(self.cfg.get("max_queries_per_run") or 10)
         has_target_name = bool(_target_name(criteria))
@@ -308,35 +310,65 @@ class LinkedInPublicSearchService:
                         parsed["email_candidates"] = _merge_email_candidates(
                             generated,
                             criteria.get("company_email_candidates") or [],
-                        )
+                    )
                     seen_urls.add(known_profile_url)
                     result = self.repo.create_lead_search_result(task["id"], parsed, status="candidate")
                     all_results.append(result)
-                    contact = _contact_from_search_result(parsed, task["id"])
-                    duplicate = self.repo.find_duplicate_contact(contact)
-                    if duplicate:
-                        skipped += 1
-                        self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
-                        self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
-                    else:
-                        inserted, _ = upsert_contact(contact)
-                        if inserted:
+                    existing = self.repo.get_contact_by_linkedin_url(known_profile_url)
+                    if existing:
+                        contact_id = int(existing["id"])
+                        if pool_type == "private" and existing.get("pool_type") == "public":
+                            claimed = self.repo.claim_public_contact(contact_id, user)
+                            contact_id = int(claimed["id"])
                             promoted += 1
-                            promoted_contact = self.repo.get_contact_by_linkedin_url(known_profile_url)
-                            if promoted_contact:
-                                self.repo.mark_lead_search_result_promoted(result["id"], promoted_contact["id"])
-                                if bool(criteria.get("high_confidence_verify", True)):
-                                    self._verify_high_confidence_candidates(
-                                        promoted_contact,
-                                        parsed.get("email_candidates") or [],
-                                    )
                         else:
                             skipped += 1
-                            self.repo.update_lead_search_result_status(
-                                result["id"],
-                                "duplicate",
-                                "duplicate_or_existing_contact",
-                            )
+                        self.repo.mark_lead_search_result_promoted(result["id"], contact_id)
+                        result["contact_ids"] = [contact_id]
+                    else:
+                        contact = _contact_from_search_result(parsed, task["id"])
+                        duplicate = self.repo.find_duplicate_contact(contact)
+                        if duplicate:
+                            skipped += 1
+                            self.repo.mark_lead_search_result_promoted(result["id"], duplicate["id"])
+                            self.repo.update_lead_search_result_status(result["id"], "duplicate", "duplicate_contact")
+                        else:
+                            inserted, _ = upsert_contact(contact)
+                            if inserted:
+                                promoted += 1
+                                promoted_contact = self.repo.get_contact_by_linkedin_url(known_profile_url)
+                                if promoted_contact:
+                                    result["contact_ids"] = [int(promoted_contact["id"])]
+                                    self.repo.mark_lead_search_result_promoted(result["id"], promoted_contact["id"])
+                                    if bool(criteria.get("high_confidence_verify", True)):
+                                        self._verify_high_confidence_candidates(
+                                            promoted_contact,
+                                            parsed.get("email_candidates") or [],
+                                        )
+                            else:
+                                skipped += 1
+                                self.repo.update_lead_search_result_status(
+                                    result["id"],
+                                    "duplicate",
+                                    "duplicate_or_existing_contact",
+                                )
+            if direct_profile_only:
+                self.repo.complete_lead_search_task(
+                    task["id"],
+                    query_count=0,
+                    result_count=len(all_results),
+                    promoted_count=promoted,
+                    skipped_count=skipped,
+                )
+                return {
+                    "task_id": task["id"],
+                    "results": len(all_results),
+                    "promoted": promoted,
+                    "skipped": skipped,
+                    "contact_ids": [int(item) for row in all_results for item in row.get("contact_ids") or []],
+                    "hiring_signals": 0,
+                    "expansion_score": 0,
+                }
             if hunter and (company_domain or criteria.get("company_keyword")):
                 self.provider_budget.reserve("hunter")
                 provider_queries += 1
@@ -533,9 +565,28 @@ class LinkedInPublicSearchService:
             return {"companies": 0, "tasks": [], "results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0, "hiring_signals": 0, "auto_queue": auto_queue}
         tasks: list[dict[str, Any]] = []
         totals = {"results": 0, "promoted": 0, "skipped": 0, "phone_attached": 0}
+        pool_type = "private" if user.get("role") == "sales" else "public"
         for seed in seeds:
             seed = normalize_company_seed_identity(seed)
             phone_candidates = list(seed.get("phone_candidates") or [])
+            if seed.get("known_profile_url"):
+                criteria = company_seed_to_search_criteria(seed)
+                criteria["direct_profile_only"] = True
+                criteria["auto_domain_lookup"] = False
+                result = self.run(criteria, 1, user=user, pool_type=pool_type)
+                result["company_name"] = seed.get("company_name")
+                result["company_domain"] = seed.get("company_domain")
+                tasks.append(result)
+                totals["results"] += int(result.get("results") or 0)
+                totals["promoted"] += int(result.get("promoted") or 0)
+                totals["skipped"] += int(result.get("skipped") or 0)
+                if seed.get("phone") or phone_candidates:
+                    totals["phone_attached"] += self.repo.update_contacts_phone_from_search_task(
+                        int(result["task_id"]),
+                        phone=seed.get("phone"),
+                        phone_candidates=phone_candidates,
+                    )
+                continue
             seed = self.india_hiring_signals.enrich_seed(seed)
             seed = self.iran_hiring_signals.enrich_seed(seed)
             seed = self.russia_hiring_signals.enrich_seed(seed)
@@ -590,7 +641,7 @@ class LinkedInPublicSearchService:
                 channels["emails"],
             )
             criteria = company_seed_to_search_criteria(seed)
-            result = self.run(criteria, per_company_limit, user=user)
+            result = self.run(criteria, per_company_limit, user=user, pool_type=pool_type)
             result["company_name"] = seed.get("company_name")
             result["company_domain"] = seed.get("company_domain")
             tasks.append(result)

@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from .auth import clear_session_cookie, default_admin_credentials, parse_session_cookie, public_user, session_cookie
 from .clients import SlackClient
 from .config import load_config
-from .contactout_queue import ContactOutConflict, ContactOutQueueService
+from .contactout_queue import ContactOutConflict, ContactOutQueueService, contactout_bridge_configured
 from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
@@ -227,8 +227,9 @@ def make_handler(config, repo: Repository):
                 status = qs.get("status", [""])[0] or None
                 search = qs.get("search", [""])[0] or None
                 filter_key = qs.get("filter", [""])[0] or None
+                task_ids = [int(value) for value in qs.get("task_id", []) if str(value).isdigit()]
                 limit = int(qs.get("limit", ["100"])[0])
-                self._json(lambda: {"contacts": repo.list_contacts(status=status, search=search, filter_key=filter_key, limit=limit, user=self._current_user())})
+                self._json(lambda: {"contacts": repo.list_contacts(status=status, search=search, filter_key=filter_key, search_task_ids=task_ids, limit=limit, user=self._current_user())})
                 return
             if parsed.path == "/api/lifecycle":
                 self._json(lambda: repo.lifecycle_summary(user=self._current_user()))
@@ -325,6 +326,8 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/contact-detail":
                 qs = parse_qs(parsed.query)
                 contact_id = int(qs.get("contact_id", ["0"])[0])
+                if not self._require_contact_access(contact_id):
+                    return
                 self._json(lambda: repo.contact_detail(contact_id, user=self._current_user()) or {})
                 return
             if parsed.path == "/api/export.csv":
@@ -452,16 +455,41 @@ def make_handler(config, repo: Repository):
                 contact_id = int(payload.get("contact_id") or 0)
                 if not self._require_private_contact_access(contact_id):
                     return
+                account_id = int(payload.get("account_id") or 0)
+
+                def enqueue_contactout_job() -> dict[str, Any]:
+                    service = ContactOutQueueService(config, repo)
+                    if account_id:
+                        job = service.enqueue(
+                            contact_id,
+                            owner_user_id=int(user["id"]),
+                            account_id=account_id,
+                        )
+                    else:
+                        job = service.enqueue_auto(
+                            contact_id,
+                            owner_user_id=int(user["id"]),
+                        )
+                    return {"job": job}
+
                 self._json_audit(
                     "enqueue_contactout_enrichment",
-                    lambda: {"job": ContactOutQueueService(config, repo).enqueue(
-                        contact_id,
-                        owner_user_id=int(user["id"]),
-                        account_id=int(payload.get("account_id") or 0),
-                    )},
+                    enqueue_contactout_job,
                     target_type="contact",
                     target_id=contact_id,
                     summary="Queue authorized ContactOut enrichment",
+                )
+                return
+            if parsed.path == "/api/contactout/auto-queue":
+                user = self._current_user()
+                self._json_audit(
+                    "auto_queue_contactout_enrichment",
+                    lambda: ContactOutQueueService(config, repo).auto_enqueue(
+                        int(payload.get("limit") or 40),
+                        user=user,
+                    ),
+                    target_type="contactout_job",
+                    summary="Auto-queue eligible ContactOut enrichment",
                 )
                 return
             if parsed.path == "/api/admin/contactout/accounts":
@@ -509,7 +537,14 @@ def make_handler(config, repo: Repository):
                     return
 
                 def run_contactout_jobs() -> dict[str, Any]:
-                    return {"runs": ContactOutQueueService(config, repo).run_many(int(payload.get("limit") or 1))}
+                    if not contactout_bridge_configured(config):
+                        return {"auto_queue": {"queued": 0, "candidates": 0, "skipped": [], "jobs": []}, "runs": [], "skipped": "bridge_unconfigured"}
+                    service = ContactOutQueueService(config, repo)
+                    limit = int(payload.get("limit") or 1)
+                    return {
+                        "auto_queue": service.auto_enqueue(limit),
+                        "runs": service.run_many(limit),
+                    }
 
                 self._json_audit(
                     "run_contactout_enrichment",
@@ -692,6 +727,7 @@ def make_handler(config, repo: Repository):
                         user=user,
                         idempotency_key=key,
                         auto_prepare_drafts=bool(payload.get("auto_prepare_drafts", True)),
+                        source_filename=str(payload.get("filename") or "").strip(),
                     )
                     return {"run": run, "parsed": len(seeds)}
                 self._json_audit(
@@ -814,6 +850,8 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/email-candidates/adopt":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 self._json_audit(
                     "adopt_email_candidate",
                     lambda: LinkedInPublicSearchService(config, repo).adopt_candidate(int(payload["contact_id"]), payload.get("email") or "", user=self._current_user()),
@@ -911,6 +949,8 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/queue-one":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 self._json_audit(
                     "queue_one",
                     lambda: {"queued": QueueService(repo).queue_contact(int(payload["contact_id"]), user=self._current_user())},
@@ -977,13 +1017,12 @@ def make_handler(config, repo: Repository):
                 admin = self._require_admin()
                 if not admin:
                     return
-                def run_scheduler() -> dict[str, str]:
-                    SchedulerService(config, repo).run_once(
+                def run_scheduler() -> dict[str, Any]:
+                    return SchedulerService(config, repo).run_once(
                         int(payload.get("enrich_limit", 25)),
                         int(payload.get("queue_limit", 25)),
                         int(payload.get("send_limit", 25)),
                     )
-                    return {"status": "ok"}
                 self._json_audit("scheduler", run_scheduler, summary="管理员手动运行调度")
                 return
             if parsed.path == "/api/mark":
@@ -1166,6 +1205,8 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/email-draft/approve":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def approve_email_draft() -> dict[str, Any]:
                     user = self._current_user()
                     contact_id = int(payload["contact_id"])
@@ -1213,6 +1254,8 @@ def make_handler(config, repo: Repository):
                 )
                 return
             if parsed.path == "/api/send-custom":
+                if not self._require_private_contact_access(int(payload["contact_id"])):
+                    return
                 def send_custom() -> dict[str, Any]:
                     user = self._current_user()
                     if not repo.get_private_contact_for_user(int(payload["contact_id"]), user):

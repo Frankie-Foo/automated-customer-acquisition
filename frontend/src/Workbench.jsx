@@ -224,12 +224,21 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
     await reload();
   }
 
-  function openReview() {
-    window.location.hash = "research";
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent("salesbot:contact-filter", { detail: { filter: "mine" } }));
-      window.dispatchEvent(new CustomEvent("salesbot:contacts-refresh"));
-    }, 50);
+  function openReview(run) {
+    const input = run.input_payload || {};
+    const seeds = Array.isArray(input.seeds) ? input.seeds : [];
+    const result = run.result || {};
+    const assignment = result.assignment || {};
+    window.SALESBOT_PENDING_TASK_SCOPE = {
+      filter: "",
+      task_ids: (result.tasks || []).map((task) => Number(task.task_id)).filter(Boolean),
+      task_context: {
+        run_id: run.id,
+        owner: assignment.owner || run.display_name || run.username || "未分配",
+        source_filename: input.source_filename || input.filename || "历史批次（文件名未记录）",
+        companies: seeds.map((seed) => seed.company_name || seed.company_domain || seed.website).filter(Boolean),
+      },
+    };
   }
 
   return (
@@ -245,9 +254,22 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
           const scorecard = result.quality_scorecard || {};
           const promoted = Number(result.promoted || 0);
           const drafted = Number(result.drafted || 0);
+          const input = run.input_payload || {};
+          const seeds = Array.isArray(input.seeds) ? input.seeds : [];
+          const sourceFilename = input.source_filename || "公司种子导入";
+          const owner = assignment.owner || run.display_name || run.username || "未分配";
+          const companies = seeds.map((seed) => seed.company_name || seed.company_domain || seed.website).filter(Boolean);
+          const companySummary = companies.length > 4
+            ? `${companies.slice(0, 4).join("、")} 等 ${companies.length} 家`
+            : companies.join("、") || "公司清单见客户池";
           return (
             <article key={run.id} className={`automation-run ${run.status}`}>
               <div className="automation-run-title"><strong>#{run.id} 公司批量获客</strong><span>{automationStatus(run.status)}</span></div>
+              <div className="automation-run-context" aria-label="批次上下文">
+                <span><b>负责人</b>{owner}</span>
+                <span><b>来源</b>{sourceFilename}</span>
+                <span className="automation-run-companies"><b>本批客户</b>{companySummary}</span>
+              </div>
               <div className="automation-progress"><span style={{ width: `${percent}%` }} /></div>
               <div className="automation-run-stats"><span>{current}/{total} 家</span><span>待核验 {promoted}</span><span>跳过 {result.skipped || 0}</span><span>画像 {result.profiled || 0}</span><span>可发送草稿 {drafted}</span><span>{percent}%</span></div>
               {scorecard.score != null && <p className="automation-run-note quality-note">名单质量 <strong>{scorecard.grade || "-"}</strong> · {scorecard.score} 分 · 符合 ICP {scorecard.qualified || 0} · 可发送 {scorecard.sendable || 0}</p>}
@@ -257,7 +279,7 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
               <footer>
                 {run.status === "running" && <button type="button" onClick={() => guarded(() => act(run, "pause"))}>暂停</button>}
                 {["paused", "failed"].includes(run.status) && <button type="button" className="primary soft" onClick={() => guarded(() => act(run, run.status === "failed" ? "retry" : "resume"))}>{run.status === "failed" ? "重试" : "继续"}</button>}
-                {run.status === "awaiting_approval" && <><button type="button" onClick={openReview}>核验 {promoted} 个客户</button>{drafted > 0 && <a className="primary-link" href="#outreach">去审核邮件</a>}</>}
+                {run.status === "awaiting_approval" && <><a className="primary-link" href="#research" onClick={() => openReview(run)}>核验 {promoted} 个客户</a>{drafted > 0 && <a className="primary-link" href="#outreach">去审核邮件</a>}</>}
               </footer>
             </article>
           );

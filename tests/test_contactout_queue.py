@@ -31,12 +31,20 @@ class FakeRepo:
         self.blocked = []
         self.failed = []
         self.quota_allowed = True
+        self.candidates = []
+        self.selected_account = self.account
 
     def get_contact(self, contact_id):
         return self.contact if contact_id == 7 else None
 
     def get_contactout_account(self, account_id, *, owner_user_id=None):
         return self.account if account_id == 3 else None
+
+    def select_contactout_account(self, *, owner_user_id):
+        return self.selected_account
+
+    def list_contactout_candidates(self, *, limit, user=None):
+        return self.candidates[:limit]
 
     def enqueue_contactout_job(self, **fields):
         self.jobs.append(fields)
@@ -145,6 +153,34 @@ def test_enqueue_conflict_has_stable_error_type():
 
     with pytest.raises(ContactOutConflict, match="contactout_job_conflict"):
         service.enqueue(7, owner_user_id=2, account_id=3)
+
+
+def test_auto_enqueue_uses_assigned_account_without_manual_account_id():
+    repo = FakeRepo()
+    repo.candidates = [{"id": 7, "owner_user_id": 2}]
+    repo.selected_account = {"id": 3, "status": "active"}
+    service = ContactOutQueueService(config(), repo, adapter=Adapter())
+
+    result = service.auto_enqueue(40, user={"id": 2, "role": "sales"})
+
+    assert result["queued"] == 1
+    assert result["skipped"] == []
+    assert repo.jobs[0]["account_id"] == 3
+    assert repo.jobs[0]["owner_user_id"] == 2
+
+
+def test_auto_enqueue_reports_no_authorized_account_without_calling_provider():
+    repo = FakeRepo()
+    repo.candidates = [{"id": 7, "owner_user_id": 2}]
+    repo.selected_account = None
+    adapter = Adapter()
+    service = ContactOutQueueService(config(), repo, adapter=adapter)
+
+    result = service.auto_enqueue(1, user={"id": 2, "role": "sales"})
+
+    assert result["queued"] == 0
+    assert result["skipped"] == [{"contact_id": 7, "reason": "contactout_account_unavailable"}]
+    assert adapter.calls == 0
 
 
 def test_exact_match_is_structured_for_conservative_promotion():
