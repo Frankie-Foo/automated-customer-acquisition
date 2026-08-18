@@ -456,6 +456,8 @@ def test_contactout_candidate_order_uses_existing_contact_timestamps():
     assert "c.updated_at" not in database.connection.query
     assert "available_account.assigned_user_id = c.owner_user_id" in database.connection.query
     assert "available_account.status = 'active'" in database.connection.query
+    assert "account_usage.reserved_units + account_usage.used_units" in database.connection.query
+    assert "pending_job.status IN ('queued', 'retry_wait')" in database.connection.query
 
 
 def test_contactout_account_selection_uses_actual_usage_columns():
