@@ -425,3 +425,62 @@ def test_fence_rechecks_account_after_locking_jobs():
     repo._fence_contactout_account_jobs(3)
 
     assert settled == []
+
+
+def test_contactout_candidate_order_uses_existing_contact_timestamps():
+    class Cursor:
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, query, _params):
+            self.query = query
+            return Cursor()
+
+    class Database:
+        def __init__(self):
+            self.connection = Connection()
+
+        @contextmanager
+        def connect(self):
+            yield self.connection
+
+    database = Database()
+
+    Repository(database).list_contactout_candidates(limit=10, user={"id": 2, "role": "sales"})
+
+    assert "COALESCE(c.profile_updated_at, c.enriched_at, c.created_at)" in database.connection.query
+    assert "c.updated_at" not in database.connection.query
+
+
+def test_contactout_account_selection_uses_actual_usage_columns():
+    class Cursor:
+        def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, query, _params):
+            self.query = query
+            return Cursor()
+
+    class Database:
+        def __init__(self):
+            self.connection = Connection()
+
+        @contextmanager
+        def connect(self):
+            yield self.connection
+
+    database = Database()
+
+    Repository(database).select_contactout_account(owner_user_id=2)
+
+    assert "account_usage.reserved_units" in database.connection.query
+    assert "account_usage.used_units" in database.connection.query
+    assert "account_usage.consumed_units" not in database.connection.query

@@ -2564,7 +2564,8 @@ class Repository:
                     GROUP BY account_id
                 )
                 SELECT account.*,
-                       COALESCE(account_usage.consumed_units, 0) AS consumed_units,
+                       COALESCE(account_usage.reserved_units, 0)
+                         + COALESCE(account_usage.used_units, 0) AS consumed_units,
                        COALESCE(pending.pending_units, 0) AS pending_units
                 FROM contactout_accounts account
                 LEFT JOIN provider_account_daily_usage account_usage
@@ -2576,10 +2577,13 @@ class Repository:
                   AND account.status = 'active'
                   AND account.daily_limit > 0
                   AND (account.cooldown_until IS NULL OR account.cooldown_until <= NOW())
-                  AND COALESCE(account_usage.consumed_units, 0)
+                  AND COALESCE(account_usage.reserved_units, 0)
+                      + COALESCE(account_usage.used_units, 0)
                       + COALESCE(pending.pending_units, 0) < account.daily_limit
                 ORDER BY
-                    COALESCE(account_usage.consumed_units, 0) + COALESCE(pending.pending_units, 0),
+                    COALESCE(account_usage.reserved_units, 0)
+                      + COALESCE(account_usage.used_units, 0)
+                      + COALESCE(pending.pending_units, 0),
                     account.last_used_at NULLS FIRST,
                     account.last_used_at,
                     account.id
@@ -2617,7 +2621,7 @@ class Repository:
                        c.last_name, c.company_name, c.job_title, c.location
                 FROM contacts c
                 WHERE {' AND '.join(clauses)}
-                ORDER BY c.updated_at NULLS FIRST, c.id
+                ORDER BY COALESCE(c.profile_updated_at, c.enriched_at, c.created_at) NULLS FIRST, c.id
                 LIMIT %s
                 """,
                 tuple(params),

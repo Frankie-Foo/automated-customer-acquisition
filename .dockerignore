@@ -19,3 +19,5 @@ deployment/backups
 *.log
 frontend/node_modules
 frontend/dist
+!frontend/dist/
+!frontend/dist/**
