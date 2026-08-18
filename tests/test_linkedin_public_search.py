@@ -381,6 +381,9 @@ def test_run_company_seeds_uses_supplied_linkedin_profile_without_public_search(
         def find_duplicate_contact(self, contact):
             return None
 
+        def email_patterns_for_domain(self, domain):
+            return []
+
         def upsert_contacts(self, contacts, *, owner_user_id=None, pool_type=None):
             self.upserts.append((contacts, owner_user_id, pool_type))
             self.inserted = True
@@ -400,7 +403,7 @@ def test_run_company_seeds_uses_supplied_linkedin_profile_without_public_search(
 
     repo = Repo()
     service = LinkedInPublicSearchService(Config(), repo)
-    service.domain_resolver.resolve = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("domain lookup should be skipped"))
+    service.domain_resolver.resolve = lambda *args, **kwargs: "blessluxury.com"
 
     result = service.run_company_seeds(
         [{
@@ -417,6 +420,7 @@ def test_run_company_seeds_uses_supplied_linkedin_profile_without_public_search(
     assert result["tasks"][0]["task_id"] == 7
     assert repo.completed[0][1]["query_count"] == 0
     assert repo.upserts[0][1:] == (12, "private")
+    assert repo.upserts[0][0][0]["company_domain"] == "blessluxury.com"
 
 
 def test_company_seed_to_search_criteria_keeps_automatic_hiring_evidence():
@@ -577,6 +581,18 @@ def test_domain_resolver_excludes_non_official_domains():
             ]
 
     assert CompanyDomainResolver(Client()).resolve("Acme") == "acme.com"
+
+
+def test_domain_resolver_rejects_unrelated_brand_and_directory_results():
+    class Client:
+        def search(self, query, limit=5):
+            return [
+                {"link": "https://www.tissotwatches.com/stores/ethos"},
+                {"link": "https://www.thecompanycheck.com/company/ethos"},
+                {"link": "https://www.ethoswatches.com/about"},
+            ]
+
+    assert CompanyDomainResolver(Client()).resolve("Ethos Watch Boutiques") == "ethoswatches.com"
 
 
 def test_domain_resolver_uses_middle_east_group_mapping_before_search():

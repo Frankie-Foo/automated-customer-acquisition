@@ -196,7 +196,12 @@ class CompanyDomainResolver:
                 results = self.client.search(query, limit=5)
             for item in results:
                 candidate = _domain_from_website(item.get("link") or "")
-                if candidate and not _is_blocked_domain(candidate) and not is_low_quality_domain(candidate):
+                if (
+                    candidate
+                    and not _is_blocked_domain(candidate)
+                    and not is_low_quality_domain(candidate)
+                    and _domain_matches_company_name(company_name, candidate)
+                ):
                     return candidate
         return None
 
@@ -570,6 +575,13 @@ class LinkedInPublicSearchService:
             seed = normalize_company_seed_identity(seed)
             phone_candidates = list(seed.get("phone_candidates") or [])
             if seed.get("known_profile_url"):
+                if not seed.get("company_domain") and seed.get("company_name"):
+                    seed["company_domain"] = self.domain_resolver.resolve(
+                        seed.get("company_name"),
+                        None,
+                        location=seed.get("location"),
+                        category=seed.get("category") or seed.get("industry"),
+                    )
                 criteria = company_seed_to_search_criteria(seed)
                 criteria["direct_profile_only"] = True
                 criteria["auto_domain_lookup"] = False
@@ -1644,6 +1656,21 @@ def _is_blocked_domain(domain: str) -> bool:
     domain = domain.lower().removeprefix("www.")
     blocked = {item.removeprefix("www.") for item in BLOCKED_DOMAINS}
     return any(domain == item or domain.endswith(f".{item}") for item in blocked)
+
+
+def _domain_matches_company_name(company_name: str, domain: str) -> bool:
+    domain_token = re.sub(r"[^a-z0-9]", "", domain.lower().split(".", 1)[0])
+    ignored = {
+        "company", "group", "limited", "ltd", "llp", "private", "pvt", "official",
+        "international", "global", "holdings", "holding", "india", "boutique", "boutiques",
+        "watch", "watches", "cars", "motors", "retail",
+    }
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", company_name.lower())
+        if len(token) >= 4 and token not in ignored
+    }
+    return bool(tokens and any(token in domain_token or domain_token in token for token in tokens))
 
 
 def _is_public_domain(domain: str) -> bool:
