@@ -1,7 +1,13 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from sales_automation.services import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id, _extract_recipient_email, _extract_sender_email
 from sales_automation.services.webhooks import _furthest_lifecycle_stage
+
+
+def test_auto_reply_event_is_supported_by_database_schema():
+    sql = Path("migrations/046_auto_reply_email_event.sql").read_text(encoding="utf-8")
+    assert "ALTER TYPE email_event_type ADD VALUE IF NOT EXISTS 'auto_reply'" in sql
 
 
 def test_extract_contact_id_from_metadata():
