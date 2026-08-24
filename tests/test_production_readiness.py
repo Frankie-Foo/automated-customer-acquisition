@@ -120,7 +120,7 @@ def test_bundled_postgres_backup_is_atomic_and_fails_closed():
 
 
 def test_runtime_config_maps_contactout_bridge():
-    runtime_config = Path("config.yaml").read_text(encoding="utf-8")
+    runtime_config = Path("config.example.yaml").read_text(encoding="utf-8")
 
     assert "contactout_bridge_key: ${CONTACTOUT_BRIDGE_KEY}" in runtime_config
     assert "bridge_url: ${CONTACTOUT_BRIDGE_URL}" in runtime_config
