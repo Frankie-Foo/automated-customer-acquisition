@@ -252,6 +252,9 @@ def test_webhook_invalid_numeric_credit_values_use_reservation():
     assert _normalize_webhook({"credits_consumed": -1}, default_credits=7)["credits_consumed"] == 7
     assert _normalize_webhook({"credits_consumed": 10}, default_credits=7)["credits_consumed"] == 7
     assert _normalize_webhook({"credits_consumed": False}, default_credits=7)["credits_consumed"] == 7
+    assert _normalize_webhook({"credits_consumed": -0.1}, default_credits=7)["credits_consumed"] == 7
+    assert _normalize_webhook({"credits_consumed": 9.1}, default_credits=7)["credits_consumed"] == 7
+    assert _normalize_webhook({"credits_consumed": 8.0}, default_credits=7)["credits_consumed"] == 8
 
 
 def test_apollo_dispatch_contact_fence_guards_transfer_and_delete():

@@ -6,7 +6,7 @@ class _ApolloDispatchConflict(Exception):
 
 
 def test_apollo_dispatch_database_fence_returns_conflict():
-    error = _ApolloDispatchConflict("apollo dispatch is active; contact cannot be reassigned or deleted")
+    error = _ApolloDispatchConflict("apollo phone dispatch is in progress for contact 7")
 
     assert _api_error_status(error) == 409
 

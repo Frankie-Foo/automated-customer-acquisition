@@ -5553,15 +5553,19 @@ class Repository:
         owner_user_id: int | None = None,
         budget_amount: float | None = None,
         currency: str = "USD",
+        idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.db.connect() as conn:
             return conn.execute(
                 """
                 INSERT INTO campaigns(
-                    name, channel, region, product_line, owner_user_id, budget_amount, currency, metadata
+                    name, channel, region, product_line, owner_user_id, budget_amount, currency,
+                    idempotency_key, metadata
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
                 RETURNING *
                 """,
                 (
@@ -5572,6 +5576,7 @@ class Repository:
                     owner_user_id,
                     budget_amount,
                     currency or "USD",
+                    idempotency_key,
                     json.dumps(metadata or {}),
                 ),
             ).fetchone()

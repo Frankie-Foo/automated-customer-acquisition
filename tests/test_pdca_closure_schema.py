@@ -33,6 +33,14 @@ def test_pdca_workflow_guards_prevent_duplicate_open_work() -> None:
     assert "uq_outreach_messages_draft" in sql
 
 
+def test_campaign_import_idempotency_is_database_enforced() -> None:
+    sql = Path("migrations/048_campaign_import_idempotency.sql").read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS idempotency_key TEXT" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_campaigns_idempotency_key" in sql
+    assert "WHERE idempotency_key IS NOT NULL" in sql
+
+
 def test_outbound_quality_migration_declares_feedback_and_experiment_storage() -> None:
     sql = Path("migrations/030_outbound_quality_loop.sql").read_text(encoding="utf-8")
 

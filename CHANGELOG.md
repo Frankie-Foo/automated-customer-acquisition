@@ -11,6 +11,7 @@
 - Keep explicit negative replies out of the active replied lifecycle, and require valid Apollo production configuration when the phone fallback is enabled.
 - Fence contact transfer or deletion during Apollo dispatch and charge reserved credits when provider usage metadata is missing or malformed.
 - Wire Apollo environment settings into the production runtime, reject invalid credit values fail-closed, and return a clear conflict while enrichment is in flight.
+- Reuse the same campaign when an import is retried, preventing duplicate funnel and cost metrics under retries or concurrent requests.
 
 ## 2026-08-21 - Cost-controlled Apollo phone fallback
 

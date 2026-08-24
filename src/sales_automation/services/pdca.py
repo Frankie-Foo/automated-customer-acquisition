@@ -45,6 +45,7 @@ class LeadWorkflowService:
                 name=(source_ref or source_type)[:200],
                 channel=source_type,
                 owner_user_id=owner_user_id,
+                idempotency_key=campaign_idempotency_key(source_type, source_ref, owner_user_id),
                 metadata={"source_ref": source_ref},
             )
             campaign_id = int(campaign["id"])
@@ -143,6 +144,11 @@ class LeadWorkflowService:
                 name=(source_ref or source_type)[:200],
                 channel=source_type,
                 owner_user_id=int(user["id"]) if user else None,
+                idempotency_key=campaign_idempotency_key(
+                    source_type,
+                    source_ref,
+                    int(user["id"]) if user else None,
+                ),
                 metadata={"source_ref": source_ref},
             )
             campaign_id = int(campaign["id"])
@@ -421,6 +427,13 @@ def dedupe_key(contact: dict[str, Any]) -> str:
 
 def lead_external_id(source_type: str, source_ref: str | None, row_number: int, contact: dict[str, Any]) -> str:
     seed = f"{source_type}|{source_ref or ''}|{row_number}|{dedupe_key(contact)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def campaign_idempotency_key(source_type: str, source_ref: str | None, owner_user_id: int | None) -> str | None:
+    if not source_ref:
+        return None
+    seed = f"{source_type.strip().casefold()}|{source_ref.strip().casefold()}|{owner_user_id or 'system'}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 

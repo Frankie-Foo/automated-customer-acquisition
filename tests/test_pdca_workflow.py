@@ -19,9 +19,11 @@ class WorkflowRepo:
         self.leads: list[dict] = []
         self.tasks: list[dict] = []
         self.metrics: list[int] = []
+        self.campaigns: dict[str, dict] = {}
 
     def create_campaign(self, **values):
-        return {"id": 41, **values}
+        key = values.get("idempotency_key") or f"campaign-{len(self.campaigns) + 1}"
+        return self.campaigns.setdefault(key, {"id": 40 + len(self.campaigns) + 1, **values})
 
     def find_contact_match(self, contact):
         return None
@@ -190,6 +192,19 @@ def test_ingest_creates_canonical_contact_lead_task_and_campaign_metric() -> Non
     assert repo.leads[0]["raw_data"]["company_name"] == "Example"
     assert repo.tasks[0]["task_type"] == "enrich_contact"
     assert repo.metrics == [41]
+
+
+def test_ingest_retry_reuses_campaign_for_same_source_and_owner() -> None:
+    repo = WorkflowRepo()
+    service = LeadWorkflowService(repo)
+    contact = {"company_name": "Example", "website": "example.com", "job_title": "Owner"}
+    user = {"id": 3, "username": "sales"}
+
+    first = service.ingest_contacts([contact], user=user, source_type="csv_import", source_ref="sample.csv")
+    second = service.ingest_contacts([contact], user=user, source_type="csv_import", source_ref="sample.csv")
+
+    assert first["campaign_id"] == second["campaign_id"]
+    assert len(repo.campaigns) == 1
 
 
 def test_ingest_keeps_blacklisted_lead_but_does_not_create_sales_task() -> None:

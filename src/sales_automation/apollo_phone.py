@@ -253,13 +253,15 @@ def _bounded_credits(value: Any, *, default: int = 9) -> int:
     fallback = max(0, min(9, int(default)))
     if isinstance(value, bool):
         return fallback
-    try:
-        if value is None or isinstance(value, str) and not value.strip():
-            return fallback
+    if isinstance(value, int):
+        credits = value
+    elif isinstance(value, float) and value.is_integer():
         credits = int(value)
-        return credits if 0 <= credits <= 9 else fallback
-    except (TypeError, ValueError):
+    elif isinstance(value, str) and value.strip().isdigit():
+        credits = int(value.strip())
+    else:
         return fallback
+    return credits if 0 <= credits <= 9 else fallback
 
 
 _BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
