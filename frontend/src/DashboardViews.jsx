@@ -13,6 +13,7 @@ const lifecycleStages = [
   ["trial_order", "试订单"],
   ["agency_agreement", "代理协议"],
   ["hq_visit", "总部拜访"],
+  ["store_creation", "门店创建"],
   ["signed", "成功签约"],
   ["maintenance", "持续维护"],
   ["waiting_pool", "等待池"],
@@ -68,6 +69,12 @@ function DashboardViews({ targets, activePage }) {
   const [publicContacts, setPublicContacts] = useState([]);
   const [tasks, setTasks] = useState([]);
 
+  const reportLoadError = useCallback((error) => {
+    window.dispatchEvent(new CustomEvent("salesbot:notice", {
+      detail: { message: `页面数据加载失败：${error?.message || "未知错误"}`, type: "error" },
+    }));
+  }, []);
+
   const load = useCallback(async () => {
     if (!user) return;
     if (activePage === "dashboard") {
@@ -97,7 +104,7 @@ function DashboardViews({ targets, activePage }) {
 
   useEffect(() => {
     const session = (event) => setUser(event.detail?.user || null);
-    const refresh = () => load().catch(() => {});
+    const refresh = () => load().catch(reportLoadError);
     window.addEventListener("salesbot:session", session);
     window.addEventListener("salesbot:refresh-related", refresh);
     window.addEventListener("salesbot:ops-refresh", refresh);
@@ -106,11 +113,11 @@ function DashboardViews({ targets, activePage }) {
       window.removeEventListener("salesbot:refresh-related", refresh);
       window.removeEventListener("salesbot:ops-refresh", refresh);
     };
-  }, [load]);
+  }, [load, reportLoadError]);
 
   useEffect(() => {
-    load().catch(() => {});
-  }, [load]);
+    load().catch(reportLoadError);
+  }, [load, reportLoadError]);
 
   if (!user) return null;
 
@@ -281,21 +288,18 @@ function OpsReport({ report, user }) {
 
 function ConversionFunnel({ funnel }) {
   const stages = [
-    ["线索", "leads"],
-    ["已分配", "private_pool"],
-    ["有效邮箱", "valid_email"],
-    ["客户画像", "profiled"],
-    ["邮件草稿", "drafted"],
-    ["已审核", "approved"],
-    ["已发送", "sent"],
-    ["已打开", "opened"],
-    ["已回复", "replied"],
-    ["B/A/S", "qualified"],
-    ["已签约", "signed"],
+    ["进入客户池", "leads", "获客与导入"],
+    ["可联系", "valid_email", "有效邮箱"],
+    ["完成画像", "profiled", "客户与公司背景"],
+    ["准备触达", "approved", "草稿已审核"],
+    ["已发送", "sent", "真实邮件触达"],
+    ["客户回复", "replied", "进入销售跟进"],
+    ["有效商机", "qualified", "B / A / S 客户"],
+    ["成功签约", "signed", "进入持续维护"],
   ];
   const base = Math.max(1, Number(funnel.leads || 0));
   return <section className="conversion-funnel">
-    <div className="section-title-row"><div><span className="eyebrow">Conversion funnel</span><h3>客户转化漏斗</h3></div><p>从获客到签约的累计客户数</p></div>
+    <div className="section-title-row"><div><span className="eyebrow">Conversion funnel</span><h3>从线索到签约</h3></div><p>宽度代表相对规模，转化率以上一阶段为基准</p></div>
     <div className="funnel-steps">{stages.map(([label, key], index) => {
       const value = Number(funnel[key] || 0);
       const previous = index ? Number(funnel[stages[index - 1][1]] || 0) : value;
@@ -307,7 +311,14 @@ function ConversionFunnel({ funnel }) {
           : rate > 100
             ? "历史数据未完整回填"
             : `上一步转化 ${rate}%`;
-      return <div className="funnel-step" key={key}><div><strong>{label}</strong><b>{value}</b></div><span><i style={{ width: `${Math.max(4, Math.round((value / base) * 100))}%` }} /></span><small>{rateLabel}</small></div>;
+      const width = Math.max(34, Math.min(100, Math.round((value / base) * 100)));
+      return <div className="funnel-step" key={key}>
+        <div className="funnel-band" style={{ width: `${width}%` }}>
+          <span><strong>{label}</strong><small>{stages[index][2]}</small></span>
+          <b>{value}</b>
+        </div>
+        <em>{rateLabel}</em>
+      </div>;
     })}</div>
   </section>;
 }
@@ -471,24 +482,34 @@ function FollowupCard({ title, hint, tone, contacts }) {
 function Lifecycle({ lifecycle, contacts }) {
   const stages = lifecycle.stages || {};
   const sabcd = lifecycle.sabcd || {};
+  const total = sabcdStages.reduce((sum, [key]) => sum + Number(sabcd[key] || 0), 0);
   return (
     <section className="lifecycle-board" id="lifecycle-board">
       <div className="followup-head">
-        <div><span className="eyebrow">Customer lifecycle</span><h2>客户生命周期漏斗</h2></div>
-        <p>用 SABCD 管理客户成熟度，用生命周期管理每一步销售动作。</p>
+        <div><span className="eyebrow">Customer lifecycle</span><h2>客户生命周期</h2></div>
+        <p>邮件送达、打开和退信属于触达反馈；客户阶段按实际沟通与成交进展推进。</p>
       </div>
-      <div className="sabcd-grid">
-        {sabcdStages.map(([key, label, hint]) => {
+      <div className="sabcd-flow" aria-label="SABCD 客户成熟度分布">
+        {sabcdStages.map(([key, label, hint], index) => {
           const examples = contacts.filter((c) => (c.sabcd_stage || "D") === key).slice(0, 2);
-          return <a href="#research" onClick={() => window.dispatchEvent(new CustomEvent("salesbot:contact-filter", { detail: { filter: `sabcd_${key.toLowerCase()}` } }))} key={key} className={`sabcd-card sabcd-${key.toLowerCase()}`}><div><strong>{label}</strong><span>{hint}</span></div><b>{sabcd[key] || 0}</b><small>{examples.length ? examples.map((c) => <em key={c.id}>{fullName(c)}</em>) : <em>暂无客户</em>}</small></a>;
+          const value = Number(sabcd[key] || 0);
+          const share = total ? Math.round((value / total) * 100) : 0;
+          return <a href="#research" onClick={() => window.dispatchEvent(new CustomEvent("salesbot:contact-filter", { detail: { filter: `sabcd_${key.toLowerCase()}` } }))} key={key} className={`sabcd-stage sabcd-${key.toLowerCase()}`} title={hint}>
+            <span className="sabcd-key">{key}</span>
+            <span className="sabcd-stage-copy"><strong>{label.replace(`${key} `, "")}</strong><small>{value} 位客户 · 占 {share}%</small>{examples.length > 0 && <em>{examples.map((c) => fullName(c)).join("、")}</em>}</span>
+            {index < sabcdStages.length - 1 && <i aria-hidden="true">→</i>}
+          </a>;
         })}
       </div>
-      <div className="lifecycle-grid">
-        {lifecycleStages.map(([key, label]) => {
-          const examples = contacts.filter((c) => c.lifecycle_stage === key).slice(0, 2);
-          return <article key={key} className={`lifecycle-card ${key}`}><strong>{label}</strong><b>{stages[key] || 0}</b><div>{examples.length ? examples.map((c) => <span key={c.id}>{fullName(c)}</span>) : <span>暂无客户</span>}</div></article>;
-        })}
-      </div>
+      <section className="lifecycle-details lifecycle-details-static" aria-label="详细客户生命周期阶段">
+        <header><span><strong>详细客户阶段</strong><small>从陌生线索到签约维护，共 14 个客户生命周期节点</small></span><b>{total}</b></header>
+        <div className="lifecycle-grid">
+          {lifecycleStages.map(([key, label]) => {
+            const examples = contacts.filter((c) => c.lifecycle_stage === key).slice(0, 2);
+            return <article key={key} className={`lifecycle-card ${key}`}><strong>{label}</strong><b>{stages[key] || 0}</b><div>{examples.length ? examples.map((c) => <span key={c.id}>{fullName(c)}</span>) : <span>暂无客户</span>}</div></article>;
+          })}
+        </div>
+      </section>
     </section>
   );
 }
@@ -523,6 +544,7 @@ function readinessLabel(name) {
     reply_ingestion: "回复收件回流",
     admin_password: "管理员密码",
     social_enrichment: "社媒富化 API",
+    apollo_phone: "Apollo 电话兜底",
     llm: "AI 文案模型",
     slack: "Slack 通知",
     quotas: "配额配置",

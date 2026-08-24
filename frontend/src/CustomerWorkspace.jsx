@@ -4,14 +4,20 @@ import { api } from "./api.js";
 import { rememberWorkspaceContact, selectedWorkspaceContact } from "./workspaceNavigation.js";
 
 const lifecycleOptions = [
-  ["lead", "线索"],
-  ["replied", "回复"],
+  ["lead", "陌生线索"],
+  ["replied", "已回复"],
   ["conversation", "初步沟通"],
   ["meeting", "约会/会议"],
   ["business_plan", "商业计划"],
+  ["store_visit", "到店参观"],
   ["trial_order", "试订单"],
   ["agency_agreement", "代理协议"],
+  ["hq_visit", "总部拜访"],
   ["store_creation", "门店创建"],
+  ["signed", "成功签约"],
+  ["maintenance", "持续维护"],
+  ["waiting_pool", "等待池"],
+  ["abandoned", "已放弃"],
 ];
 
 const activityTypes = [
@@ -21,19 +27,14 @@ const activityTypes = [
   ["business_plan", "商业计划"],
   ["trial_order", "试订单"],
   ["agreement_review", "代理协议风险"],
+  ["visit", "到店/总部拜访记录"],
   ["store_plan", "门店创建资料"],
+  ["contract", "签约记录"],
+  ["maintenance", "维护记录"],
   ["note", "普通备注"],
 ];
 
-const lifecycleLabels = Object.fromEntries([
-  ...lifecycleOptions,
-  ["store_visit", "到店参观"],
-  ["hq_visit", "总部拜访"],
-  ["signed", "成功签约"],
-  ["maintenance", "持续维护"],
-  ["waiting_pool", "等待池"],
-  ["abandoned", "已放弃"],
-]);
+const lifecycleLabels = Object.fromEntries(lifecycleOptions);
 
 export default function CustomerWorkspacePortal() {
   const [target, setTarget] = useState(null);
@@ -84,6 +85,12 @@ function CustomerWorkspace() {
     setSuggestions(rows.slice(0, 9));
   }, []);
 
+  const reportSuggestionsError = useCallback((error) => {
+    const message = `待处理客户加载失败：${error?.message || "未知错误"}`;
+    setError(message);
+    window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message, type: "error" } }));
+  }, []);
+
   const loadDetail = useCallback(async (contactId) => {
     if (!contactId) return;
     setLoading(true);
@@ -116,17 +123,17 @@ function CustomerWorkspace() {
       const contactId = rememberWorkspaceContact(event.detail?.contactId);
       if (contactId) loadDetail(contactId);
     };
-    const refresh = () => loadSuggestions().catch(() => {});
+    const refresh = () => loadSuggestions().catch(reportSuggestionsError);
     window.addEventListener("salesbot:open-contact", open);
     window.addEventListener("salesbot:refresh-related", refresh);
-    loadSuggestions().catch(() => {});
+    loadSuggestions().catch(reportSuggestionsError);
     const selectedContactId = selectedWorkspaceContact();
     if (selectedContactId) loadDetail(selectedContactId);
     return () => {
       window.removeEventListener("salesbot:open-contact", open);
       window.removeEventListener("salesbot:refresh-related", refresh);
     };
-  }, [loadDetail, loadSuggestions]);
+  }, [loadDetail, loadSuggestions, reportSuggestionsError]);
 
   useEffect(() => {
     if (!contact?.id) return undefined;
@@ -288,9 +295,9 @@ function CustomerWorkspace() {
       <div className="followup-head">
         <div>
           <span className="eyebrow">Customer workspace</span>
-          <h2>客户触达工作台</h2>
+          <h2>客户生命周期工作台</h2>
         </div>
-        <p>记录回复、沟通、会议、商业计划、试订单、协议和门店信息，并让 AI 生成阶段建议。</p>
+        <p>记录真实沟通与成交进展；邮件送达、打开、退信只属于触达反馈。</p>
       </div>
       {!contact ? (
         <div className="workspace-empty workspace-picker">{loading ? "正在加载客户..." : <><strong>选择一个待触达客户</strong><span>队列按“待审核 → 已审核可发送 → 待生成草稿”排列。</span>{suggestions.length ? <div className="workspace-suggestions">{suggestions.map((item) => <button type="button" key={item.id} onClick={() => loadDetail(item.id)}><span><b>{[item.first_name, item.last_name].filter(Boolean).join(" ") || item.company_name}</b><small>{item.company_name || item.company_domain || ""}</small></span><em>{draftActionLabel(item)}</em></button>)}</div> : <a className="empty-state-action" href="#research">去领取或核验客户</a>}</>}</div>
@@ -306,7 +313,11 @@ function CustomerWorkspace() {
             onIcpFeedback={(expected) => guarded(() => reviewIcp(expected))}
           />
           <div className="workspace-form">
-            <label>阶段
+            <div className="workspace-stage-note wide" role="note">
+              <strong>更新客户生命周期</strong>
+              <span>按客户真实进展选择阶段。邮件打开不代表客户已回复，也不会自动升级阶段。</span>
+            </div>
+            <label>客户生命周期阶段
               <select value={stage} onChange={(event) => setStage(event.target.value)}>
                 {lifecycleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
@@ -394,7 +405,10 @@ function WorkflowStrip({ contact, research, draft, feedback }) {
     ["发送触达", sentReady, sentReady ? `第 ${contact.sequence_step} 封` : "待发送"],
     ["行为回流", replied || opened, replied ? "已回复" : opened ? "已打开" : "等待反馈"],
   ];
-  return <section className="workflow-strip">{steps.map(([label, done, note], index) => <article key={label} className={done ? "done" : "pending"}><b>{index + 1}</b><div><strong>{label}</strong><span>{note}</span></div></article>)}</section>;
+  return <section className="workflow-progress" aria-label="触达执行进度">
+    <header><strong>触达执行进度</strong><span>用于准备和发送邮件，不等于客户生命周期</span></header>
+    <div className="workflow-strip">{steps.map(([label, done, note], index) => <article key={label} className={done ? "done" : "pending"}><b>{index + 1}</b><div><strong>{label}</strong><span>{note}</span></div></article>)}</div>
+  </section>;
 }
 
 function refreshRelatedViews() {

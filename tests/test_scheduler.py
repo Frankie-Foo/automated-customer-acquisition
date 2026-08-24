@@ -53,6 +53,15 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
             calls.append("contactout_run")
             return [{"status": "succeeded"}]
 
+    class ApolloPhone:
+        def __init__(self, *_args): pass
+        def auto_enqueue(self, limit):
+            calls.append("apollo_queue")
+            return {"queued": 1, "candidates": 1, "jobs": []}
+        def dispatch_many(self, limit):
+            calls.append("apollo_run")
+            return [{"status": "awaiting_webhook"}]
+
     class Queue:
         def __init__(self, *_args): pass
         def queue(self, limit):
@@ -83,16 +92,21 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
     monkeypatch.setattr(f"{module}.EnrichmentService", Enrichment)
     monkeypatch.setattr(f"{module}.ContactOutQueueService", ContactOut)
     monkeypatch.setattr(f"{module}.contactout_bridge_configured", lambda _config: True)
+    monkeypatch.setattr(f"{module}.ApolloPhoneQueueService", ApolloPhone)
+    monkeypatch.setattr(f"{module}.apollo_phone_configured", lambda _config: True)
     monkeypatch.setattr(f"{module}.QueueService", Queue)
     monkeypatch.setattr(f"{module}.QuotaService", Quota)
     monkeypatch.setattr(f"{module}.OutreachService", Outreach)
     monkeypatch.setattr(f"{module}.LeadWorkflowService", Workflow)
     monkeypatch.setattr(f"{module}.DataFlywheelService", Flywheel)
 
-    config = AppConfig(raw={"contactout": {"auto_queue_limit": 5, "scheduler_limit": 5}}, root_dir=Path("."))
+    config = AppConfig(raw={
+        "contactout": {"auto_queue_limit": 5, "scheduler_limit": 5},
+        "apollo_phone": {"auto_queue_limit": 5, "scheduler_limit": 5},
+    }, root_dir=Path("."))
     result = SchedulerService(config, _Repo()).run_once(25, 25, 25)
 
-    assert calls == ["acquisition", "enrichment", "contactout_queue", "contactout_run", "queue", "send"]
+    assert calls == ["acquisition", "enrichment", "contactout_queue", "contactout_run", "apollo_queue", "apollo_run", "queue", "send"]
     assert result["enrichment"] == {"succeeded": 3, "failed": 2}
     assert result["queued"] == 4
     assert result["sent"] == 4

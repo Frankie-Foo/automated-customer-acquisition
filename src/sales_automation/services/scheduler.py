@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..config import AppConfig
+from ..apollo_phone import ApolloPhoneQueueService, apollo_phone_configured
 from ..contactout_queue import ContactOutQueueService, contactout_bridge_configured
 from ..db import Repository
 from ..logging_utils import log
@@ -40,6 +41,19 @@ class SchedulerService:
                         if contactout_auto_queue_limit > 0 else {"queued": 0, "candidates": 0, "skipped": [], "jobs": []}
                     )
                     contactout = contactout_service.run_many(contactout_limit) if contactout_limit > 0 else []
+                apollo_config = self.config.raw.get("apollo_phone", {})
+                apollo_limit = int(apollo_config.get("scheduler_limit") or 0)
+                apollo_auto_queue_limit = int(apollo_config.get("auto_queue_limit") or apollo_limit or 0)
+                if not apollo_phone_configured(self.config):
+                    apollo_auto_queue = {"queued": 0, "candidates": 0, "jobs": [], "reason": "apollo_unconfigured"}
+                    apollo_phone = []
+                else:
+                    apollo_service = ApolloPhoneQueueService(self.config, self.repo)
+                    apollo_auto_queue = (
+                        apollo_service.auto_enqueue(apollo_auto_queue_limit)
+                        if apollo_auto_queue_limit > 0 else {"queued": 0, "candidates": 0, "jobs": []}
+                    )
+                    apollo_phone = apollo_service.dispatch_many(apollo_limit) if apollo_limit > 0 else []
                 quota = QuotaService(self.config, self.repo)
                 queued = QueueService(self.repo).queue(queue_limit)
                 limited_send = min(send_limit, quota.remaining_global("send"))
@@ -60,6 +74,8 @@ class SchedulerService:
                     "enrichment": {"succeeded": enrichment_ok, "failed": enrichment_failed},
                     "contactout_auto_queue": contactout_auto_queue,
                     "contactout": contactout,
+                    "apollo_phone_auto_queue": apollo_auto_queue,
+                    "apollo_phone": apollo_phone,
                     "queued": queued,
                     "sent": sent,
                     "waiting": closed["waiting"],

@@ -35,6 +35,8 @@ The Dashboard `Lead Source` form accepts role, optional company website, industr
 
 Bulk Excel/CSV company imports run as durable background tasks. The upload request returns immediately; progress is stored in PostgreSQL and can be paused, resumed, or retried from the sourcing page. Completed tasks stop at customer review and never send automatically.
 
+The web application is the sole operational workspace and PostgreSQL is the sole source of truth. Customer state, outreach feedback, follow-up tasks, lifecycle changes, audit history, and flywheel learning are not synchronized to Feishu or maintained in external spreadsheets.
+
 ## Safe Email Workflow
 
 Sales users open a private-pool customer, generate or edit a draft, then click `审核并锁定`. The backend only sends when the submitted subject and body exactly match the latest approved draft. Any edit requires approval again. Direct bulk-send endpoints are restricted to administrators.

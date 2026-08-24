@@ -1611,9 +1611,8 @@ select:focus {
 
 .lifecycle-grid {
   display: grid;
-  grid-template-columns: repeat(13, minmax(98px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
-  overflow-x: auto;
   padding-bottom: 4px;
 }
 
@@ -1759,6 +1758,32 @@ select:focus {
 .workspace-content {
   display: grid;
   gap: 14px;
+}
+
+.workflow-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-progress > header,
+.lifecycle-details-static > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workflow-progress > header strong,
+.workflow-progress > header span,
+.lifecycle-details-static > header strong,
+.lifecycle-details-static > header small {
+  display: block;
+}
+
+.workflow-progress > header span,
+.lifecycle-details-static > header small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .workflow-strip {
@@ -2146,6 +2171,7 @@ textarea {
 
 .acquisition-control {
   display: grid;
+  grid-column: 1 / -1;
   gap: 16px;
 }
 
@@ -2605,9 +2631,22 @@ table {
 .customer-identity,
 .customer-company,
 .pipeline-cell,
+.email-feedback-cell,
 .identity-quality {
   display: grid;
   gap: 5px;
+}
+
+.email-feedback-cell > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.email-feedback-cell small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .customer-identity > small {
@@ -2791,6 +2830,12 @@ tbody tr:hover {
   border-color: #93c5fd;
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.event-chip.auto_reply {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
 }
 
 .event-chip.bounced,
@@ -4820,6 +4865,301 @@ main,
   overflow-x: auto;
 }
 
+/* Outcome flow: one visual language from acquisition to learning. */
+.conversion-funnel {
+  padding: 18px 0;
+}
+
+.conversion-funnel .funnel-steps {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  overflow: visible;
+  padding: 0;
+}
+
+.conversion-funnel .funnel-step {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.conversion-funnel .funnel-band {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 240px;
+  min-height: 50px;
+  padding: 8px 14px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  transition: width 180ms ease;
+}
+
+.conversion-funnel .funnel-step:nth-child(2) .funnel-band,
+.conversion-funnel .funnel-step:nth-child(3) .funnel-band {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+
+.conversion-funnel .funnel-step:nth-child(4) .funnel-band,
+.conversion-funnel .funnel-step:nth-child(5) .funnel-band {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
+.conversion-funnel .funnel-step:nth-child(6) .funnel-band,
+.conversion-funnel .funnel-step:nth-child(7) .funnel-band {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.conversion-funnel .funnel-step:last-child .funnel-band {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.conversion-funnel .funnel-band > span,
+.conversion-funnel .funnel-band strong,
+.conversion-funnel .funnel-band small {
+  display: block;
+}
+
+.conversion-funnel .funnel-band strong {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.conversion-funnel .funnel-band small,
+.conversion-funnel .funnel-step em {
+  color: var(--text-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.conversion-funnel .funnel-band b {
+  color: var(--text-1);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sabcd-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.sabcd-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-1);
+  text-decoration: none;
+}
+
+.sabcd-stage:hover {
+  border-color: var(--primary-light);
+  box-shadow: var(--shadow-sm);
+}
+
+.sabcd-key {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--stage-d);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.sabcd-stage-copy,
+.sabcd-stage-copy strong,
+.sabcd-stage-copy small,
+.sabcd-stage-copy em {
+  display: block;
+  min-width: 0;
+}
+
+.sabcd-stage-copy strong {
+  font-size: 13px;
+}
+
+.sabcd-stage-copy small,
+.sabcd-stage-copy em {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 10px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sabcd-stage > i {
+  position: absolute;
+  z-index: 2;
+  right: -12px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 24px;
+  color: var(--text-3);
+  font-size: 16px;
+  font-style: normal;
+}
+
+.sabcd-stage.sabcd-d { background: var(--stage-d-bg); }
+.sabcd-stage.sabcd-c { background: var(--stage-c-bg); }
+.sabcd-stage.sabcd-b { background: var(--stage-b-bg); }
+.sabcd-stage.sabcd-a { background: var(--stage-a-bg); }
+.sabcd-stage.sabcd-s { background: var(--stage-s-bg); }
+.sabcd-stage.sabcd-c .sabcd-key { background: var(--stage-c); }
+.sabcd-stage.sabcd-b .sabcd-key { background: var(--stage-b); }
+.sabcd-stage.sabcd-a .sabcd-key { background: var(--stage-a); }
+.sabcd-stage.sabcd-s .sabcd-key { background: var(--stage-s); }
+
+.lifecycle-details {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.lifecycle-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.lifecycle-details > summary::-webkit-details-marker { display: none; }
+.lifecycle-details > summary span,
+.lifecycle-details > summary strong,
+.lifecycle-details > summary small { display: block; }
+.lifecycle-details > summary small { color: var(--text-3); font-size: 10px; }
+.lifecycle-details > summary b { font-size: 20px; }
+.lifecycle-details[open] > summary { border-bottom: 1px solid var(--border); }
+.lifecycle-details .lifecycle-grid { padding: 12px; }
+
+.lifecycle-details-static > header {
+  min-height: 58px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lifecycle-details-static > header b { font-size: 20px; }
+
+.workspace-stage-note {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-soft);
+}
+
+.workspace-stage-note span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.flywheel-loop {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.flywheel-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.flywheel-node > span {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 900;
+}
+
+.flywheel-node strong { font-size: 12px; }
+.flywheel-node b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.flywheel-node small { grid-column: 1 / -1; color: var(--text-3); font-size: 10px; }
+.flywheel-node > i {
+  position: absolute;
+  z-index: 2;
+  right: -13px;
+  top: 34px;
+  color: var(--text-3);
+  font-style: normal;
+}
+
+.flywheel-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--primary);
+  background: var(--primary-faint);
+}
+
+.flywheel-caption span { color: var(--text-3); font-size: 11px; }
+
+@media (max-width: 1080px) {
+  .sabcd-flow,
+  .flywheel-loop {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sabcd-stage > i,
+  .flywheel-node > i {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .section-title-row,
+  .flywheel-caption {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sabcd-flow,
+  .flywheel-loop {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .conversion-funnel .funnel-band {
+    min-width: 210px;
+  }
+}
+
 .admin-section-nav {
   display: flex;
   gap: 8px;
@@ -5475,6 +5815,13 @@ main,
 
   .workflow-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workflow-progress > header,
+  .lifecycle-details-static > header,
+  .workspace-stage-note {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .workflow-strip article {

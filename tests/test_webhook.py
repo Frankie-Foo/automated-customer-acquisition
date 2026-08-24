@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from sales_automation.services import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id, _extract_recipient_email, _extract_sender_email
+from sales_automation.services.webhooks import _furthest_lifecycle_stage
 
 
 def test_extract_contact_id_from_metadata():
@@ -48,6 +49,11 @@ def test_extract_recipient_email_from_resend_payload():
 
 def test_extract_sender_email_from_inbound_payload():
     assert _extract_sender_email({"data": {"from": "Lead <lead@example.com>"}}) == "lead@example.com"
+
+
+def test_automated_reply_progress_never_downgrades_lifecycle():
+    assert _furthest_lifecycle_stage("meeting", "replied") == "meeting"
+    assert _furthest_lifecycle_stage("replied", "meeting") == "meeting"
 
 
 def test_webhook_falls_back_to_message_id_when_metadata_missing():
@@ -138,6 +144,59 @@ def test_resend_received_webhook_fetches_reply_body_before_recording():
     assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "replied", "disposition": "active"})]
 
 
+def test_confirmed_meeting_reply_advances_lifecycle_and_activity():
+    class Repo:
+        def __init__(self):
+            self.events = []
+            self.lifecycle_updates = []
+            self.activities = []
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def route_inbound_reply(self, contact_id, user_id):
+            return {"owner_user_id": 3, "reply_assignment_pending": False}
+
+        def record_event(self, contact_id, event_type, payload):
+            self.events.append((contact_id, event_type, payload))
+
+        def get_contact(self, contact_id):
+            return {
+                "id": contact_id,
+                "owner_user_id": 3,
+                "status": "replied",
+                "lifecycle_stage": "replied",
+                "sabcd_stage": "C",
+            }
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.lifecycle_updates.append((contact_id, kwargs))
+
+        def close_open_followup_tasks(self, contact_id):
+            pass
+
+        def add_lifecycle_activity(self, contact_id, **kwargs):
+            self.activities.append((contact_id, kwargs))
+
+        def record_interaction(self, **kwargs):
+            pass
+
+    repo = Repo()
+    event = WebhookService(repo).process_payload(
+        "imap",
+        {
+            "event_type": "replied",
+            "from": "lead@example.com",
+            "subject": "Re: Vertu",
+            "text": "Looking forward to our call on Monday. Please send the meeting details.",
+        },
+    )
+
+    assert event == "replied"
+    assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "meeting", "disposition": "active"})]
+    assert repo.activities[0][1]["lifecycle_stage"] == "meeting"
+
+
 def test_reply_uses_in_reply_to_before_sender_email_and_updates_original_message():
     class Repo:
         def __init__(self):
@@ -182,7 +241,7 @@ def test_reply_uses_in_reply_to_before_sender_email_and_updates_original_message
     ]
 
 
-def test_non_actionable_reply_stops_existing_followups_without_advancing_lifecycle():
+def test_out_of_office_reply_keeps_existing_followups_and_is_not_counted_as_human_reply():
     class Repo:
         def __init__(self):
             self.events = []
@@ -226,7 +285,71 @@ def test_non_actionable_reply_stops_existing_followups_without_advancing_lifecyc
     event = WebhookService(repo).process_payload("resend", payload)
 
     assert event == "replied"
-    assert repo.closed == [77]
+    assert repo.closed == []
+    assert repo.events[0][1] == "auto_reply"
     assert repo.events[0][2]["reply_classification"]["label"] == "ooo"
     assert repo.activities == []
+
+
+def test_unclassified_human_reply_enters_reply_lifecycle_and_gets_next_task(monkeypatch):
+    class Repo:
+        def __init__(self):
+            self.events = []
+            self.closed = []
+            self.lifecycle_updates = []
+            self.activities = []
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def route_inbound_reply(self, contact_id, user_id):
+            return {"owner_user_id": 3, "reply_assignment_pending": False}
+
+        def record_event(self, contact_id, event_type, payload):
+            self.events.append((contact_id, event_type, payload))
+
+        def get_contact(self, contact_id):
+            return {"id": contact_id, "owner_user_id": 3, "status": "replied", "lifecycle_stage": "lead"}
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.lifecycle_updates.append((contact_id, kwargs))
+
+        def close_open_followup_tasks(self, contact_id):
+            self.closed.append(contact_id)
+
+        def add_lifecycle_activity(self, contact_id, **kwargs):
+            self.activities.append((contact_id, kwargs))
+
+        def record_interaction(self, **kwargs):
+            pass
+
+    class Workflow:
+        calls = []
+
+        def __init__(self, repo):
+            self.repo = repo
+
+        def ensure_next_task(self, contact_id, owner_user_id=None):
+            self.calls.append((contact_id, owner_user_id))
+
+    repo = Repo()
+    from sales_automation.services import webhooks
+
+    monkeypatch.setattr(webhooks, "LeadWorkflowService", Workflow)
+    event = WebhookService(repo).process_payload(
+        "imap",
+        {
+            "event_type": "replied",
+            "from": "lead@example.com",
+            "subject": "Re: Vertu",
+            "text": "Thanks, I will review this internally and come back to you.",
+        },
+    )
+
+    assert event == "replied"
+    assert repo.events[0][1] == "replied"
+    assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "replied", "disposition": "active"})]
+    assert repo.closed == [77]
+    assert Workflow.calls == [(77, 3)]
+    assert repo.activities[0][1]["lifecycle_stage"] == "replied"
 

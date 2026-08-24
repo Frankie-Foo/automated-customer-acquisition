@@ -52,7 +52,7 @@ const hashPageMap = {
   followups: "followup",
   lifecycle: "followup",
   "lifecycle-board": "followup",
-  "customer-workspace": "followup",
+  "customer-workspace": "outreach",
   report: "report",
   admin: "admin",
   "admin-console": "admin",
@@ -71,7 +71,9 @@ function renderAccount() {
   }
 
   accountName.textContent = user.display_name || user.username;
-  quotaStatus.textContent = `获客 ${usage.source_count || 0}/${user.daily_source_limit} · 发信 ${usage.send_count || 0}/${user.daily_send_limit}`;
+  const apolloLimit = Number(user.apollo_daily_credit_limit || 0);
+  const apolloUsed = Number(usage.apollo_credits_used || 0) + Number(usage.apollo_credits_reserved || 0);
+  quotaStatus.textContent = `获客 ${usage.source_count || 0}/${user.daily_source_limit} · 发信 ${usage.send_count || 0}/${user.daily_send_limit}${apolloLimit ? ` · 电话积分 ${apolloUsed}/${apolloLimit}` : ""}`;
   document.body.classList.toggle("is-admin", user.role === "admin");
   adminConsole?.classList.toggle("hidden", user.role !== "admin");
   adminNavLink?.classList.toggle("hidden", user.role !== "admin");
@@ -183,7 +185,13 @@ window.addEventListener("salesbot:notice", (event) => {
 refreshButton?.addEventListener("click", refreshAll);
 
 logoutButton?.addEventListener("click", async () => {
-  await fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  try {
+    const response = await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    showNotice(`退出失败，请重试：${error.message}`, "error");
+    return;
+  }
   state.user = null;
   state.usage = null;
   renderAccount();

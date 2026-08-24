@@ -4,13 +4,14 @@ from typing import Any
 
 from ..db import Repository
 from ..sabcd import stage_from_payload
+from .pdca import LeadWorkflowService
 
 
 class LifecycleService:
     STAGES = [
         "lead", "replied", "conversation", "meeting", "business_plan",
         "store_visit", "trial_order", "agency_agreement", "hq_visit",
-        "signed", "maintenance", "waiting_pool", "abandoned",
+        "store_creation", "signed", "maintenance", "waiting_pool", "abandoned",
     ]
 
     def __init__(self, repo: Repository):
@@ -47,6 +48,16 @@ class LifecycleService:
             owner=owner,
             sabcd_stage=sabcd_stage,
         )
-        return {"contact_id": contact_id, "lifecycle_stage": lifecycle_stage, "disposition": disposition, "sabcd_stage": sabcd_stage}
+        next_task = None
+        if lifecycle_stage or disposition or sabcd_stage:
+            self.repo.close_open_followup_tasks(contact_id)
+            next_task = LeadWorkflowService(self.repo).ensure_next_task(contact_id)
+        return {
+            "contact_id": contact_id,
+            "lifecycle_stage": lifecycle_stage,
+            "disposition": disposition,
+            "sabcd_stage": sabcd_stage,
+            "next_task": next_task,
+        }
 
 __all__ = ["LifecycleService"]

@@ -59,7 +59,7 @@ function SentEmails() {
 
   useEffect(() => {
     if (!active) return undefined;
-    load().catch(() => {});
+    load();
     window.addEventListener("salesbot:contacts-refresh", load);
     window.addEventListener("salesbot:refresh-related", load);
     return () => {
@@ -89,6 +89,7 @@ function SentEmails() {
           <span><b>送达</b> 仅在系统收到服务商投递回执后显示。</span>
           <span><b>打开</b> 表示追踪像素被加载，不等于客户已回复。</span>
           <span><b>回复</b> 会进入“回复至”地址，并通过收件 Webhook 关联客户。</span>
+          <span><b>自动回复</b> 表示休假或系统回执，不会误算作客户人工回复。</span>
           <span><b>退信/退订</b> 客户不会继续显示发送按钮。</span>
         </div>
       </details>
@@ -144,6 +145,7 @@ function FeedbackBadges({ email }) {
   if (Number(email.delivered_count || 0) > 0) items.push(["delivered", `送达 ${email.delivered_count}`]);
   if (Number(email.opened_count || 0) > 0) items.push(["opened", `打开 ${email.opened_count}`]);
   if (Number(email.replied_count || 0) > 0) items.push(["replied", `回复 ${email.replied_count}`]);
+  if (email.last_feedback_type === "auto_reply") items.push(["auto_reply", "自动回复"]);
   if (Number(email.bounced_count || 0) > 0) items.push(["bounced", `退信 ${email.bounced_count}`]);
   if (Number(email.complained_count || 0) > 0) items.push(["complained", `投诉 ${email.complained_count}`]);
   if (!items.length) items.push(["sent", "已发送"]);
@@ -155,7 +157,7 @@ function fullName(row) {
 }
 
 function feedbackLabel(type) {
-  return { delivered: "送达", opened: "打开", clicked: "点击", replied: "回复", bounced: "退信", complained: "投诉", unsubscribed: "退订" }[type] || "";
+  return { delivered: "送达", opened: "打开", clicked: "点击", replied: "回复", auto_reply: "自动回复", bounced: "退信", complained: "投诉", unsubscribed: "退订" }[type] || "";
 }
 
 function formatDate(value) {

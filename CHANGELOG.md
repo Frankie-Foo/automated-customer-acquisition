@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-08-24 - Production workflow hardening
+
+- Separate human replies from out-of-office, bounce and unsubscribe feedback so only real customer replies advance lifecycle tasks and flywheel learning.
+- Reject cross-site and non-JSON API mutations while keeping signed provider webhooks compatible.
+- Make scheduler workers and PostgreSQL backups fail closed with health signals instead of masking failures.
+- Surface background loading failures in the sales workspace, align legacy and React routes, and label automatic replies explicitly in the email log.
+- Keep logout state intact when the server cannot confirm logout, preventing a false local-only sign-out.
+
+## 2026-08-21 - Cost-controlled Apollo phone fallback
+
+- Keep email discovery independent and use Apollo only for missing personal phone numbers; Apollo email reveal and waterfall enrichment are explicitly disabled.
+- Run cheaper or already-authorized providers first, wait for ContactOut to finish when applicable, and enqueue Apollo only for unresolved salesperson-owned contacts.
+- Reserve the maximum possible Apollo cost before each request, settle the actual webhook-reported credit use, and stop before the provider call when either global or salesperson daily credit limits are exhausted.
+- Add idempotent Apollo jobs, signed callback URLs, replay-safe webhooks, ownership fencing, usage reporting, administrator quota controls, and a dedicated production worker.
+- Default Apollo and every salesperson's Apollo budget to zero so production cannot spend until an administrator explicitly enables both limits.
+
 ## 2026-08-18 - Unattended acquisition and feedback-safe outreach
 
 - Schedule ContactOut enrichment from one company-wide authorized account pool; customer ownership and result visibility remain isolated by salesperson, and work can queue safely after today's provider capacity is allocated.

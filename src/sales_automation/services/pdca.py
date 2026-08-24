@@ -255,13 +255,104 @@ def prepare_lead(contact: dict[str, Any]) -> dict[str, Any]:
 def next_task_for_contact(contact: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any] | None:
     now = now or datetime.now(UTC)
     status = str(contact.get("status") or "new")
+    lifecycle_stage = str(contact.get("lifecycle_stage") or "lead")
     name = _display_name(contact)
     if status in {"unsubscribed"} or str(contact.get("disposition") or "") in {"abandoned", "lost"}:
         return None
-    if status == "replied" or int(contact.get("replied_count") or 0) > 0:
-        return _task("reply", "urgent", f"回复并推进 {name}", "客户已回复，确认需求、决策人和下一次沟通时间。", now, "reply_received")
     if status == "bounced" or int(contact.get("bounced_count") or 0) > 0:
         return _task("fix_contact", "high", f"处理 {name} 的退信", "核对邮箱，无法确认时加入黑名单并改用电话或社媒。", now, "email_bounced")
+    if lifecycle_stage == "meeting":
+        return _task(
+            "meeting",
+            "urgent",
+            f"准备并确认会议：{name}",
+            "确认会议时间、参会人、议程和会议链接；会后当天记录结论与下一步。",
+            now,
+            "meeting_confirmed",
+        )
+    if lifecycle_stage == "conversation":
+        return _task(
+            "followup",
+            "high",
+            f"推进多轮沟通：{name}",
+            "补齐客户需求、决策链、合作范围，并约定下一次沟通动作和时间。",
+            now,
+            "conversation_active",
+        )
+    if lifecycle_stage == "business_plan":
+        return _task(
+            "business_plan",
+            "high",
+            f"准备商业计划：{name}",
+            "确认市场、渠道、预算、销售目标和落地时间，准备下一次沟通材料。",
+            now,
+            "business_plan_active",
+        )
+    if lifecycle_stage == "store_visit":
+        return _task(
+            "visit",
+            "high",
+            f"准备到店参观：{name}",
+            "确认行程、门店资料和决策人；参观后记录结论与下一步。",
+            now,
+            "store_visit_planned",
+        )
+    if lifecycle_stage == "trial_order":
+        return _task(
+            "trial_order",
+            "urgent",
+            f"推进试订单：{name}",
+            "确认 SKU、数量、价格、付款、物流和当地合规要求。",
+            now,
+            "trial_order_active",
+        )
+    if lifecycle_stage == "agency_agreement":
+        return _task(
+            "agreement",
+            "urgent",
+            f"审核代理协议：{name}",
+            "核对区域、独家权、付款、库存、售后和退出条款风险。",
+            now,
+            "agency_agreement_review",
+        )
+    if lifecycle_stage == "hq_visit":
+        return _task(
+            "visit",
+            "high",
+            f"准备总部拜访：{name}",
+            "确认参会人、议程、材料和需要当场确认的决策事项。",
+            now,
+            "hq_visit_planned",
+        )
+    if lifecycle_stage == "store_creation":
+        return _task(
+            "store_plan",
+            "high",
+            f"推进门店创建：{name}",
+            "跟进选址、设计、预算、陈列、库存和开业计划。",
+            now,
+            "store_creation_active",
+        )
+    if lifecycle_stage in {"signed", "maintenance"}:
+        return _task(
+            "maintenance",
+            "normal",
+            f"维护已签约客户：{name}",
+            "跟进交付、门店运营、销售表现、补货和下一个合作节点。",
+            now + timedelta(days=7),
+            "signed_customer_maintenance",
+        )
+    if lifecycle_stage == "waiting_pool" or str(contact.get("disposition") or "") == "waiting":
+        return _task(
+            "revisit",
+            "low",
+            f"复查等待池客户：{name}",
+            "检查客户是否出现新业务信号；没有新信号则继续等待。",
+            now + timedelta(days=7),
+            "waiting_pool_review",
+        )
+    if status == "replied" or int(contact.get("replied_count") or 0) > 0:
+        return _task("reply", "urgent", f"回复并推进 {name}", "客户已回复，确认需求、决策人和下一次沟通时间。", now, "reply_received")
     if int(contact.get("opened_count") or 0) > 0 and status not in {"replied", "bounced", "unsubscribed"}:
         return _task("followup", "high", f"跟进已打开的客户 {name}", "客户已打开但未回复，补充一个新的业务价值点。", now, "opened_no_reply")
     if status == "sent_1":

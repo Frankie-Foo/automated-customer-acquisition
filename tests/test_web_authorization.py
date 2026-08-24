@@ -185,3 +185,61 @@ def test_post_logout_deletes_session_and_expires_cookie(monkeypatch):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_cross_site_post_is_rejected_before_session_mutation(monkeypatch):
+    monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
+    repo = FakeRepo()
+    handler = web.make_handler(
+        SimpleNamespace(raw={"app": {"public_base_url": "https://sales.example"}, "sso": {"iframe_cookie": True}}),
+        repo,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/logout",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": "salesbot_session=sales-token",
+                "Origin": "https://attacker.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 403
+        assert json.loads(error.value.read().decode("utf-8"))["error"] == "csrf_origin_rejected"
+        assert repo.deleted_tokens == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_browser_api_post_requires_json_content_type(monkeypatch):
+    monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
+    repo = FakeRepo()
+    handler = web.make_handler(SimpleNamespace(raw={"app": {}}), repo)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/logout",
+            data=b"{}",
+            headers={"Content-Type": "text/plain", "Cookie": "salesbot_session=sales-token"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 415
+        assert json.loads(error.value.read().decode("utf-8"))["error"] == "json_content_type_required"
+        assert repo.deleted_tokens == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

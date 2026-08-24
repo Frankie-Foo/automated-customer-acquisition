@@ -124,7 +124,27 @@ function FlywheelSummary({ data }) {
   const snapshots = data?.snapshots || [];
   const events = data?.learning_events || [];
   if (!snapshots.length && !events.length) return <div className="empty-state">尚无足够触达结果，系统会继续收集真实样本。</div>;
-  return <div className="flywheel-summary"><div className="flywheel-snapshots">{snapshots.slice(0, 6).map((item) => { const metrics = item.metrics || {}; return <article key={`${item.scope_type}:${item.scope_key}`}><span>{item.scope_type === "global" ? "全局" : item.scope_key}</span><b>{Number(metrics.replied || 0)} 回复 / {Number(metrics.sent || 0)} 发送</b><small>正向 {percent(metrics.positive_reply_rate)} · 退信 {percent(metrics.bounce_rate)}</small></article>; })}</div>{events.length > 0 && <p className="muted">最近自动学习：{events[0].reason || events[0].action_type}（{formatDate(events[0].created_at)}）</p>}</div>;
+  const global = snapshots.find((item) => item.scope_type === "global") || snapshots[0] || {};
+  const metrics = global.metrics || {};
+  const steps = [
+    ["触达", Number(metrics.sent || 0), "真实发送"],
+    ["反馈", Number(metrics.opened || 0), "客户打开"],
+    ["回复", Number(metrics.replied || 0), "进入判断"],
+    ["正向", Number(metrics.positive_replies || 0), "有效信号"],
+    ["学习", events.length, "策略记录"],
+    ["再投入", snapshots.length, "区域策略"],
+  ];
+  return <div className="flywheel-summary">
+    <div className="flywheel-loop" aria-label="自动学习闭环">
+      {steps.map(([label, value, hint], index) => <div className="flywheel-node" key={label}>
+        <span>{index + 1}</span><strong>{label}</strong><b>{value}</b><small>{hint}</small>
+        {index < steps.length - 1 && <i aria-hidden="true">→</i>}
+      </div>)}
+    </div>
+    <div className="flywheel-caption"><strong>真实结果回流后，才调整下一轮获客评分和邮件策略</strong><span>当前正向回复率 {percent(metrics.positive_reply_rate)} · 退信率 {percent(metrics.bounce_rate)}</span></div>
+    <div className="flywheel-snapshots">{snapshots.slice(0, 6).map((item) => { const itemMetrics = item.metrics || {}; return <article key={`${item.scope_type}:${item.scope_key}`}><span>{item.scope_type === "global" ? "全局" : item.scope_key}</span><b>{Number(itemMetrics.replied || 0)} 回复 / {Number(itemMetrics.sent || 0)} 发送</b><small>正向 {percent(itemMetrics.positive_reply_rate)} · 退信 {percent(itemMetrics.bounce_rate)}</small></article>; })}</div>
+    {events.length > 0 && <p className="muted">最近自动学习：{events[0].reason || events[0].action_type}（{formatDate(events[0].created_at)}）</p>}
+  </div>;
 }
 
 function splitList(value) {

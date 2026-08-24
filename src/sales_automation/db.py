@@ -140,6 +140,7 @@ class Repository:
         role: str = "sales",
         daily_source_limit: int = 100,
         daily_send_limit: int = 200,
+        apollo_daily_credit_limit: int = 0,
         reply_to_email: str | None = None,
         sender_alias_localpart: str | None = None,
         must_change_password: bool = True,
@@ -149,10 +150,12 @@ class Repository:
                 """
                 INSERT INTO sales_users(
                     username, password_hash, display_name, role, daily_source_limit, daily_send_limit,
+                    apollo_daily_credit_limit,
                     reply_to_email, sender_alias_localpart, must_change_password, password_changed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NULL ELSE NOW() END)
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          apollo_daily_credit_limit,
                           reply_to_email, sender_alias_localpart, active, must_change_password, created_at
                 """,
                 (
@@ -162,6 +165,7 @@ class Repository:
                     role,
                     daily_source_limit,
                     daily_send_limit,
+                    max(0, int(apollo_daily_credit_limit)),
                     _clean_optional_email(reply_to_email),
                     _clean_optional_alias(sender_alias_localpart),
                     must_change_password,
@@ -356,13 +360,20 @@ class Repository:
             return conn.execute(
                 """
                 SELECT u.id, u.username, u.display_name, u.role, u.daily_source_limit, u.daily_send_limit,
+                       u.apollo_daily_credit_limit,
                        u.reply_to_email, u.sender_alias_localpart,
                        u.active, u.must_change_password, u.created_at,
                        COALESCE(usage.source_count, 0) AS source_count_today,
-                       COALESCE(usage.send_count, 0) AS send_count_today
+                       COALESCE(usage.send_count, 0) AS send_count_today,
+                       COALESCE(apollo_usage.used_units, 0) AS apollo_credits_used_today,
+                       COALESCE(apollo_usage.reserved_units, 0) AS apollo_credits_reserved_today
                 FROM sales_users u
                 LEFT JOIN user_daily_usage usage
                   ON usage.user_id = u.id AND usage.usage_date = CURRENT_DATE
+                LEFT JOIN provider_account_daily_usage apollo_usage
+                  ON apollo_usage.provider = 'apollo_phone'
+                 AND apollo_usage.scope_key = CONCAT('user:', u.id::text)
+                 AND apollo_usage.usage_date = timezone('Asia/Shanghai', NOW())::date
                 ORDER BY u.id
                 """
             ).fetchall()
@@ -372,6 +383,7 @@ class Repository:
             return conn.execute(
                 """
                 SELECT id, username, display_name, role, daily_source_limit, daily_send_limit,
+                       apollo_daily_credit_limit,
                        reply_to_email, sender_alias_localpart, active, must_change_password, created_at
                 FROM sales_users
                 WHERE id = %s
@@ -387,6 +399,7 @@ class Repository:
         role: str | None = None,
         daily_source_limit: int | None = None,
         daily_send_limit: int | None = None,
+        apollo_daily_credit_limit: int | None = None,
         reply_to_email: str | None = None,
         sender_alias_localpart: str | None = None,
         active: bool | None = None,
@@ -399,11 +412,13 @@ class Repository:
                     role = COALESCE(%s, role),
                     daily_source_limit = COALESCE(%s, daily_source_limit),
                     daily_send_limit = COALESCE(%s, daily_send_limit),
+                    apollo_daily_credit_limit = COALESCE(%s, apollo_daily_credit_limit),
                     reply_to_email = COALESCE(%s, reply_to_email),
                     sender_alias_localpart = COALESCE(%s, sender_alias_localpart),
                     active = COALESCE(%s, active)
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          apollo_daily_credit_limit,
                           reply_to_email, sender_alias_localpart, active, must_change_password, created_at
                 """,
                 (
@@ -411,6 +426,7 @@ class Repository:
                     role,
                     daily_source_limit,
                     daily_send_limit,
+                    max(0, int(apollo_daily_credit_limit)) if apollo_daily_credit_limit is not None else None,
                     _clean_optional_email(reply_to_email),
                     _clean_optional_alias(sender_alias_localpart),
                     active,
@@ -428,6 +444,7 @@ class Repository:
                     password_changed_at = NULL
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          apollo_daily_credit_limit,
                           reply_to_email, active, must_change_password, created_at
                 """,
                 (hash_password(password), user_id),
@@ -451,6 +468,7 @@ class Repository:
                     password_changed_at = NOW()
                 WHERE id = %s
                 RETURNING id, username, display_name, role, daily_source_limit, daily_send_limit,
+                          apollo_daily_credit_limit,
                           reply_to_email, active, must_change_password, created_at
                 """,
                 (hash_password(new_password), user_id),
@@ -2600,7 +2618,10 @@ class Repository:
             "c.owner_user_id IS NOT NULL",
             "NULLIF(BTRIM(c.linkedin_url), '') IS NOT NULL",
             "LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'",
-            "(c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL)",
+            "((c.email_status IS DISTINCT FROM 'valid' OR c.email IS NULL) OR "
+            "(NULLIF(BTRIM(c.phone), '') IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM jsonb_array_elements(COALESCE(c.phone_candidates, '[]'::jsonb)) candidate "
+            "WHERE candidate->>'scope' = 'person' AND candidate->>'status' = 'valid')))",
             "EXISTS (SELECT 1 FROM contactout_accounts available_account "
             "WHERE available_account.status = 'active' "
             "AND available_account.daily_limit > 0 "
@@ -3235,6 +3256,498 @@ class Repository:
         conn.execute(
             """
             UPDATE contactout_enrichment_jobs
+            SET quota_reserved = FALSE, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (job["id"],),
+        )
+
+    def list_apollo_phone_candidates(
+        self,
+        *,
+        limit: int = 20,
+        require_contactout_terminal: bool = True,
+    ) -> list[dict[str, Any]]:
+        contactout_gate = ""
+        if require_contactout_terminal:
+            contactout_gate = """
+              AND (
+                NULLIF(BTRIM(c.linkedin_url), '') IS NULL
+                OR NOT LOWER(c.linkedin_url) LIKE '%%linkedin.com/in/%%'
+                OR EXISTS (
+                  SELECT 1 FROM contactout_enrichment_jobs co
+                  WHERE co.contact_id = c.id
+                    AND co.created_at >= (date_trunc('month', timezone('Asia/Shanghai', NOW())) AT TIME ZONE 'Asia/Shanghai')
+                    AND co.status IN ('succeeded', 'no_match', 'blocked', 'failed')
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM contactout_enrichment_jobs active_co
+                WHERE active_co.contact_id = c.id
+                  AND active_co.status IN ('queued', 'running', 'retry_wait')
+              )
+            """
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT c.id, c.owner_user_id, c.linkedin_url, c.first_name, c.last_name,
+                       c.company_name, c.company_domain, c.job_title, c.location
+                FROM contacts c
+                JOIN sales_users owner ON owner.id = c.owner_user_id
+                WHERE c.pool_type = 'private'
+                  AND c.owner_user_id IS NOT NULL
+                  AND owner.active = TRUE
+                  AND owner.apollo_daily_credit_limit > 0
+                  AND NULLIF(BTRIM(c.phone), '') IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(COALESCE(c.phone_candidates, '[]'::jsonb)) candidate
+                    WHERE candidate->>'scope' = 'person' AND candidate->>'status' = 'valid'
+                  )
+                  AND (
+                    NULLIF(BTRIM(c.linkedin_url), '') IS NOT NULL
+                    OR (
+                      NULLIF(BTRIM(c.first_name), '') IS NOT NULL
+                      AND NULLIF(BTRIM(c.company_domain), '') IS NOT NULL
+                    )
+                  )
+                  {contactout_gate}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM apollo_phone_enrichment_jobs existing
+                    WHERE existing.contact_id = c.id
+                      AND existing.created_at >= (date_trunc('month', timezone('Asia/Shanghai', NOW())) AT TIME ZONE 'Asia/Shanghai')
+                  )
+                ORDER BY COALESCE(c.lead_score, 0) DESC, c.created_at
+                LIMIT %s
+                """,
+                (max(1, min(200, int(limit))),),
+            ).fetchall()
+
+    def enqueue_apollo_phone_job(self, **fields: Any) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                INSERT INTO apollo_phone_enrichment_jobs(
+                    idempotency_key, contact_id, owner_user_id, input_hash, quota_units
+                )
+                VALUES (%(idempotency_key)s, %(contact_id)s, %(owner_user_id)s,
+                        %(input_hash)s, %(quota_units)s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                fields,
+            ).fetchone()
+            if job:
+                return job
+            existing = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE idempotency_key = %s AND owner_user_id = %s
+                """,
+                (fields["idempotency_key"], fields["owner_user_id"]),
+            ).fetchone()
+            if not existing:
+                raise ValueError("apollo_phone_job_conflict")
+            return existing
+
+    def get_apollo_phone_job(self, job_id: int) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            return conn.execute(
+                "SELECT * FROM apollo_phone_enrichment_jobs WHERE id = %s",
+                (job_id,),
+            ).fetchone()
+
+    def list_apollo_phone_jobs(
+        self,
+        *,
+        user: dict[str, Any] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if user and user.get("role") != "admin":
+            clauses.append("job.owner_user_id = %s")
+            params.append(int(user["id"]))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(500, int(limit))))
+        with self.db.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT job.*, c.first_name, c.last_name, c.company_name, c.linkedin_url
+                FROM apollo_phone_enrichment_jobs job
+                JOIN contacts c ON c.id = job.contact_id
+                {where}
+                ORDER BY job.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+
+    def apollo_phone_usage_today(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                SELECT scope_key, reserved_units, used_units, denied_count, updated_at
+                FROM provider_account_daily_usage
+                WHERE provider = 'apollo_phone'
+                  AND usage_date = timezone('Asia/Shanghai', NOW())::date
+                ORDER BY scope_key
+                """
+            ).fetchall()
+
+    def apollo_phone_snapshot(self, user_id: int, daily_limit: int) -> dict[str, int]:
+        with self.db.connect() as conn:
+            usage = conn.execute(
+                """
+                SELECT reserved_units, used_units, denied_count
+                FROM provider_account_daily_usage
+                WHERE provider = 'apollo_phone'
+                  AND scope_key = %s
+                  AND usage_date = timezone('Asia/Shanghai', NOW())::date
+                """,
+                (f"user:{user_id}",),
+            ).fetchone() or {"reserved_units": 0, "used_units": 0, "denied_count": 0}
+        limit = max(0, int(daily_limit or 0))
+        reserved = int(usage["reserved_units"] or 0)
+        used = int(usage["used_units"] or 0)
+        return {
+            "limit": limit,
+            "reserved": reserved,
+            "used": used,
+            "remaining": max(0, limit - reserved - used),
+            "denied": int(usage["denied_count"] or 0),
+        }
+
+    def expire_apollo_phone_jobs(self) -> int:
+        with self.db.connect() as conn:
+            expired = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE (status = 'dispatching' AND lease_expires_at < NOW())
+                   OR (status = 'awaiting_webhook' AND dispatched_at < NOW() - INTERVAL '24 hours')
+                FOR UPDATE
+                """
+            ).fetchall()
+            for job in expired:
+                self._settle_apollo_phone_quota(conn, job, int(job.get("quota_units") or 9))
+                conn.execute(
+                    """
+                    UPDATE apollo_phone_enrichment_jobs
+                    SET status = 'blocked', error_code = 'provider_outcome_unknown',
+                        completed_at = NOW(), lease_token = NULL, lease_expires_at = NULL,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (job["id"],),
+                )
+            return len(expired)
+
+    def claim_apollo_phone_job(self, *, lease_seconds: int = 300) -> dict[str, Any] | None:
+        token = secrets.token_urlsafe(24)
+        with self.db.connect() as conn:
+            return conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = 'dispatching', lease_token = %s,
+                    lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW(), error_code = NULL
+                WHERE id = (
+                  SELECT id FROM apollo_phone_enrichment_jobs
+                  WHERE status = 'queued'
+                  ORDER BY priority DESC, created_at
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT 1
+                )
+                RETURNING *
+                """,
+                (token, max(30, int(lease_seconds))),
+            ).fetchone()
+
+    def reserve_apollo_phone_quota(self, job_id: int, lease_token: str, *, global_limit: int) -> str:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT job.*, contact.owner_user_id AS contact_owner_user_id,
+                       contact.pool_type AS contact_pool_type,
+                       owner.active AS owner_active,
+                       owner.apollo_daily_credit_limit
+                FROM apollo_phone_enrichment_jobs job
+                JOIN contacts contact ON contact.id = job.contact_id
+                JOIN sales_users owner ON owner.id = job.owner_user_id
+                WHERE job.id = %s AND job.status = 'dispatching'
+                  AND job.lease_token = %s AND job.quota_reserved = FALSE
+                FOR UPDATE OF job, contact, owner
+                """,
+                (job_id, lease_token),
+            ).fetchone()
+            if not job or job["lease_expires_at"] <= datetime.now(UTC):
+                return "stale_lease"
+            if not job["owner_active"]:
+                self._block_apollo_phone_job(conn, job, "owner_disabled")
+                return "owner_disabled"
+            if job["contact_pool_type"] != "private" or job["contact_owner_user_id"] != job["owner_user_id"]:
+                self._block_apollo_phone_job(conn, job, "ownership_changed")
+                return "ownership_changed"
+            scopes = [
+                ("global", max(0, int(global_limit))),
+                (f"user:{job['owner_user_id']}", max(0, int(job["apollo_daily_credit_limit"]))),
+            ]
+            if any(limit <= 0 for _, limit in scopes):
+                self._block_apollo_phone_job(conn, job, "daily_quota_exhausted")
+                return "daily_quota_exhausted"
+            for scope, _ in scopes:
+                conn.execute(
+                    """
+                    INSERT INTO provider_account_daily_usage(provider, scope_key, usage_date)
+                    VALUES ('apollo_phone', %s, timezone('Asia/Shanghai', NOW())::date)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (scope,),
+                )
+            rows = {
+                row["scope_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT * FROM provider_account_daily_usage
+                    WHERE provider = 'apollo_phone'
+                      AND usage_date = timezone('Asia/Shanghai', NOW())::date
+                      AND scope_key IN (%s, %s)
+                    ORDER BY scope_key
+                    FOR UPDATE
+                    """,
+                    (scopes[0][0], scopes[1][0]),
+                ).fetchall()
+            }
+            units = int(job["quota_units"])
+            allowed = all(
+                int(rows[scope]["reserved_units"]) + int(rows[scope]["used_units"]) + units <= limit
+                for scope, limit in scopes
+            )
+            if not allowed:
+                conn.execute(
+                    """
+                    UPDATE provider_account_daily_usage
+                    SET denied_count = denied_count + 1, updated_at = NOW()
+                    WHERE provider = 'apollo_phone'
+                      AND usage_date = timezone('Asia/Shanghai', NOW())::date
+                      AND scope_key IN (%s, %s)
+                    """,
+                    (scopes[0][0], scopes[1][0]),
+                )
+                self._block_apollo_phone_job(conn, job, "daily_quota_exhausted")
+                return "daily_quota_exhausted"
+            conn.execute(
+                """
+                UPDATE provider_account_daily_usage
+                SET reserved_units = reserved_units + %s, updated_at = NOW()
+                WHERE provider = 'apollo_phone'
+                  AND usage_date = timezone('Asia/Shanghai', NOW())::date
+                  AND scope_key IN (%s, %s)
+                """,
+                (units, scopes[0][0], scopes[1][0]),
+            )
+            conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET attempts = attempts + 1, quota_reserved = TRUE,
+                    quota_usage_date = timezone('Asia/Shanghai', NOW())::date,
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'dispatching' AND lease_token = %s
+                """,
+                (job_id, lease_token),
+            )
+            return "reserved"
+
+    def mark_apollo_phone_awaiting_webhook(
+        self,
+        job_id: int,
+        lease_token: str,
+        *,
+        provider_request_id: str | None,
+    ) -> bool:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = 'awaiting_webhook', provider_request_id = %s,
+                    dispatched_at = NOW(), lease_token = NULL,
+                    lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s AND status = 'dispatching' AND lease_token = %s
+                  AND lease_expires_at > NOW() AND quota_reserved = TRUE
+                RETURNING id
+                """,
+                (provider_request_id, job_id, lease_token),
+            ).fetchone()
+            return row is not None
+
+    def complete_apollo_phone_no_match(
+        self,
+        job_id: int,
+        lease_token: str,
+        *,
+        credits_consumed: int,
+    ) -> bool:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE id = %s AND status = 'dispatching' AND lease_token = %s
+                  AND lease_expires_at > NOW()
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
+            ).fetchone()
+            if not job:
+                return False
+            credits = max(0, min(int(job["quota_units"]), int(credits_consumed or 0)))
+            self._settle_apollo_phone_quota(conn, job, credits)
+            conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = 'no_match', credits_consumed = %s, completed_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (credits, job_id),
+            )
+            return True
+
+    def complete_apollo_phone_webhook(
+        self,
+        job_id: int,
+        *,
+        credits_consumed: int,
+        phone_candidates: list[dict[str, Any]],
+        provider_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM apollo_phone_enrichment_jobs WHERE id = %s FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if not job:
+                raise ValueError("apollo_phone_job_not_found")
+            if job["status"] in {"succeeded", "no_match", "failed", "blocked", "cancelled"}:
+                return {"job": job, "duplicate": True}
+            if job["status"] != "awaiting_webhook":
+                raise ValueError("apollo_phone_job_not_awaiting_webhook")
+            contact = conn.execute(
+                """
+                SELECT * FROM contacts
+                WHERE id = %s AND pool_type = 'private' AND owner_user_id = %s
+                FOR UPDATE
+                """,
+                (job["contact_id"], job["owner_user_id"]),
+            ).fetchone()
+            credits = max(0, min(int(job["quota_units"]), int(credits_consumed or 0)))
+            if not contact:
+                self._settle_apollo_phone_quota(conn, job, credits)
+                self._block_apollo_phone_job(conn, job, "ownership_changed")
+                updated = conn.execute(
+                    "SELECT * FROM apollo_phone_enrichment_jobs WHERE id = %s",
+                    (job_id,),
+                ).fetchone()
+                return {"job": updated, "duplicate": False}
+            merged = _merge_contact_candidates(contact.get("phone_candidates") or [], phone_candidates, "phone")
+            selected = next(
+                (
+                    item for item in phone_candidates
+                    if item.get("source") == "apollo_phone"
+                    and item.get("scope") == "person"
+                    and item.get("status") == "valid"
+                    and int(item.get("confidence") or 0) >= 70
+                ),
+                None,
+            )
+            conn.execute(
+                """
+                UPDATE contacts
+                SET phone_candidates = %s::jsonb,
+                    phone = COALESCE(NULLIF(BTRIM(phone), ''), %s)
+                WHERE id = %s AND pool_type = 'private' AND owner_user_id = %s
+                """,
+                (json.dumps(merged), selected.get("phone") if selected else None, job["contact_id"], job["owner_user_id"]),
+            )
+            self._settle_apollo_phone_quota(conn, job, credits)
+            status = "succeeded" if phone_candidates else "no_match"
+            updated = conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = %s, credits_consumed = %s, phone_candidates = %s::jsonb,
+                    provider_request_id = COALESCE(%s, provider_request_id), completed_at = NOW(),
+                    error_code = NULL, updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (status, credits, json.dumps(phone_candidates), provider_request_id, job_id),
+            ).fetchone()
+            return {"job": updated, "duplicate": False}
+
+    def fail_apollo_phone_dispatch(
+        self,
+        job_id: int,
+        lease_token: str,
+        error_code: str,
+        *,
+        charge_reserved: bool,
+    ) -> None:
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE id = %s AND status = 'dispatching' AND lease_token = %s
+                FOR UPDATE
+                """,
+                (job_id, lease_token),
+            ).fetchone()
+            if not job:
+                return
+            self._settle_apollo_phone_quota(
+                conn,
+                job,
+                int(job["quota_units"]) if charge_reserved else 0,
+            )
+            conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = %s, error_code = %s, completed_at = NOW(),
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+                WHERE id = %s
+                """,
+                ("blocked" if charge_reserved else "failed", error_code, job_id),
+            )
+
+    @staticmethod
+    def _block_apollo_phone_job(conn: Any, job: dict[str, Any], error_code: str) -> None:
+        conn.execute(
+            """
+            UPDATE apollo_phone_enrichment_jobs
+            SET status = 'blocked', error_code = %s, completed_at = NOW(),
+                lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (error_code, job["id"]),
+        )
+
+    @staticmethod
+    def _settle_apollo_phone_quota(conn: Any, job: dict[str, Any], credits_consumed: int) -> None:
+        if not job.get("quota_reserved") or not job.get("quota_usage_date"):
+            return
+        reserved = int(job.get("quota_units") or 9)
+        used = max(0, min(reserved, int(credits_consumed or 0)))
+        conn.execute(
+            """
+            UPDATE provider_account_daily_usage
+            SET reserved_units = GREATEST(0, reserved_units - %s),
+                used_units = used_units + %s,
+                updated_at = NOW()
+            WHERE provider = 'apollo_phone' AND usage_date = %s
+              AND scope_key IN (%s, %s)
+            """,
+            (reserved, used, job["quota_usage_date"], "global", f"user:{job['owner_user_id']}"),
+        )
+        conn.execute(
+            """
+            UPDATE apollo_phone_enrichment_jobs
             SET quota_reserved = FALSE, updated_at = NOW()
             WHERE id = %s
             """,

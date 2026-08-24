@@ -12,6 +12,7 @@ const emptyNewUser = {
   role: "sales",
   daily_source_limit: 100,
   daily_send_limit: 200,
+  apollo_daily_credit_limit: 0,
 };
 
 const emptyContactOutAccount = {
@@ -135,6 +136,7 @@ function AdminConsole() {
           role: newUser.role,
           daily_source_limit: Number(newUser.daily_source_limit || 100),
           daily_send_limit: Number(newUser.daily_send_limit || 100),
+          apollo_daily_credit_limit: Number(newUser.apollo_daily_credit_limit || 0),
         }),
       });
       setMessage("销售账号已创建");
@@ -318,6 +320,10 @@ function AdminConsole() {
             <label>
               发信配额
               <input type="number" value={newUser.daily_send_limit} onChange={(event) => setNewUser({ ...newUser, daily_send_limit: event.target.value })} />
+            </label>
+            <label>
+              Apollo 电话积分/天
+              <input type="number" min="0" value={newUser.apollo_daily_credit_limit} onChange={(event) => setNewUser({ ...newUser, apollo_daily_credit_limit: event.target.value })} />
             </label>
           </div>
           <div className="panel-actions">
@@ -562,9 +568,12 @@ function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRef
   const usage = data?.contactout_usage || [];
   const jobs = data?.contactout_jobs || [];
   const llm = data?.llm_usage || [];
+  const apolloUsage = data?.apollo_phone_usage || [];
+  const apolloJobs = data?.apollo_phone_jobs || [];
   const globalUsage = usage.find((item) => item.scope_key === "global") || {};
   const accountUsage = Object.fromEntries(usage.filter((item) => item.scope_key?.startsWith("account:")).map((item) => [item.scope_key.split(":")[1], item]));
   const llmCalls = llm.reduce((sum, item) => sum + Number(item.calls || 0), 0);
+  const apolloGlobal = apolloUsage.find((item) => item.scope_key === "global") || {};
 
   return <section className="admin-card automation-admin-card">
     <div className="card-title-row">
@@ -574,8 +583,10 @@ function ResourceBudgetPanel({ data, users, form, onChange, onSave, onRun, onRef
     <div className="admin-summary">
       <SummaryCard label="今日 AI 调用" value={llmCalls} hint={`${llm.reduce((sum, item) => sum + Number(item.input_chars || 0), 0)} 输入字符`} />
       <SummaryCard label="ContactOut 已用" value={globalUsage.used_units || 0} hint={`预留 ${globalUsage.reserved_units || 0} · 拒绝 ${globalUsage.denied_count || 0}`} />
+      <SummaryCard label="Apollo 电话积分" value={apolloGlobal.used_units || 0} hint={`预留 ${apolloGlobal.reserved_units || 0} · 拒绝 ${apolloGlobal.denied_count || 0}`} />
       <SummaryCard label="授权账户" value={accounts.filter((item) => item.status === "active").length} hint={`共 ${accounts.length} 个`} />
       <SummaryCard label="待处理任务" value={jobs.filter((item) => ["queued", "retry_wait"].includes(item.status)).length} hint={`需处理异常 ${jobs.filter((item) => ["blocked", "failed"].includes(item.status)).length}`} />
+      <SummaryCard label="Apollo 待回流" value={apolloJobs.filter((item) => ["queued", "dispatching", "awaiting_webhook"].includes(item.status)).length} hint={`成功 ${apolloJobs.filter((item) => item.status === "succeeded").length}`} />
     </div>
     <div className="form-grid compact">
       <label>账户标识<input value={form.account_key} onChange={(event) => onChange({ ...form, account_key: event.target.value })} placeholder="contactout-ivan" /></label>
@@ -620,6 +631,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
     onUpdate(user.id, {
       daily_source_limit: Number(valueFor(user, "daily_source_limit") || 100),
       daily_send_limit: Number(valueFor(user, "daily_send_limit") || 100),
+      apollo_daily_credit_limit: Number(valueFor(user, "apollo_daily_credit_limit") || 0),
       reply_to_email: valueFor(user, "reply_to_email") || "",
       sender_alias_localpart: valueFor(user, "sender_alias_localpart") || "",
     });
@@ -633,6 +645,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
             <th>角色</th>
             <th>今日获客</th>
             <th>今日发信</th>
+            <th>Apollo 电话</th>
             <th>状态</th>
             <th>企业邮箱 / 发件别名</th>
             <th>配额设置</th>
@@ -651,6 +664,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
               <td><span className={`role-pill ${user.role === "admin" ? "role-admin" : ""}`}>{user.role}</span></td>
               <td><strong>{user.source_count_today || 0}</strong><span className="muted"> / {user.daily_source_limit}</span></td>
               <td><strong>{user.send_count_today || 0}</strong><span className="muted"> / {user.daily_send_limit}</span></td>
+              <td><strong>{user.apollo_credits_used_today || 0}</strong><span className="muted"> + {user.apollo_credits_reserved_today || 0} 预占 / {user.apollo_daily_credit_limit || 0}</span></td>
               <td>
                 <span className={`status-pill ${user.active ? "is-active" : "is-paused"}`}>{user.active ? "启用" : "停用"}</span>
                 {user.must_change_password && <span className="status-pill is-warning">待改密码</span>}
@@ -663,6 +677,7 @@ function UserTable({ users, onUpdate, onResetPassword }) {
                 <div className="quota-edit">
                   <label>获客<input className="mini-input" type="number" value={valueFor(user, "daily_source_limit")} onChange={(event) => updateDraft(user.id, "daily_source_limit", event.target.value)} /></label>
                   <label>发信<input className="mini-input" type="number" value={valueFor(user, "daily_send_limit")} onChange={(event) => updateDraft(user.id, "daily_send_limit", event.target.value)} /></label>
+                  <label>Apollo<input className="mini-input" type="number" min="0" value={valueFor(user, "apollo_daily_credit_limit")} onChange={(event) => updateDraft(user.id, "apollo_daily_credit_limit", event.target.value)} /></label>
                 </div>
               </td>
               <td className="row-actions">

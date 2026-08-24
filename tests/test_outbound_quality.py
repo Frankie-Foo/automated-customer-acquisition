@@ -160,6 +160,35 @@ def test_reply_classifier_separates_positive_ooo_and_rejection():
     assert rejection["label"] == "negative_notfit"
 
 
+def test_reply_classifier_advances_confirmed_meetings_and_discussions():
+    meeting = classify_reply(
+        "Re: Vertu",
+        "Looking forward to our call on Monday at 11 AM. Please send the meeting details.",
+    )
+    discussion = classify_reply(
+        "Re: Vertu",
+        "We are interested to take this discussion forward and await the NDA.",
+    )
+
+    assert meeting["label"] == "positive_meeting"
+    assert meeting["positive"]
+    assert meeting["lifecycle_stage"] == "meeting"
+    assert discussion["label"] == "positive_conversation"
+    assert discussion["positive"]
+    assert discussion["lifecycle_stage"] == "conversation"
+
+
+def test_reply_classifier_ignores_quoted_outbound_history():
+    reply = classify_reply(
+        "Re: Vertu",
+        "Sure, please share the details for us to study.\n\n"
+        "On Monday, April wrote:\n> Would this be relevant?\n> If not interested, let me know.",
+    )
+
+    assert reply["label"] == "positive_soft"
+    assert reply["should_advance"]
+
+
 def test_experiment_summary_waits_for_sample_then_selects_positive_reply_winner():
     collecting = summarize_experiment(
         [

@@ -36,7 +36,7 @@ class AppConfig:
         return self.raw.get("product_images", {})
 
 
-def load_dotenv(path: Path = Path(".env"), *, override: bool = True) -> None:
+def load_dotenv(path: Path = Path(".env"), *, override: bool = False) -> None:
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():

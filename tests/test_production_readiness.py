@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from sales_automation.auth import clear_session_cookie, session_cookie
@@ -90,3 +91,55 @@ def test_readiness_accepts_smtp_transport_without_resend_for_sending(monkeypatch
     checks = {item["name"]: item for item in readiness(cfg(raw))["checks"]}
 
     assert checks["mail_transport"]["ok"] is True
+
+
+def test_production_compose_runs_safe_scheduler_worker():
+    for path in (
+        "deployment/docker-compose.production.yml",
+        "deployment/docker-compose.external-db.yml",
+    ):
+        compose = Path(path).read_text(encoding="utf-8")
+
+        assert "scheduler-worker:" in compose
+        assert 'SALESBOT_SCHEDULER_SEND_LIMIT:-0' in compose
+        assert "salesbot scheduler" in compose
+        assert "healthcheck:" in compose
+        assert "touch /tmp/salesbot-worker-success" in compose
+        assert "|| true" not in compose
+
+
+def test_bundled_postgres_backup_is_atomic_and_fails_closed():
+    compose = Path("deployment/docker-compose.production.yml").read_text(encoding="utf-8")
+
+    assert "pg_dump -Fc" in compose
+    assert "if pg_dump -Fc" in compose
+    assert "salesbot_$$(date +%F_%H%M%S).dump.tmp" in compose
+    assert "mv \"$${backup_tmp}\" \"$${backup_final}\"" in compose
+    assert "touch /backups/.last_success" in compose
+    assert "| gzip" not in compose
+
+
+def test_runtime_config_maps_contactout_bridge():
+    runtime_config = Path("config.yaml").read_text(encoding="utf-8")
+
+    assert "contactout_bridge_key: ${CONTACTOUT_BRIDGE_KEY}" in runtime_config
+    assert "bridge_url: ${CONTACTOUT_BRIDGE_URL}" in runtime_config
+    assert "scheduler_limit: 40" in runtime_config
+
+
+def test_frontend_routes_customer_workspace_to_outreach_consistently():
+    app = Path("frontend/src/App.jsx").read_text(encoding="utf-8")
+    legacy = Path("frontend/src/legacy-controller.js").read_text(encoding="utf-8")
+
+    assert '"customer-workspace": "outreach"' in app
+    assert '"customer-workspace": "outreach"' in legacy
+
+
+def test_frontend_surfaces_background_failures_and_auto_replies():
+    workbench = Path("frontend/src/Workbench.jsx").read_text(encoding="utf-8")
+    workspace = Path("frontend/src/CustomerWorkspace.jsx").read_text(encoding="utf-8")
+    sent_emails = Path("frontend/src/SentEmails.jsx").read_text(encoding="utf-8")
+
+    assert ".catch(() => {})" not in workbench
+    assert ".catch(() => {})" not in workspace
+    assert 'auto_reply: "自动回复"' in sent_emails

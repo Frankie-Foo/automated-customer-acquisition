@@ -35,3 +35,14 @@ sequence:
     assert app.sender["dry_run"] is True
     assert app.sequence[0]["step"] == 1
 
+
+def test_load_config_keeps_process_environment_over_dotenv(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DB_HOST", "from-process")
+    (tmp_path / ".env").write_text("DB_HOST=from-file\n", encoding="utf-8")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("database:\n  host: ${DB_HOST}\n", encoding="utf-8")
+
+    app = load_config(cfg)
+
+    assert app.database["host"] == "from-process"
+

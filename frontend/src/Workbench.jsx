@@ -132,20 +132,27 @@ function CompanySeedPanelV2({ guarded, notify }) {
   const [form, setForm] = useState({ default_location: "", default_industry: "", per_company_limit: 5, auto_prepare_drafts: true });
   const [runs, setRuns] = useState([]);
   const [working, setWorking] = useState(false);
+  const runsLoadFailed = useRef(false);
   const regionMode = regionModeLabel(form.default_location);
 
   const loadRuns = useCallback(async () => {
     const response = await api("/api/automation-runs");
     setRuns(response.runs || []);
+    runsLoadFailed.current = false;
+  }, []);
+
+  const reportRunsLoadError = useCallback((error) => {
+    if (!runsLoadFailed.current) reportAsyncError("批量任务加载失败", error);
+    runsLoadFailed.current = true;
   }, []);
 
   useEffect(() => {
-    loadRuns().catch(() => {});
+    loadRuns().catch(reportRunsLoadError);
     const timer = window.setInterval(() => {
-      if (runs.some((run) => ["queued", "running"].includes(run.status))) loadRuns().catch(() => {});
+      if (runs.some((run) => ["queued", "running"].includes(run.status))) loadRuns().catch(reportRunsLoadError);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [loadRuns, runs]);
+  }, [loadRuns, reportRunsLoadError, runs]);
 
   async function submitImport() {
     if (!file) throw new Error("请选择 Excel 或 CSV 文件");
@@ -381,6 +388,11 @@ function formatResultCell(value) {
   if (value === null || value === undefined || value === "") return "--";
   return String(value);
 }
+
+function reportAsyncError(context, error) {
+  const message = `${context}：${error?.message || "未知错误"}`;
+  window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message, type: "error" } }));
+}
 function LinkedInSearchPanel({ guarded, notify }) {
   const [form, setForm] = useState({ full_name: "", company_website: "", role: "", industry: "", location: "", company_keyword: "", limit: 10, auto_domain_lookup: true, auto_generate_email_candidates: true, high_confidence_verify: true });
   const [tasks, setTasks] = useState([]);
@@ -409,7 +421,7 @@ function LinkedInSearchPanel({ guarded, notify }) {
   }, []);
 
   useEffect(() => {
-    loadTasks().catch(() => {});
+    loadTasks().catch((error) => reportAsyncError("LinkedIn 搜索任务加载失败", error));
   }, [loadTasks]);
 
   return (

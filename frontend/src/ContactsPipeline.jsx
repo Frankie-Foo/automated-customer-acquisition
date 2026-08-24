@@ -43,6 +43,7 @@ const lifecycleLabels = {
   trial_order: "试订单",
   agency_agreement: "代理协议",
   hq_visit: "总部拜访",
+  store_creation: "门店创建",
   signed: "成功签约",
   maintenance: "持续维护",
   waiting_pool: "等待池",
@@ -208,7 +209,7 @@ function ContactsPipeline() {
       });
     }
     try {
-      if (action === "detail") {
+      if (action === "detail" || action === "progress") {
         openContactWorkspace(contact.id);
         return;
       }
@@ -347,7 +348,7 @@ function ContactsPipeline() {
         <table className="customer-table">
           <thead>
             <tr>
-              <th>联系人</th><th>公司与联系方式</th><th>身份与质量</th><th>销售阶段</th><th>邮件反馈</th><th>客户池</th><th>操作</th>
+              <th>联系人</th><th>公司与联系方式</th><th>身份与质量</th><th>客户生命周期</th><th>邮件触达与反馈</th><th>客户池</th><th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -536,7 +537,7 @@ function CustomerStageGuide() {
       <article><b>1</b><div><strong>核对身份</strong><span>确认姓名、公司、职位确实匹配</span></div></article>
       <article><b>2</b><div><strong>获得 valid 邮箱</strong><span>候选邮箱不等于可发送邮箱</span></div></article>
       <article><b>3</b><div><strong>生成并审核邮件</strong><span>检查客户证据、主题和正文</span></div></article>
-      <article><b>4</b><div><strong>发送并看回流</strong><span>打开、回复后再推进 SABCD</span></div></article>
+      <article><b>4</b><div><strong>发送并看回流</strong><span>客户回复并确认进展后再更新生命周期</span></div></article>
     </section>
   );
 }
@@ -596,8 +597,8 @@ function ContactRow({ contact, onAction, busy, busyAction }) {
       <td><div className="customer-identity"><small>#{contact.id}</small><strong>{fullName(contact)}</strong><div className="muted">{contact.job_title || "职位待确认"}</div><div className="inline-links">{isHttpUrl(contact.linkedin_url) && <a className="profile-link" href={contact.linkedin_url} target="_blank" rel="noreferrer">LinkedIn</a>}<SocialProfiles contact={contact} /></div></div></td>
       <td><div className="customer-company"><strong>{contact.company_name || "公司待确认"}</strong><div className="muted">{contact.company_domain || "官网待确认"}</div><div className="contact-line"><span>{displayEmail(contact)}</span><small>{emailMeta(contact)}</small></div><div className="contact-line"><span>{displayPhone(contact)}</span><small>{phoneMeta(contact)}</small></div></div></td>
       <td><IdentityQuality contact={contact} /></td>
-      <td><div className="pipeline-cell"><div><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span><small>Step {contact.sequence_step || 0}</small></div><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span><div className="lifecycle-cell"><span>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><small>{dispositionLabel(contact.disposition)}</small></div></div></td>
-      <td><EmailFeedback contact={contact} /></td>
+      <td><div className="pipeline-cell"><span className={`stage-pill sabcd-${String(contact.sabcd_stage || "D").toLowerCase()}`}>{sabcdLabels[contact.sabcd_stage] || "D 未接触"}</span><div className="lifecycle-cell"><span>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</span><small>{dispositionLabel(contact.disposition)}</small></div></div></td>
+      <td><div className="email-feedback-cell"><div><span className={`badge ${contact.status || ""}`}>{statusLabel(contact.status)}</span><small>第 {contact.sequence_step || 0} 封</small></div><EmailFeedback contact={contact} /></div></td>
       <td><PoolBadge contact={contact} /></td>
       <td><ContactActions contact={contact} onAction={onAction} busy={busy} busyAction={busyAction} /></td>
     </tr>
@@ -654,7 +655,7 @@ function rowActions(contact) {
           : ["detail", "准备邮件"];
   const queueAction = blocked || contact.status !== "enriched" ? [] : [["queue-one", "加入发送队列"]];
   const retryEmail = !hasValidEmail && candidates.length ? [["enrich-email", "重新查找邮箱"]] : [];
-  const secondary = [...retryEmail, ["enrich-social", "补社媒"], ["profile", "生成画像"], ...queueAction, ["next", "推进销售阶段"], ["wait", "进入等待"], ["return-public", "退回公共池"]]
+  const secondary = [...retryEmail, ["enrich-social", "补社媒"], ["profile", "生成画像"], ...queueAction, ["progress", "记录客户进展"], ["wait", "进入等待"], ["return-public", "退回公共池"]]
     .filter(([action]) => action !== primary[0]);
   return { primary, secondary };
 }
@@ -813,13 +814,7 @@ function lifecyclePayload(action, contact) {
     const stage = action.slice(-1).toUpperCase();
     return { contact_id: contact.id, sabcd_stage: stage, notes: `set SABCD stage ${stage}` };
   }
-  if (action === "next") {
-    const order = ["lead", "replied", "conversation", "meeting", "business_plan", "trial_order", "agency_agreement", "store_visit", "signed"];
-    const current = contact.lifecycle_stage || "lead";
-    const currentIndex = Math.max(0, order.indexOf(current));
-    const next = order[Math.min(currentIndex + 1, order.length - 1)];
-    return { contact_id: contact.id, lifecycle_stage: next, disposition: "active", notes: "advance lifecycle" };
-  }
-  if (action === "wait") return { contact_id: contact.id, lifecycle_stage: contact.lifecycle_stage || "waiting_pool", disposition: "waiting", next_action_at: new Date(Date.now() + 7 * 86400000).toISOString(), notes: "move to waiting pool" };
-  return { contact_id: contact.id, lifecycle_stage: "abandoned", disposition: "abandoned", lost_reason: "manually abandoned", notes: "abandon customer" };
+  if (action === "wait") return { contact_id: contact.id, lifecycle_stage: "waiting_pool", disposition: "waiting", next_action_at: new Date(Date.now() + 7 * 86400000).toISOString(), notes: "move to waiting pool" };
+  if (action === "abandon") return { contact_id: contact.id, lifecycle_stage: "abandoned", disposition: "abandoned", lost_reason: "manually abandoned", notes: "abandon customer" };
+  throw new Error(`Unsupported lifecycle action: ${action}`);
 }

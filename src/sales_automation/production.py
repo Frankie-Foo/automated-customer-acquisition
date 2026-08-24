@@ -28,6 +28,12 @@ def readiness(config: AppConfig) -> dict[str, Any]:
         _check("enrichment", bool(apis.get("hunter_key") or apis.get("prospeo_key") or apis.get("ninjapear_key")), "Hunter, Prospeo, or NinjaPear key is required for email enrichment"),
         _check("social_enrichment", bool(apis.get("peopledb_key") or apis.get("pdl_key")), "PeopleDB or People Data Labs key is optional for social profile enrichment"),
         _check(
+            "apollo_phone",
+            _apollo_phone_ready(config),
+            "Apollo phone fallback is optional; when enabled it requires API key, HTTPS public URL, webhook secret and positive global budget",
+            required=False,
+        ),
+        _check(
             "mail_transport",
             _mail_transport_ready(apis, sender, sender_pool, smtp),
             "Configure credentials for every active Resend, SendGrid, or SMTP sender",
@@ -58,7 +64,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
 
 
 def _check(name: str, ok: bool, message: str, *, required: bool = True) -> dict[str, Any]:
-    if name in {"llm", "slack", "social_enrichment"}:
+    if name in {"llm", "slack", "social_enrichment", "apollo_phone"}:
         required = False
     return {"name": name, "ok": ok, "message": message, "required": required}
 
@@ -86,6 +92,18 @@ def _dry_run_ready(sender: dict[str, Any], sender_pool: dict[str, Any]) -> bool:
 def _llm_ready(apis: dict[str, Any], llm: dict[str, Any]) -> bool:
     provider = llm.get("provider", "deepseek")
     return bool(apis.get(f"{provider}_key") or apis.get("openai_key"))
+
+
+def _apollo_phone_ready(config: AppConfig) -> bool:
+    settings = config.raw.get("apollo_phone", {})
+    if not settings.get("enabled"):
+        return False
+    return bool(
+        config.apis.get("apollo_key")
+        and _public_base_url_ready(config.raw.get("app", {}).get("public_base_url"))
+        and len(str(config.raw.get("webhooks", {}).get("apollo_secret") or "")) >= 24
+        and int(settings.get("global_daily_credit_limit") or 0) > 0
+    )
 
 
 def _public_base_url_ready(value: str | None) -> bool:

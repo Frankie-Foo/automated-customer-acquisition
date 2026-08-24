@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .auth import clear_session_cookie, default_admin_credentials, parse_session_cookie, public_user, session_cookie
+from .apollo_phone import ApolloPhoneQueueService
 from .clients import SlackClient
 from .config import load_config
 from .contactout_queue import ContactOutConflict, ContactOutQueueService, contactout_bridge_configured
@@ -20,6 +21,7 @@ from .db import Database, Repository
 from .health import check_database, check_readiness
 from .importers import parse_company_seed_csv, parse_company_seed_upload, parse_contacts_csv
 from .linkedin_public_search import LinkedInPublicSearchService
+from .logging_utils import log
 from .outbound_identity import parse_signed_reply_route
 from .outbound_quality import calibration_summary
 from .quotas import QuotaService
@@ -159,6 +161,12 @@ def make_handler(config, repo: Repository):
                     self._send_json({"ok": False, "error": "unauthorized"}, status=401)
                     return
                 quota_snapshot = QuotaService(config, repo).snapshot(user)
+                apollo_usage = repo.apollo_phone_snapshot(
+                    int(user["id"]), int(user.get("apollo_daily_credit_limit") or 0)
+                )
+                quota_snapshot["user_usage"]["apollo_credits_used"] = apollo_usage["used"]
+                quota_snapshot["user_usage"]["apollo_credits_reserved"] = apollo_usage["reserved"]
+                quota_snapshot["apollo_phone"] = apollo_usage
                 self._send_json({"ok": True, "data": {"user": public_user(user), "usage": quota_snapshot["user_usage"], "quotas": quota_snapshot}})
                 return
             if parsed.path == "/api/logout":
@@ -260,6 +268,11 @@ def make_handler(config, repo: Repository):
                 limit = int(qs.get("limit", ["100"])[0])
                 self._json(lambda: {"jobs": repo.list_contactout_jobs(user=self._current_user(), limit=limit)})
                 return
+            if parsed.path == "/api/apollo-phone/jobs":
+                qs = parse_qs(parsed.query)
+                limit = int(qs.get("limit", ["100"])[0])
+                self._json(lambda: {"jobs": repo.list_apollo_phone_jobs(user=self._current_user(), limit=limit)})
+                return
             if parsed.path == "/api/admin/resource-usage":
                 admin = self._require_admin()
                 if not admin:
@@ -268,6 +281,8 @@ def make_handler(config, repo: Repository):
                     "contactout_accounts": repo.list_contactout_accounts(),
                     "contactout_usage": repo.contactout_usage_today(),
                     "contactout_jobs": repo.list_contactout_jobs(limit=200),
+                    "apollo_phone_usage": repo.apollo_phone_usage_today(),
+                    "apollo_phone_jobs": repo.list_apollo_phone_jobs(limit=200),
                     "llm_usage": repo.llm_gateway_usage_today(),
                 })
                 return
@@ -340,6 +355,8 @@ def make_handler(config, repo: Repository):
         def do_POST(self) -> None:
             bind_actor(None)
             parsed = urlparse(self.path)
+            if not self._require_safe_post(parsed.path):
+                return
             try:
                 payload = self._read_json()
             except ValueError as exc:
@@ -1347,6 +1364,7 @@ def make_handler(config, repo: Repository):
                         role=payload.get("role") or "sales",
                         daily_source_limit=int(payload.get("daily_source_limit") or 100),
                         daily_send_limit=int(payload.get("daily_send_limit") or 200),
+                        apollo_daily_credit_limit=int(payload.get("apollo_daily_credit_limit") or 0),
                         reply_to_email=payload.get("reply_to_email"),
                         sender_alias_localpart=payload.get("sender_alias_localpart"),
                         must_change_password=True,
@@ -1396,6 +1414,7 @@ def make_handler(config, repo: Repository):
                         role=payload.get("role"),
                         daily_source_limit=int(payload["daily_source_limit"]) if payload.get("daily_source_limit") is not None else None,
                         daily_send_limit=int(payload["daily_send_limit"]) if payload.get("daily_send_limit") is not None else None,
+                        apollo_daily_credit_limit=int(payload["apollo_daily_credit_limit"]) if payload.get("apollo_daily_credit_limit") is not None else None,
                         reply_to_email=payload.get("reply_to_email"),
                         sender_alias_localpart=payload.get("sender_alias_localpart"),
                         active=payload.get("active"),
@@ -1407,7 +1426,7 @@ def make_handler(config, repo: Repository):
                     target_id=payload.get("user_id"),
                     summary="管理员更新销售账号",
                     metadata={
-                        "fields": [key for key in ("password", "display_name", "role", "daily_source_limit", "daily_send_limit", "reply_to_email", "sender_alias_localpart", "active") if payload.get(key) is not None],
+                        "fields": [key for key in ("password", "display_name", "role", "daily_source_limit", "daily_send_limit", "apollo_daily_credit_limit", "reply_to_email", "sender_alias_localpart", "active") if payload.get(key) is not None],
                     },
                 )
                 return
@@ -1459,6 +1478,15 @@ def make_handler(config, repo: Repository):
                 if not self._require_database():
                     return
                 provider = parsed.path.removeprefix("/webhooks/") or payload.get("provider", "resend")
+                if provider == "apollo":
+                    def apollo_phone_webhook() -> dict[str, Any]:
+                        query = parse_qs(parsed.query)
+                        job_id = int(query.get("job_id", ["0"])[0])
+                        token = str(query.get("token", [""])[0])
+                        bind_actor(system=True)
+                        return ApolloPhoneQueueService(config, repo).process_webhook(job_id, payload, token)
+                    self._json(apollo_phone_webhook)
+                    return
                 if provider == "inbound-email":
                     try:
                         self._verify_inbound_email_secret()
@@ -1541,6 +1569,36 @@ def make_handler(config, repo: Repository):
             except json.JSONDecodeError as exc:
                 raise ValueError("invalid_json") from exc
 
+        def _require_safe_post(self, path: str) -> bool:
+            if path.startswith("/webhooks/"):
+                return True
+            if str(self.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+                self._send_json({"ok": False, "error": "csrf_origin_rejected"}, status=403)
+                return False
+            origin = str(self.headers.get("Origin") or "").strip().rstrip("/")
+            if origin:
+                allowed_origins: set[str] = set()
+                public_origin = urlparse(public_base_url)
+                if public_origin.scheme and public_origin.netloc:
+                    allowed_origins.add(f"{public_origin.scheme}://{public_origin.netloc}")
+                host = str(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").strip()
+                if host:
+                    forwarded_proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
+                    scheme = forwarded_proto or ("https" if secure_cookie else "http")
+                    allowed_origins.add(f"{scheme}://{host}")
+                if origin not in allowed_origins:
+                    self._send_json({"ok": False, "error": "csrf_origin_rejected"}, status=403)
+                    return False
+            try:
+                content_length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                content_length = 0
+            content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if path.startswith("/api/") and content_length > 0 and content_type != "application/json":
+                self._send_json({"ok": False, "error": "json_content_type_required"}, status=415)
+                return False
+            return True
+
         def _json(self, fn) -> None:
             try:
                 self._send_json({"ok": True, "data": fn()})
@@ -1592,8 +1650,8 @@ def make_handler(config, repo: Repository):
                     success=success,
                     error=error,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log("audit.write_failed", action=action, error_type=type(exc).__name__)
 
         def _current_user(self) -> dict[str, Any] | None:
             token = parse_session_cookie(self.headers.get("Cookie"))

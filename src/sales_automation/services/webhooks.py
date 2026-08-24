@@ -14,6 +14,26 @@ from ..outreach_guard import annotate_delivery_payload
 from .pdca import LeadWorkflowService
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+LIFECYCLE_RANK = {
+    "lead": 0,
+    "replied": 1,
+    "conversation": 2,
+    "meeting": 3,
+    "business_plan": 4,
+    "trial_order": 5,
+    "agency_agreement": 6,
+    "store_visit": 7,
+    "hq_visit": 8,
+    "store_creation": 9,
+    "signed": 10,
+    "maintenance": 11,
+}
+
+
+def _furthest_lifecycle_stage(current: str, suggested: str) -> str:
+    current = current if current in LIFECYCLE_RANK else "lead"
+    suggested = suggested if suggested in LIFECYCLE_RANK else "replied"
+    return current if LIFECYCLE_RANK[current] > LIFECYCLE_RANK[suggested] else suggested
 
 
 class WebhookService:
@@ -64,23 +84,34 @@ class WebhookService:
         )
         if reply_classification:
             payload = {**payload, "reply_classification": reply_classification}
-            if hasattr(self.repo, "update_icp_from_reply"):
-                self.repo.update_icp_from_reply(contact_id, reply_classification)
-        payload = annotate_delivery_payload(event_type, payload)
-        self.repo.record_event(contact_id, event_type, payload)
-        actionable_reply = bool(reply_classification and reply_classification.get("should_advance"))
-        if event_type == "replied" and actionable_reply and hasattr(self.repo, "update_lifecycle"):
-            self.repo.update_lifecycle(contact_id, lifecycle_stage="replied", disposition="active")
+        reply_label = str((reply_classification or {}).get("label") or "")
+        effective_event_type = {
+            "ooo": "auto_reply",
+            "bounce": "bounced",
+            "unsubscribe": "unsubscribed",
+        }.get(reply_label, event_type)
+        human_reply = event_type == "replied" and effective_event_type == "replied"
+        if human_reply and reply_classification and hasattr(self.repo, "update_icp_from_reply"):
+            self.repo.update_icp_from_reply(contact_id, reply_classification)
+        payload = annotate_delivery_payload(effective_event_type, payload)
+        self.repo.record_event(contact_id, effective_event_type, payload)
+        current_contact = self.repo.get_contact(contact_id) if hasattr(self.repo, "get_contact") else None
+        reply_stage = _furthest_lifecycle_stage(
+            str((current_contact or {}).get("lifecycle_stage") or "lead"),
+            str((reply_classification or {}).get("lifecycle_stage") or "replied"),
+        )
+        if human_reply and hasattr(self.repo, "update_lifecycle"):
+            self.repo.update_lifecycle(contact_id, lifecycle_stage=reply_stage, disposition="active")
         message_id = _extract_message_id(payload)
         outbound_message_id = _extract_in_reply_to(payload) if event_type == "replied" else message_id
         if outbound_message_id and hasattr(self.repo, "update_outreach_message_event"):
             self.repo.update_outreach_message_event(
                 provider=provider,
                 provider_message_id=outbound_message_id,
-                event_type=event_type,
+                event_type=effective_event_type,
                 error=str(payload.get("delivery_reason") or "")[:1000] or None,
             )
-        contact = self.repo.get_contact(contact_id) if hasattr(self.repo, "get_contact") else None
+        contact = self.repo.get_contact(contact_id) if hasattr(self.repo, "get_contact") else current_contact
         owner_user_id = contact.get("owner_user_id") if contact else None
         if event_type == "opened" and contact and hasattr(self.repo, "ensure_followup_task"):
             self.repo.ensure_followup_task(
@@ -95,44 +126,50 @@ class WebhookService:
                 trigger_rule="opened_no_reply",
                 metadata={"provider": provider, "message_id": message_id},
             )
-        should_close_tasks = event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"}
+        should_close_tasks = effective_event_type in {"replied", "bounced", "failed", "unsubscribed", "complained"}
         if contact and should_close_tasks:
             if hasattr(self.repo, "close_open_followup_tasks"):
                 self.repo.close_open_followup_tasks(contact_id)
         if contact and (
-            event_type in {"bounced", "failed", "unsubscribed", "complained"}
-            or (event_type == "replied" and actionable_reply)
+            effective_event_type in {"bounced", "failed", "unsubscribed", "complained"}
+            or human_reply
         ):
             LeadWorkflowService(self.repo).ensure_next_task(
                 contact_id,
                 owner_user_id=owner_user_id,
             )
-        if event_type in {"replied", "bounced", "failed"} and hasattr(self.repo, "record_interaction"):
+        if effective_event_type in {"replied", "bounced", "failed"} and hasattr(self.repo, "record_interaction"):
             self.repo.record_interaction(
                 contact_id=contact_id,
                 user_id=owner_user_id,
-                interaction_type="email_reply" if event_type == "replied" else "email_delivery_failure",
+                interaction_type="email_reply" if effective_event_type == "replied" else "email_delivery_failure",
                 direction="inbound",
                 channel="email",
                 subject=_extract_subject(payload),
                 content=_extract_message_text(payload),
-                outcome=reply_classification.get("label") if reply_classification else event_type,
+                outcome=reply_classification.get("label") if reply_classification else effective_event_type,
                 source_ref=message_id,
                 metadata={"provider": provider, "reply_classification": reply_classification or {}},
             )
-        if event_type == "replied" and actionable_reply and hasattr(self.repo, "add_lifecycle_activity"):
+        if human_reply and hasattr(self.repo, "add_lifecycle_activity"):
             self.repo.add_lifecycle_activity(
                 contact_id,
-                lifecycle_stage="replied",
+                lifecycle_stage=reply_stage,
                 activity_type="reply",
                 title=_extract_subject(payload) or "Email reply",
                 content=_extract_message_text(payload) or "Reply received",
                 created_by=f"{provider}_webhook",
             )
-        if event_type == "replied" and self.notifier:
+        if human_reply and self.notifier:
             label = reply_classification.get("label") if reply_classification else "other"
             self.notifier.notify(f"Lead replied ({label}): contact #{contact_id}")
-        log("webhook.processed", provider=provider, contact_id=contact_id, event_type=event_type)
+        log(
+            "webhook.processed",
+            provider=provider,
+            contact_id=contact_id,
+            event_type=event_type,
+            effective_event_type=effective_event_type,
+        )
         return event_type
 
     def _hydrate_resend_received_email(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -12,6 +12,8 @@ POSITIVE_REPLY_LABELS = {
     "positive_interested",
     "positive_soft",
     "positive_referral",
+    "positive_meeting",
+    "positive_conversation",
 }
 
 _ICP_INDUSTRY_TERMS = {
@@ -445,18 +447,44 @@ def classify_reply(subject: str | None, body: str | None) -> dict[str, Any]:
         ("negative_notfit", 5, False, r"\b(not interested|not relevant|not a fit|no need|we do not)\b"),
         ("negative_notnow", 20, False, r"\b(not now|maybe later|next quarter|next year|circle back|no budget)\b"),
         ("positive_referral", 85, True, r"\b(contact|reach out to|speak with|forwarded to|copied|cc'?d)\b.{0,80}\b(colleague|manager|director|team|person)\b"),
+        (
+            "positive_meeting",
+            100,
+            True,
+            r"\b(looking forward to (our|the) (call|meeting)|"
+            r"(can|could|let'?s|would like to) (meet|schedule a call|have a call)|"
+            r"(call|meeting) (is )?(confirmed|scheduled)|"
+            r"available\b.{0,60}\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+            r"\d{1,2}(:\d{2})?\s*(am|pm)))\b",
+        ),
+        (
+            "positive_conversation",
+            98,
+            True,
+            r"\b(take (this|the) discussion forward|move (this|the) discussion forward|"
+            r"proceed with (this|the) discussion|await (the )?nda|send (the )?nda)\b",
+        ),
         ("positive_interested", 95, True, r"\b(interested|let'?s talk|book a call|schedule|meeting|proposal|quotation|quote|pricing|price list|send details)\b"),
-        ("positive_soft", 75, True, r"\b(tell me more|more information|learn more|sounds good|could you share|please send)\b"),
+        ("positive_soft", 75, True, r"\b(tell me more|more information|learn more|sounds good|could you share|please share|please send)\b"),
         ("neutral_question", 55, True, r"\b(who are you|what is|how does|which market|where are|can you explain)\b|\?"),
     ]
     for label, score, should_advance, pattern in rules:
         match = re.search(pattern, text, re.I | re.S)
         if match:
+            lifecycle_stage = {
+                "positive_meeting": "meeting",
+                "positive_conversation": "conversation",
+                "positive_referral": "replied",
+                "positive_interested": "replied",
+                "positive_soft": "replied",
+                "neutral_question": "replied",
+            }.get(label)
             return {
                 "label": label,
                 "positive": label in POSITIVE_REPLY_LABELS,
                 "score": score,
                 "should_advance": should_advance,
+                "lifecycle_stage": lifecycle_stage,
                 "reason": match.group(0)[:160],
             }
     return {
@@ -464,6 +492,7 @@ def classify_reply(subject: str | None, body: str | None) -> dict[str, Any]:
         "positive": False,
         "score": 40,
         "should_advance": False,
+        "lifecycle_stage": None,
         "reason": "No reliable intent signal detected.",
     }
 

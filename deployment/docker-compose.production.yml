@@ -56,14 +56,19 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "find /tmp/salesbot-worker-success -mmin -3 -print -quit | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
     command: >
-      sh -c 'while true; do
-        salesbot mailbox-poll --config config.yaml --limit 200 || true;
+      sh -ec 'while true; do
+        salesbot mailbox-poll --config config.yaml --limit 200;
+        touch /tmp/salesbot-worker-success;
         sleep "$${MAILBOX_POLL_INTERVAL_SECONDS:-60}";
       done'
 
-  acquisition-worker:
+  scheduler-worker:
     image: ${SALESBOT_IMAGE:-salesbot:local}
     build:
       context: ..
@@ -81,36 +86,19 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "find /tmp/salesbot-worker-success -mmin -15 -print -quit | grep -q ."]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 5m
     command: >
-      sh -c 'while true; do
-        salesbot acquisition-run --config config.yaml --limit 10 || true;
-        sleep "$${ACQUISITION_POLL_INTERVAL_SECONDS:-900}";
-      done'
-
-  contactout-worker:
-    image: ${SALESBOT_IMAGE:-salesbot:local}
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file:
-      - path: ./production.env
-        required: false
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      SALESBOT_REQUIRE_PRODUCTION_READY: "true"
-      SALESBOT_DB_WAIT_TIMEOUT: 120
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      disable: true
-    command: >
-      sh -c 'while true; do
-        salesbot contactout-run --config config.yaml --limit 10 || true;
-        sleep "$${CONTACTOUT_POLL_INTERVAL_SECONDS:-60}";
+      sh -ec 'while true; do
+        salesbot scheduler --config config.yaml
+          --enrich-limit "$${SALESBOT_SCHEDULER_ENRICH_LIMIT:-100}"
+          --queue-limit "$${SALESBOT_SCHEDULER_QUEUE_LIMIT:-100}"
+          --send-limit "$${SALESBOT_SCHEDULER_SEND_LIMIT:-0}";
+        touch /tmp/salesbot-worker-success;
+        sleep "$${SALESBOT_SCHEDULER_INTERVAL_SECONDS:-300}";
       done'
 
   contactout-bridge:
@@ -163,10 +151,26 @@ services:
         condition: service_healthy
     volumes:
       - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "find /backups/.last_success -mmin -1500 -print -quit | grep -q ."]
+      interval: 5m
+      timeout: 5s
+      retries: 3
+      start_period: 5m
     command: >
-      sh -c 'while true; do
+      sh -ec 'while true; do
         export PGPASSWORD="$${DB_PASSWORD}";
-        pg_dump -h "$${DB_HOST}" -p "$${DB_PORT}" -U "$${DB_USER}" "$${DB_NAME}" | gzip > "/backups/salesbot_$$(date +%F_%H%M%S).sql.gz";
+        backup_tmp="/backups/salesbot_$$(date +%F_%H%M%S).dump.tmp";
+        backup_final="$${backup_tmp%.tmp}";
+        rm -f "$${backup_tmp}";
+        if pg_dump -Fc -h "$${DB_HOST}" -p "$${DB_PORT}" -U "$${DB_USER}" -f "$${backup_tmp}" "$${DB_NAME}" && test -s "$${backup_tmp}"; then
+          mv "$${backup_tmp}" "$${backup_final}";
+          touch /backups/.last_success;
+        else
+          rm -f "$${backup_tmp}";
+          exit 1;
+        fi;
+        find /backups -name "salesbot_*.dump" -mtime +7 -delete;
         find /backups -name "salesbot_*.sql.gz" -mtime +7 -delete;
         sleep 86400;
       done'

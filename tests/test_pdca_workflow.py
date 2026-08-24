@@ -10,6 +10,7 @@ from sales_automation.services.pdca import (
     normalize_phone,
     prepare_lead,
 )
+from sales_automation.services.lifecycle import LifecycleService
 
 
 class WorkflowRepo:
@@ -98,6 +99,10 @@ def test_next_task_tracks_contact_state() -> None:
         now=now,
     )
     reply = next_task_for_contact({"status": "replied", "company_name": "C"}, now=now)
+    meeting = next_task_for_contact(
+        {"status": "replied", "lifecycle_stage": "meeting", "company_name": "Meeting Co"},
+        now=now,
+    )
     call = next_task_for_contact({"status": "new", "company_name": "Phone Lead", "phone": "+447700900123"}, now=now)
     stopped = next_task_for_contact({"status": "unsubscribed", "company_name": "D"}, now=now)
 
@@ -105,9 +110,65 @@ def test_next_task_tracks_contact_state() -> None:
     assert review["task_type"] == "generate_draft"
     assert reply["task_type"] == "reply"
     assert reply["priority"] == "urgent"
+    assert meeting["task_type"] == "meeting"
+    assert meeting["trigger_rule"] == "meeting_confirmed"
     assert call["task_type"] == "call"
     assert call["trigger_rule"] == "phone_first_touch"
     assert stopped is None
+
+
+def test_lifecycle_stages_create_stage_specific_tasks() -> None:
+    expected = {
+        "business_plan": "business_plan",
+        "store_visit": "visit",
+        "trial_order": "trial_order",
+        "agency_agreement": "agreement",
+        "hq_visit": "visit",
+        "store_creation": "store_plan",
+        "signed": "maintenance",
+        "maintenance": "maintenance",
+        "waiting_pool": "revisit",
+    }
+
+    for lifecycle_stage, task_type in expected.items():
+        task = next_task_for_contact(
+            {"status": "replied", "lifecycle_stage": lifecycle_stage, "company_name": "Example"},
+        )
+        assert task["task_type"] == task_type
+
+
+def test_lifecycle_update_replaces_stale_task_with_stage_task() -> None:
+    class Repo:
+        def __init__(self):
+            self.closed = []
+            self.tasks = []
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.stage = kwargs["lifecycle_stage"]
+
+        def get_contact(self, contact_id):
+            return {
+                "id": contact_id,
+                "owner_user_id": 3,
+                "pool_type": "private",
+                "status": "replied",
+                "lifecycle_stage": self.stage,
+                "company_name": "Example",
+            }
+
+        def close_open_followup_tasks(self, contact_id):
+            self.closed.append(contact_id)
+
+        def ensure_followup_task(self, **kwargs):
+            self.tasks.append(kwargs)
+            return kwargs
+
+    repo = Repo()
+    result = LifecycleService(repo).update(9, lifecycle_stage="meeting")
+
+    assert repo.closed == [9]
+    assert repo.tasks[0]["trigger_rule"] == "meeting_confirmed"
+    assert result["next_task"]["task_type"] == "meeting"
 
 
 def test_ingest_creates_canonical_contact_lead_task_and_campaign_metric() -> None:

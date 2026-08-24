@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .apollo_phone import ApolloPhoneQueueService, apollo_phone_configured
 from .clients import SlackClient
 from .config import load_config
 from .contactout_queue import ContactOutQueueService, contactout_bridge_configured, summarize_contactout_batch
@@ -57,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     contactout_run = sub.add_parser("contactout-run", parents=[config_parent])
     contactout_run.add_argument("--limit", type=int, default=10)
 
+    apollo_phone_run = sub.add_parser("apollo-phone-run", parents=[config_parent])
+    apollo_phone_run.add_argument("--limit", type=int, default=10)
+
     mailbox_poll = sub.add_parser("mailbox-poll", parents=[config_parent])
     mailbox_poll.add_argument("--limit", type=int, default=100)
 
@@ -85,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     user_add.add_argument("--role", default="sales")
     user_add.add_argument("--source-limit", type=int, default=100)
     user_add.add_argument("--send-limit", type=int, default=200)
+    user_add.add_argument("--apollo-credit-limit", type=int, default=0)
     user_add.add_argument("--no-force-password-change", action="store_true")
 
     sub.add_parser("user-list", parents=[config_parent])
@@ -151,6 +156,14 @@ def main(argv: list[str] | None = None) -> int:
             auto_queue = service.auto_enqueue(args.limit)
             runs = service.run_many(args.limit)
             log("contactout.completed", **summarize_contactout_batch(auto_queue, runs))
+    elif args.command == "apollo-phone-run":
+        if not apollo_phone_configured(config):
+            log("apollo_phone.skipped", reason="unconfigured")
+        else:
+            service = ApolloPhoneQueueService(config, repo)
+            auto_queue = service.auto_enqueue(args.limit)
+            runs = service.dispatch_many(args.limit)
+            log("apollo_phone.completed", auto_queue=auto_queue, runs=runs)
     elif args.command == "mailbox-poll":
         stats = MailboxReplyService(config, repo).poll_once(args.limit)
         log("mailbox.poll", **stats)
@@ -176,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             role=args.role,
             daily_source_limit=args.source_limit,
             daily_send_limit=args.send_limit,
+            apollo_daily_credit_limit=args.apollo_credit_limit,
             must_change_password=not args.no_force_password_change,
         )
         log("user.added", id=user["id"], username=user["username"], role=user["role"])
@@ -189,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                 role=user["role"],
                 source_limit=user["daily_source_limit"],
                 send_limit=user["daily_send_limit"],
+                apollo_credit_limit=user["apollo_daily_credit_limit"],
                 active=user["active"],
             )
     return 0
