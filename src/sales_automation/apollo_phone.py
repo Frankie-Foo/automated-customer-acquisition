@@ -144,7 +144,10 @@ class ApolloPhoneQueueService:
             and str(response.get("status") or "").lower() not in {"pending", "queued", "processing"}
         )
         if explicit_no_match:
-            credits = _bounded_credits(response.get("credits_consumed"))
+            credits = _bounded_credits(
+                response.get("credits_consumed"),
+                default=int(job.get("quota_units") or self.max_credits_per_lookup),
+            )
             self.repo.complete_apollo_phone_no_match(
                 int(job["id"]), str(job["lease_token"]), credits_consumed=credits
             )
@@ -168,7 +171,10 @@ class ApolloPhoneQueueService:
         job = self.repo.get_apollo_phone_job(job_id)
         if not job or not hmac.compare_digest(token, self.callback_token(job)):
             raise PermissionError("invalid_apollo_webhook_token")
-        result = _normalize_webhook(payload)
+        result = _normalize_webhook(
+            payload,
+            default_credits=int(job.get("quota_units") or self.max_credits_per_lookup),
+        )
         return self.repo.complete_apollo_phone_webhook(
             job_id,
             credits_consumed=result["credits_consumed"],
@@ -199,9 +205,12 @@ def _identity_hash(contact: dict[str, Any]) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _normalize_webhook(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_webhook(payload: dict[str, Any], *, default_credits: int = 9) -> dict[str, Any]:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    credits = _bounded_credits(payload.get("credits_consumed") or data.get("credits_consumed"))
+    raw_credits = payload.get("credits_consumed")
+    if raw_credits is None:
+        raw_credits = data.get("credits_consumed")
+    credits = _bounded_credits(raw_credits, default=default_credits)
     people = payload.get("people") or data.get("people") or []
     if not people:
         person = payload.get("person") or data.get("person")
@@ -240,11 +249,13 @@ def _normalize_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _bounded_credits(value: Any) -> int:
+def _bounded_credits(value: Any, *, default: int = 9) -> int:
     try:
-        return max(0, min(9, int(value or 0)))
+        if value is None or isinstance(value, str) and not value.strip():
+            return max(0, min(9, int(default)))
+        return max(0, min(9, int(value)))
     except (TypeError, ValueError):
-        return 0
+        return max(0, min(9, int(default)))
 
 
 _BUSINESS_TZ = ZoneInfo("Asia/Shanghai")

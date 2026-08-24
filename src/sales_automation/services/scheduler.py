@@ -25,9 +25,30 @@ class SchedulerService:
             if not row["locked"]:
                 log("scheduler.skipped_locked")
                 return {"status": "skipped_locked"}
+            if hasattr(conn, "commit"):
+                conn.commit()
+            errors: list[dict[str, str]] = []
+
+            def step(name: str, callback, fallback):
+                try:
+                    return callback()
+                except Exception as exc:
+                    error = {"step": name, "error": str(exc)[:500]}
+                    errors.append(error)
+                    log("scheduler.step_failed", **error)
+                    return fallback
+
             try:
-                acquisition = AcquisitionPlannerService(self.config, self.repo).run_due()
-                enrichment_ok, enrichment_failed = EnrichmentService(self.config, self.repo).enrich(enrich_limit)
+                acquisition = step(
+                    "acquisition",
+                    lambda: AcquisitionPlannerService(self.config, self.repo).run_due(),
+                    {"completed": 0, "failed": 1},
+                )
+                enrichment_ok, enrichment_failed = step(
+                    "enrichment",
+                    lambda: EnrichmentService(self.config, self.repo).enrich(enrich_limit),
+                    (0, 0),
+                )
                 contactout_config = self.config.raw.get("contactout", {})
                 contactout_limit = int(contactout_config.get("scheduler_limit") or 0)
                 contactout_service = ContactOutQueueService(self.config, self.repo)
@@ -37,10 +58,18 @@ class SchedulerService:
                     contactout = []
                 else:
                     contactout_auto_queue = (
-                        contactout_service.auto_enqueue(contactout_auto_queue_limit)
+                        step(
+                            "contactout_auto_queue",
+                            lambda: contactout_service.auto_enqueue(contactout_auto_queue_limit),
+                            {"queued": 0, "candidates": 0, "skipped": [], "jobs": []},
+                        )
                         if contactout_auto_queue_limit > 0 else {"queued": 0, "candidates": 0, "skipped": [], "jobs": []}
                     )
-                    contactout = contactout_service.run_many(contactout_limit) if contactout_limit > 0 else []
+                    contactout = step(
+                        "contactout",
+                        lambda: contactout_service.run_many(contactout_limit),
+                        [],
+                    ) if contactout_limit > 0 else []
                 apollo_config = self.config.raw.get("apollo_phone", {})
                 apollo_limit = int(apollo_config.get("scheduler_limit") or 0)
                 apollo_auto_queue_limit = int(apollo_config.get("auto_queue_limit") or apollo_limit or 0)
@@ -50,26 +79,54 @@ class SchedulerService:
                 else:
                     apollo_service = ApolloPhoneQueueService(self.config, self.repo)
                     apollo_auto_queue = (
-                        apollo_service.auto_enqueue(apollo_auto_queue_limit)
+                        step(
+                            "apollo_phone_auto_queue",
+                            lambda: apollo_service.auto_enqueue(apollo_auto_queue_limit),
+                            {"queued": 0, "candidates": 0, "jobs": []},
+                        )
                         if apollo_auto_queue_limit > 0 else {"queued": 0, "candidates": 0, "jobs": []}
                     )
-                    apollo_phone = apollo_service.dispatch_many(apollo_limit) if apollo_limit > 0 else []
+                    apollo_phone = step(
+                        "apollo_phone",
+                        lambda: apollo_service.dispatch_many(apollo_limit),
+                        [],
+                    ) if apollo_limit > 0 else []
                 quota = QuotaService(self.config, self.repo)
-                queued = QueueService(self.repo).queue(queue_limit)
-                limited_send = min(send_limit, quota.remaining_global("send"))
-                sent = OutreachService(self.config, self.repo).send_due(limited_send)
-                quota.consume_global("send", sent)
+                queued = step("queue", lambda: QueueService(self.repo).queue(queue_limit), 0)
+
+                def send_due() -> int:
+                    limited_send = min(send_limit, quota.remaining_global("send"))
+                    sent_count = OutreachService(self.config, self.repo).send_due(limited_send)
+                    quota.consume_global("send", sent_count)
+                    return sent_count
+
+                sent = step("send", send_due, 0)
                 wait_days = int(self.config.raw.get("outreach", {}).get("waiting_pool_after_days") or 14)
-                closed = self.repo.close_expired_outreach_sequences(wait_days=wait_days, limit=max(100, send_limit))
-                recycled = self.repo.recycle_stale_private_pool(limit=max(100, queue_limit))
-                tasks = LeadWorkflowService(self.repo).refresh_tasks(limit=max(500, queue_limit))
-                try:
-                    flywheel = DataFlywheelService(self.config, self.repo).run_once()
-                except Exception as exc:
-                    flywheel = {"status": "failed", "error": str(exc)[:500]}
-                    log("flywheel.failed", error=str(exc))
+                closed = step(
+                    "sequence_close",
+                    lambda: self.repo.close_expired_outreach_sequences(
+                        wait_days=wait_days, limit=max(100, send_limit)
+                    ),
+                    {"waiting": 0, "abandoned": 0},
+                )
+                recycled = step(
+                    "pool_recycle",
+                    lambda: self.repo.recycle_stale_private_pool(limit=max(100, queue_limit)),
+                    0,
+                )
+                tasks = step(
+                    "tasks",
+                    lambda: LeadWorkflowService(self.repo).refresh_tasks(limit=max(500, queue_limit)),
+                    0,
+                )
+                flywheel = step(
+                    "flywheel",
+                    lambda: DataFlywheelService(self.config, self.repo).run_once(),
+                    {"status": "failed"},
+                )
                 result = {
-                    "status": "completed",
+                    "status": "completed_with_errors" if errors else "completed",
+                    "errors": errors,
                     "acquisition": acquisition,
                     "enrichment": {"succeeded": enrichment_ok, "failed": enrichment_failed},
                     "contactout_auto_queue": contactout_auto_queue,
@@ -88,5 +145,7 @@ class SchedulerService:
                 return result
             finally:
                 conn.execute("SELECT pg_advisory_unlock(20260603)")
+                if hasattr(conn, "commit"):
+                    conn.commit()
 
 __all__ = ["SchedulerService"]

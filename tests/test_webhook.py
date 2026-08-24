@@ -203,6 +203,106 @@ def test_confirmed_meeting_reply_advances_lifecycle_and_activity():
     assert repo.activities[0][1]["lifecycle_stage"] == "meeting"
 
 
+def test_explicit_negative_reply_abandons_without_advancing_lifecycle():
+    class Repo:
+        def __init__(self):
+            self.lifecycle_updates = []
+            self.activities = []
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def route_inbound_reply(self, contact_id, user_id):
+            return {"owner_user_id": 3, "reply_assignment_pending": False}
+
+        def record_event(self, contact_id, event_type, payload):
+            pass
+
+        def get_contact(self, contact_id):
+            return {
+                "id": contact_id,
+                "owner_user_id": 3,
+                "pool_type": "private",
+                "status": "sent_1",
+                "lifecycle_stage": "lead",
+                "disposition": "abandoned",
+            }
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.lifecycle_updates.append((contact_id, kwargs))
+
+        def close_open_followup_tasks(self, contact_id):
+            pass
+
+        def add_lifecycle_activity(self, contact_id, **kwargs):
+            self.activities.append((contact_id, kwargs))
+
+        def record_interaction(self, **kwargs):
+            pass
+
+    repo = Repo()
+    WebhookService(repo).process_payload(
+        "imap",
+        {
+            "event_type": "replied",
+            "from": "lead@example.com",
+            "subject": "Re: Vertu",
+            "text": "Thank you, but this is not a fit for our business.",
+        },
+    )
+
+    assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "lead", "disposition": "abandoned"})]
+    assert repo.activities[0][1]["lifecycle_stage"] == "lead"
+
+
+def test_not_now_reply_waits_without_advancing_lifecycle():
+    class Repo:
+        def __init__(self):
+            self.lifecycle_updates = []
+
+        def find_contact_id_by_email(self, email):
+            return 77 if email == "lead@example.com" else None
+
+        def route_inbound_reply(self, contact_id, user_id):
+            return {"owner_user_id": 3, "reply_assignment_pending": False}
+
+        def record_event(self, contact_id, event_type, payload):
+            pass
+
+        def get_contact(self, contact_id):
+            return {
+                "id": contact_id,
+                "owner_user_id": 3,
+                "status": "sent_1",
+                "lifecycle_stage": "lead",
+            }
+
+        def update_lifecycle(self, contact_id, **kwargs):
+            self.lifecycle_updates.append((contact_id, kwargs))
+
+        def close_open_followup_tasks(self, contact_id):
+            pass
+
+        def add_lifecycle_activity(self, contact_id, **kwargs):
+            pass
+
+        def record_interaction(self, **kwargs):
+            pass
+
+    repo = Repo()
+    WebhookService(repo).process_payload(
+        "imap",
+        {
+            "event_type": "replied",
+            "from": "lead@example.com",
+            "subject": "Re: Vertu",
+            "text": "Not now. Please circle back next quarter.",
+        },
+    )
+
+    assert repo.lifecycle_updates == [(77, {"lifecycle_stage": "lead", "disposition": "waiting"})]
+
+
 def test_reply_uses_in_reply_to_before_sender_email_and_updates_original_message():
     class Repo:
         def __init__(self):

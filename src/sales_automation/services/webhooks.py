@@ -96,12 +96,18 @@ class WebhookService:
         payload = annotate_delivery_payload(effective_event_type, payload)
         self.repo.record_event(contact_id, effective_event_type, payload)
         current_contact = self.repo.get_contact(contact_id) if hasattr(self.repo, "get_contact") else None
+        current_stage = str((current_contact or {}).get("lifecycle_stage") or "lead")
         reply_stage = _furthest_lifecycle_stage(
-            str((current_contact or {}).get("lifecycle_stage") or "lead"),
+            current_stage,
             str((reply_classification or {}).get("lifecycle_stage") or "replied"),
         )
         if human_reply and hasattr(self.repo, "update_lifecycle"):
-            self.repo.update_lifecycle(contact_id, lifecycle_stage=reply_stage, disposition="active")
+            if reply_label in {"negative_hostile", "negative_notfit"}:
+                self.repo.update_lifecycle(contact_id, lifecycle_stage=current_stage, disposition="abandoned")
+            elif reply_label == "negative_notnow":
+                self.repo.update_lifecycle(contact_id, lifecycle_stage=current_stage, disposition="waiting")
+            else:
+                self.repo.update_lifecycle(contact_id, lifecycle_stage=reply_stage, disposition="active")
         message_id = _extract_message_id(payload)
         outbound_message_id = _extract_in_reply_to(payload) if event_type == "replied" else message_id
         if outbound_message_id and hasattr(self.repo, "update_outreach_message_event"):
@@ -154,7 +160,7 @@ class WebhookService:
         if human_reply and hasattr(self.repo, "add_lifecycle_activity"):
             self.repo.add_lifecycle_activity(
                 contact_id,
-                lifecycle_stage=reply_stage,
+                lifecycle_stage=current_stage if reply_label.startswith("negative_") else reply_stage,
                 activity_type="reply",
                 title=_extract_subject(payload) or "Email reply",
                 content=_extract_message_text(payload) or "Reply received",

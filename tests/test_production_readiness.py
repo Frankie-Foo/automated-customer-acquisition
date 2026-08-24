@@ -93,6 +93,29 @@ def test_readiness_accepts_smtp_transport_without_resend_for_sending(monkeypatch
     assert checks["mail_transport"]["ok"] is True
 
 
+def test_enabled_apollo_phone_is_a_required_readiness_check(monkeypatch):
+    monkeypatch.setenv("SALESBOT_ADMIN_PASSWORD", "long-random-password")
+    raw = base_raw()
+    raw["apollo_phone"] = {"enabled": True, "global_daily_credit_limit": 20}
+
+    data = readiness(cfg(raw))
+    check = next(item for item in data["checks"] if item["name"] == "apollo_phone")
+
+    assert check["required"] is True
+    assert check["ok"] is False
+    assert data["ready"] is False
+
+
+def test_disabled_apollo_phone_remains_optional(monkeypatch):
+    monkeypatch.setenv("SALESBOT_ADMIN_PASSWORD", "long-random-password")
+
+    data = readiness(cfg(base_raw()))
+    check = next(item for item in data["checks"] if item["name"] == "apollo_phone")
+
+    assert check["required"] is False
+    assert data["ready"] is True
+
+
 def test_production_compose_runs_safe_scheduler_worker():
     for path in (
         "deployment/docker-compose.production.yml",

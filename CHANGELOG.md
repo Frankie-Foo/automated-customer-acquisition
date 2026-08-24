@@ -7,6 +7,9 @@
 - Make scheduler workers and PostgreSQL backups fail closed with health signals instead of masking failures.
 - Surface background loading failures in the sales workspace, align legacy and React routes, and label automatic replies explicitly in the email log.
 - Keep logout state intact when the server cannot confirm logout, preventing a false local-only sign-out.
+- Isolate scheduler stages so one provider failure no longer blocks sending, lifecycle maintenance, task refresh, or flywheel processing.
+- Keep explicit negative replies out of the active replied lifecycle, and require valid Apollo production configuration when the phone fallback is enabled.
+- Fence contact transfer or deletion during Apollo dispatch and charge reserved credits when provider usage metadata is missing or malformed.
 
 ## 2026-08-21 - Cost-controlled Apollo phone fallback
 

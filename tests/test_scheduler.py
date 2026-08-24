@@ -110,3 +110,59 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
     assert result["enrichment"] == {"succeeded": 3, "failed": 2}
     assert result["queued"] == 4
     assert result["sent"] == 4
+
+
+def test_scheduler_continues_after_provider_failure(monkeypatch):
+    calls = []
+
+    class Acquisition:
+        def __init__(self, *_args): pass
+        def run_due(self): raise RuntimeError("source unavailable")
+
+    class Enrichment:
+        def __init__(self, *_args): pass
+        def enrich(self, _limit): return 0, 0
+
+    class Queue:
+        def __init__(self, *_args): pass
+        def queue(self, _limit):
+            calls.append("queue")
+            return 1
+
+    class Quota:
+        def __init__(self, *_args): pass
+        def remaining_global(self, _kind): return 10
+        def consume_global(self, _kind, _amount): pass
+
+    class Outreach:
+        def __init__(self, *_args): pass
+        def send_due(self, _limit):
+            calls.append("send")
+            return 1
+
+    class Workflow:
+        def __init__(self, *_args): pass
+        def refresh_tasks(self, **_kwargs):
+            calls.append("tasks")
+            return 1
+
+    class Flywheel:
+        def __init__(self, *_args): pass
+        def run_once(self): return {"status": "completed"}
+
+    module = "sales_automation.services.scheduler"
+    monkeypatch.setattr(f"{module}.AcquisitionPlannerService", Acquisition)
+    monkeypatch.setattr(f"{module}.EnrichmentService", Enrichment)
+    monkeypatch.setattr(f"{module}.contactout_bridge_configured", lambda _config: False)
+    monkeypatch.setattr(f"{module}.apollo_phone_configured", lambda _config: False)
+    monkeypatch.setattr(f"{module}.QueueService", Queue)
+    monkeypatch.setattr(f"{module}.QuotaService", Quota)
+    monkeypatch.setattr(f"{module}.OutreachService", Outreach)
+    monkeypatch.setattr(f"{module}.LeadWorkflowService", Workflow)
+    monkeypatch.setattr(f"{module}.DataFlywheelService", Flywheel)
+
+    result = SchedulerService(AppConfig(raw={}, root_dir=Path(".")), _Repo()).run_once(25, 25, 25)
+
+    assert result["status"] == "completed_with_errors"
+    assert result["errors"] == [{"step": "acquisition", "error": "source unavailable"}]
+    assert calls == ["queue", "send", "tasks"]

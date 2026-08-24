@@ -70,6 +70,7 @@ class _Repo:
             "contact_id": 2,
             "owner_user_id": 3,
             "lease_token": "lease",
+            "quota_units": 9,
         }
         self.reservation = "reserved"
         self.calls = []
@@ -174,6 +175,29 @@ def test_webhook_token_and_actual_credits_are_forwarded():
         service.process_webhook(7, payload, "bad-token")
 
 
+def test_webhook_unknown_credit_cost_charges_reserved_units():
+    repo = _Repo()
+    repo.job["quota_units"] = 7
+    service = ApolloPhoneQueueService(_config(), repo, adapter=_Adapter())
+
+    service.process_webhook(7, {"people": []}, service.callback_token(repo.job))
+
+    call = next(item for item in repo.calls if isinstance(item, tuple) and item[0] == "webhook")
+    assert call[2]["credits_consumed"] == 7
+
+
+def test_no_match_invalid_credit_cost_charges_reserved_units():
+    repo = _Repo()
+    repo.job["quota_units"] = 6
+    adapter = _Adapter(response={"person": None, "credits_consumed": "unknown"})
+
+    result = ApolloPhoneQueueService(_config(), repo, adapter=adapter).dispatch_next()
+
+    assert result.status == "no_match"
+    call = next(item for item in repo.calls if isinstance(item, tuple) and item[0] == "no_match")
+    assert call[2]["credits_consumed"] == 6
+
+
 def test_webhook_phone_normalization_deduplicates_numbers():
     result = _normalize_webhook({
         "credits_consumed": 99,
@@ -214,5 +238,19 @@ def test_webhook_ignores_malformed_provider_values():
         "people": [None, {"phone_numbers": [None, {"number": "short"}]}],
     })
 
-    assert result["credits_consumed"] == 0
+    assert result["credits_consumed"] == 9
     assert result["phone_candidates"] == []
+
+
+def test_webhook_preserves_explicit_zero_credit_cost():
+    result = _normalize_webhook({"credits_consumed": 0})
+
+    assert result["credits_consumed"] == 0
+
+
+def test_apollo_dispatch_contact_fence_guards_transfer_and_delete():
+    sql = Path("migrations/047_apollo_dispatch_contact_fence.sql").read_text(encoding="utf-8")
+
+    assert "BEFORE UPDATE OF owner_user_id, pool_type OR DELETE ON contacts" in sql
+    assert "job.status = 'dispatching'" in sql
+    assert "ERRCODE = '55000'" in sql

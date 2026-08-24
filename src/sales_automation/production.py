@@ -31,7 +31,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
             "apollo_phone",
             _apollo_phone_ready(config),
             "Apollo phone fallback is optional; when enabled it requires API key, HTTPS public URL, webhook secret and positive global budget",
-            required=False,
+            required=bool(config.raw.get("apollo_phone", {}).get("enabled")),
         ),
         _check(
             "mail_transport",
@@ -64,7 +64,7 @@ def readiness(config: AppConfig) -> dict[str, Any]:
 
 
 def _check(name: str, ok: bool, message: str, *, required: bool = True) -> dict[str, Any]:
-    if name in {"llm", "slack", "social_enrichment", "apollo_phone"}:
+    if name in {"llm", "slack", "social_enrichment"}:
         required = False
     return {"name": name, "ok": ok, "message": message, "required": required}
 
