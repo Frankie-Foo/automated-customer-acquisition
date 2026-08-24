@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sales_automation.auth import clear_session_cookie, session_cookie
+from sales_automation.config import load_config
 from sales_automation.production import readiness
 
 
@@ -114,6 +115,23 @@ def test_disabled_apollo_phone_remains_optional(monkeypatch):
 
     assert check["required"] is False
     assert data["ready"] is True
+
+
+def test_runtime_config_enables_apollo_readiness_from_environment(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(Path("config.example.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("APOLLO_API_KEY", "apollo-key")
+    monkeypatch.setenv("APOLLO_PHONE_ENABLED", "true")
+    monkeypatch.setenv("APOLLO_GLOBAL_DAILY_CREDIT_LIMIT", "20")
+    monkeypatch.setenv("APOLLO_WEBHOOK_SECRET", "a" * 32)
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://sales.example.com")
+
+    config = load_config(config_path)
+    check = next(item for item in readiness(config)["checks"] if item["name"] == "apollo_phone")
+
+    assert config.apis["apollo_key"] == "apollo-key"
+    assert check["required"] is True
+    assert check["ok"] is True
 
 
 def test_production_compose_runs_safe_scheduler_worker():

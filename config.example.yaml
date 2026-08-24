@@ -37,6 +37,7 @@ apis:
   tavily_key: ${TAVILY_API_KEY}
   brave_search_key: ${BRAVE_SEARCH_API_KEY}
   contactout_bridge_key: ${CONTACTOUT_BRIDGE_KEY}
+  apollo_key: ${APOLLO_API_KEY}
 
 llm:
   provider: deepseek
@@ -56,6 +57,13 @@ contactout:
   global_daily_limit: 50
   auto_queue_limit: 40
   scheduler_limit: 40
+
+apollo_phone:
+  enabled: ${APOLLO_PHONE_ENABLED}
+  global_daily_credit_limit: ${APOLLO_GLOBAL_DAILY_CREDIT_LIMIT}
+  max_credits_per_lookup: 9
+  auto_queue_limit: 10
+  scheduler_limit: 10
 
 sender:
   name: VERTU Global
@@ -229,6 +237,7 @@ notifications:
 webhooks:
   resend_secret: ${RESEND_WEBHOOK_SECRET}
   inbound_email_secret: ${INBOUND_EMAIL_WEBHOOK_SECRET}
+  apollo_secret: ${APOLLO_WEBHOOK_SECRET}
 
 sourcing:
   provider: prospeo

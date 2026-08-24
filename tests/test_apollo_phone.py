@@ -248,6 +248,12 @@ def test_webhook_preserves_explicit_zero_credit_cost():
     assert result["credits_consumed"] == 0
 
 
+def test_webhook_invalid_numeric_credit_values_use_reservation():
+    assert _normalize_webhook({"credits_consumed": -1}, default_credits=7)["credits_consumed"] == 7
+    assert _normalize_webhook({"credits_consumed": 10}, default_credits=7)["credits_consumed"] == 7
+    assert _normalize_webhook({"credits_consumed": False}, default_credits=7)["credits_consumed"] == 7
+
+
 def test_apollo_dispatch_contact_fence_guards_transfer_and_delete():
     sql = Path("migrations/047_apollo_dispatch_contact_fence.sql").read_text(encoding="utf-8")
 

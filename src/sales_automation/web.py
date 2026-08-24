@@ -50,6 +50,8 @@ def _api_error_status(exc: Exception) -> int:
         return 429
     if isinstance(exc, ContactOutConflict):
         return 409
+    if getattr(exc, "sqlstate", None) == "55000" and "apollo dispatch is active" in str(exc).lower():
+        return 409
     if isinstance(exc, ValueError):
         return 400
     if isinstance(exc, PermissionError):

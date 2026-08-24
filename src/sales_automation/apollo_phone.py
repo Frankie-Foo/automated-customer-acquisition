@@ -250,12 +250,16 @@ def _normalize_webhook(payload: dict[str, Any], *, default_credits: int = 9) -> 
 
 
 def _bounded_credits(value: Any, *, default: int = 9) -> int:
+    fallback = max(0, min(9, int(default)))
+    if isinstance(value, bool):
+        return fallback
     try:
         if value is None or isinstance(value, str) and not value.strip():
-            return max(0, min(9, int(default)))
-        return max(0, min(9, int(value)))
+            return fallback
+        credits = int(value)
+        return credits if 0 <= credits <= 9 else fallback
     except (TypeError, ValueError):
-        return max(0, min(9, int(default)))
+        return fallback
 
 
 _BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
