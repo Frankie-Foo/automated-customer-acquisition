@@ -54,7 +54,7 @@ class ApolloApiAdapter:
                 params["last_name"] = contact["last_name"]
             if contact.get("company_domain"):
                 params["domain"] = contact["company_domain"]
-        if not params.get("linkedin_url") and not (params.get("first_name") and params.get("company_domain")):
+        if not params.get("linkedin_url") and not (params.get("first_name") and params.get("domain")):
             raise ValueError("apollo_identity_insufficient")
         url = "https://api.apollo.io/api/v1/people/match?" + urllib.parse.urlencode(params)
         return self.http.request(

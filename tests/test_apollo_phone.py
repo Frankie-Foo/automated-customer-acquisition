@@ -53,6 +53,21 @@ def test_apollo_adapter_requests_phone_only_without_waterfalls():
     assert kwargs["headers"]["x-api-key"] == "test-key"
 
 
+def test_apollo_adapter_accepts_name_and_company_domain_without_linkedin():
+    http = _Http()
+    adapter = ApolloApiAdapter(_config(), http=http)
+
+    adapter.request_phone(
+        {"first_name": "Alex", "last_name": "Example", "company_domain": "example.com"},
+        webhook_url="https://sales.example.com/webhooks/apollo?job_id=1&token=x",
+    )
+
+    _, url, _ = http.calls[0]
+    assert "first_name=Alex" in url
+    assert "last_name=Example" in url
+    assert "domain=example.com" in url
+
+
 def test_apollo_configuration_fails_closed_without_budget_or_secret():
     assert apollo_phone_configured(_config())
     no_secret = _config()

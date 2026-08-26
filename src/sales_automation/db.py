@@ -3673,12 +3673,11 @@ class Repository:
                 """
                 UPDATE apollo_phone_enrichment_jobs
                 SET status = %s, credits_consumed = %s, phone_candidates = %s::jsonb,
-                    provider_request_id = COALESCE(%s, provider_request_id), completed_at = NOW(),
-                    error_code = NULL, updated_at = NOW()
+                    completed_at = NOW(), error_code = NULL, updated_at = NOW()
                 WHERE id = %s
                 RETURNING *
                 """,
-                (status, credits, json.dumps(phone_candidates), provider_request_id, job_id),
+                (status, credits, json.dumps(phone_candidates), job_id),
             ).fetchone()
             return {"job": updated, "duplicate": False}
 
@@ -3715,6 +3714,30 @@ class Repository:
                 """,
                 ("blocked" if charge_reserved else "failed", error_code, job_id),
             )
+
+    def fail_apollo_phone_webhook_result(self, job_id: int, error_code: str) -> dict[str, Any] | None:
+        """Finish a terminal Apollo polling failure without charging an unproven result."""
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE id = %s AND status = 'awaiting_webhook'
+                FOR UPDATE
+                """,
+                (job_id,),
+            ).fetchone()
+            if not job:
+                return None
+            self._settle_apollo_phone_quota(conn, job, 0)
+            return conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = 'failed', error_code = %s, completed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (error_code, job_id),
+            ).fetchone()
 
     @staticmethod
     def _block_apollo_phone_job(conn: Any, job: dict[str, Any], error_code: str) -> None:
