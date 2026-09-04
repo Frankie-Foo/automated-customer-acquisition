@@ -54,6 +54,41 @@ _HYPE_PATTERNS = {
     "fake_urgency": re.compile(r"\b(act now|last chance|only two spots|limited time)\b", re.I),
     "unverifiable_return": re.compile(r"\b(guaranteed|200%\s*return|risk[- ]free|double your)\b", re.I),
 }
+_UNSUPPORTED_CLAIM_PATTERNS = {
+    "unsupported_travel_or_meeting": re.compile(
+        r"\b(i(?:'m| am| will be) (?:visiting|travelling to|traveling to|in)\s+"
+        r"(?:your (?:city|country|market)|[A-Z][A-Za-z.-]+)\s+(?:next|this)\s+(?:week|month)|"
+        r"my (?:upcoming )?(?:trip|visit) to)\b",
+        re.I,
+    ),
+    "unsupported_case_study": re.compile(
+        r"\b(our (?:client|customer|partner)s? (?:in|has|have)|"
+        r"we(?:'ve| have) (?:helped|worked with|delivered)|"
+        r"one of our (?:client|customer|partner)s?|case stud(?:y|ies))\b",
+        re.I,
+    ),
+    "unsupported_product_news": re.compile(
+        r"\b(newly launched|launched (?:today|yesterday|this week|this month|recently)|"
+        r"(?:will|set to) launch|upcoming product launch)\b",
+        re.I,
+    ),
+    "unsupported_market_stat": re.compile(
+        r"(?:\$\s*\d+(?:\.\d+)?\s*(?:billion|million)|\b\d+(?:\.\d+)?%\s+(?:of|growth|market|customer|client))",
+        re.I,
+    ),
+    "unsupported_local_commitment": re.compile(
+        r"\b(?:skd|ckd|local assembly|make in india commitment|committed to (?:local|domestic) (?:assembly|manufacturing))\b",
+        re.I,
+    ),
+    "unsupported_partner_progress": re.compile(
+        r"\b(?:we (?:have )?already identified|we are (?:already )?in (?:talks|discussions|dialogue)|quiet dialogues?|sent (?:our|the) tactical thoughts?)\b",
+        re.I,
+    ),
+    "unsupported_partner_deadline": re.compile(
+        r"\b(?:finali[sz](?:e|ing) (?:our |the )?(?:partner|partnership)s?|founding partners?)\s+(?:by|before)\b",
+        re.I,
+    ),
+}
 _PEER_TO_PEER_PATTERNS = {
     "generic_flattery": re.compile(r"\b(esteemed company|outstanding reputation|world[- ]class company)\b", re.I),
     "template_cliche": re.compile(r"\b(hope this email finds you well|dear sir or madam|high quality and good price)\b", re.I),
@@ -69,7 +104,7 @@ _HIGH_FRICTION_CTA_RE = re.compile(
 )
 _SIGNATURE_MARKER_RE = re.compile(r"^(best regards|kind regards|regards|sincerely|thanks|thank you)[,!]?$", re.I)
 _UNSUBSCRIBE_LINE_RE = re.compile(r"^unsubscribe\s*:", re.I)
-_TARGET_COPY_WORD_RANGE = (70, 110)
+_TARGET_COPY_WORD_RANGE = (100, 220)
 
 
 def default_icp_profile() -> dict[str, Any]:
@@ -90,15 +125,18 @@ def default_icp_profile() -> dict[str, Any]:
             "vp",
             "commercial",
             "business development",
-            "channel",
-            "retail",
-            "procurement",
+        "channel",
+        "retail",
+        "buyer",
+        "merchandising",
         ],
         "disqualifiers": [
             "unsubscribed_or_complained",
             "bounced_email",
-            "low_value_role",
-            "missing_company_identity",
+        "low_value_role",
+        "missing_company_identity",
+        "missing_person_identity",
+        "missing_role",
         ],
     }
 
@@ -135,6 +173,7 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
         reasons.append("role_present_but_authority_unclear")
     else:
         breakdown["role_authority"] = 0
+        disqualifiers.append("missing_role")
 
     context = contact.get("source_context") if isinstance(contact.get("source_context"), dict) else {}
     account_text = " ".join(
@@ -142,6 +181,7 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
         for value in (
             contact.get("industry"),
             contact.get("company_name"),
+            contact.get("job_title"),
             context.get("seed_category"),
             context.get("seed_reason"),
         )
@@ -164,6 +204,8 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
         disqualifiers.append("missing_company_identity")
     if contact.get("first_name") or contact.get("last_name"):
         identity_points += 5
+    else:
+        disqualifiers.append("missing_person_identity")
     confidence = _as_int(contact.get("identity_confidence"))
     if confidence >= 70 or str(contact.get("identity_status") or "").lower() in {"confirmed", "likely"}:
         identity_points += 3
@@ -219,6 +261,21 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
         "disqualifiers": list(dict.fromkeys(disqualifiers)),
         "profile_name": profile.get("name"),
         "profile_version": profile.get("version", 1),
+    }
+
+
+def enrichment_readiness(contact: dict[str, Any], *, paid: bool = False) -> dict[str, Any]:
+    assessment = assess_icp(contact)
+    allowed_tiers = {"priority", "qualified"} if paid else {"priority", "qualified", "review"}
+    reasons = list(assessment["disqualifiers"])
+    if assessment["tier"] not in allowed_tiers:
+        reasons.append("icp_not_qualified" if paid else "icp_disqualified")
+    return {
+        "ok": not reasons,
+        "score": assessment["score"],
+        "tier": assessment["tier"],
+        "reasons": list(dict.fromkeys(reasons)),
+        "assessment": assessment,
     }
 
 
@@ -312,7 +369,12 @@ def score_lead_list(contacts: Iterable[dict[str, Any]], profile: dict[str, Any] 
     }
 
 
-def review_email_copy(subject: str, body: str) -> dict[str, Any]:
+def review_email_copy(
+    subject: str,
+    body: str,
+    *,
+    contact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     subject = str(subject or "").strip()
     body = str(body or "").strip()
     blocking: list[dict[str, str]] = []
@@ -330,11 +392,11 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
     if len(body) < 80:
         blocking.append(_issue("body_too_short", "Add enough context, value and one clear question."))
         score -= 30
-    elif len(body) > 1600:
+    elif len(body) > 2400:
         warnings.append(_issue("body_too_long", "Shorten the first-touch email to make it easier to scan."))
         score -= 12
     if prospect_word_count < target_min:
-        warnings.append(
+        blocking.append(
             _issue(
                 "body_below_target_words",
                 f"Use {target_min}-{target_max} prospect-facing words before the signature; this draft has {prospect_word_count}.",
@@ -342,7 +404,7 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
         )
         score -= 12
     elif prospect_word_count > target_max:
-        warnings.append(
+        blocking.append(
             _issue(
                 "body_above_target_words",
                 f"Use {target_min}-{target_max} prospect-facing words before the signature; this draft has {prospect_word_count}.",
@@ -363,14 +425,30 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
         score -= 50
 
     visible_copy = f"{subject}\n{body}"
+    grounding_rules = {
+        "recipient_name_matched": True,
+        "company_matched": True,
+    }
+    if contact:
+        first_name = str(contact.get("first_name") or "").strip()
+        company_name = str(contact.get("company_name") or "").strip()
+        if first_name and not re.search(rf"\b(?:hi|dear)\s+{re.escape(first_name)}\b", body, re.I):
+            blocking.append(_issue("recipient_name_mismatch", "Address the email to the contact's verified first name."))
+            grounding_rules["recipient_name_matched"] = False
+            score -= 30
+        if company_name and company_name.casefold() not in visible_copy.casefold():
+            blocking.append(_issue("company_not_grounded", "Reference the contact's company explicitly in the subject or body."))
+            grounding_rules["company_matched"] = False
+            score -= 30
     for code, pattern in _HYPE_PATTERNS.items():
         if pattern.search(visible_copy):
             issue = _issue(code, _copy_recommendation(code))
-            if code == "unverifiable_return":
-                blocking.append(issue)
-            else:
-                warnings.append(issue)
+            blocking.append(issue)
             score -= 10
+    for code, pattern in _UNSUPPORTED_CLAIM_PATTERNS.items():
+        if pattern.search(visible_copy):
+            blocking.append(_issue(code, _copy_recommendation(code)))
+            score -= 25
     peer_to_peer_issues: list[str] = []
     for code, pattern in _PEER_TO_PEER_PATTERNS.items():
         if pattern.search(visible_copy):
@@ -380,7 +458,8 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
     if len(re.findall(r"!", f"{subject}\n{body}")) > 1:
         warnings.append(_issue("excessive_exclamation", "Use calm punctuation and remove repeated exclamation marks."))
         score -= 6
-    if re.search(r"\b[A-Z]{5,}\b", subject):
+    all_caps_words = [word for word in re.findall(r"\b[A-Z]{5,}\b", subject) if word not in {"VERTU"}]
+    if all_caps_words:
         warnings.append(_issue("subject_all_caps", "Avoid all-caps words in the subject."))
         score -= 6
     question_count = body.count("?")
@@ -413,6 +492,7 @@ def review_email_copy(subject: str, body: str) -> dict[str, Any]:
             "word_count_in_range": target_min <= prospect_word_count <= target_max,
             "cta_count": question_count,
             "single_low_friction_cta": question_count == 1 and not high_friction_cta,
+            **grounding_rules,
         },
         "summary": (
             "Ready for human approval."
@@ -580,6 +660,13 @@ def _copy_recommendation(code: str) -> str:
     return {
         "fake_urgency": "Replace artificial urgency with a factual timing reason.",
         "unverifiable_return": "Remove guarantees and unsupported return claims.",
+        "unsupported_travel_or_meeting": "Remove travel or meeting claims unless they are represented by a verified calendar fact.",
+        "unsupported_case_study": "Remove customer examples and case studies that are not present in approved source evidence.",
+        "unsupported_product_news": "Remove launch or product-news claims that are not present in approved source evidence.",
+        "unsupported_market_stat": "Remove market sizes, forecasts, and percentages unless approved evidence supports them.",
+        "unsupported_local_commitment": "Do not promise local assembly or manufacturing commitments without an approved plan.",
+        "unsupported_partner_progress": "Remove claims about existing partner discussions or selections unless recorded as verified evidence.",
+        "unsupported_partner_deadline": "Remove partner-selection deadlines unless they are confirmed in approved campaign data.",
         "generic_flattery": "Replace generic praise with one verifiable account observation.",
         "template_cliche": "Use a direct, specific opening tied to the recipient.",
         "salesy_pitch": "Write as a commercial peer: describe the local channel opportunity without a promotional claim.",

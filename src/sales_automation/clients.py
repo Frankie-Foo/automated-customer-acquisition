@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import smtplib
 import ssl
 import urllib.parse
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
+from mimetypes import guess_type
 from typing import Any
 
 from .http import HttpClient
@@ -288,6 +290,7 @@ class MailClient:
         metadata: dict[str, Any] | None = None,
         reply_to: str | None = None,
         idempotency_key: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
         if self.sender.get("dry_run", True):
             return f"dry-run:{to_email}:{subject}"
@@ -305,6 +308,8 @@ class MailClient:
             }
             if reply_to:
                 payload["reply_to"] = [reply_to]
+            if attachments:
+                payload["attachments"] = [_api_attachment(item) for item in attachments]
             headers = {"Authorization": f"Bearer {self.api_key}"}
             if idempotency_key:
                 headers["Idempotency-Key"] = idempotency_key[:256]
@@ -325,6 +330,16 @@ class MailClient:
             }
             if reply_to:
                 payload["reply_to"] = {"email": reply_to}
+            if attachments:
+                payload["attachments"] = [
+                    {
+                        **_api_attachment(item),
+                        "type": str(item.get("content_type") or guess_type(str(item.get("filename") or ""))[0] or "application/octet-stream"),
+                        "disposition": str(item.get("disposition") or "attachment"),
+                        **({"content_id": str(item["content_id"])} if item.get("content_id") else {}),
+                    }
+                    for item in attachments
+                ]
             data = self.http.request(
                 "POST",
                 "https://api.sendgrid.com/v3/mail/send",
@@ -334,7 +349,15 @@ class MailClient:
             )
             return data.get("id")
         if self.provider == "smtp":
-            return self._send_smtp(to_email, subject, html, text, metadata=metadata, reply_to=reply_to)
+            return self._send_smtp(
+                to_email,
+                subject,
+                html,
+                text,
+                metadata=metadata,
+                reply_to=reply_to,
+                attachments=attachments,
+            )
         raise ValueError(f"Unsupported mail provider: {self.provider}")
 
     def _send_smtp(
@@ -346,6 +369,7 @@ class MailClient:
         *,
         metadata: dict[str, Any] | None,
         reply_to: str | None,
+        attachments: list[dict[str, Any]] | None,
     ) -> str:
         cfg = self.smtp_config
         host = str(cfg.get("host") or "").strip()
@@ -375,6 +399,25 @@ class MailClient:
                 message[header] = str(value).replace("\r", " ").replace("\n", " ")[:200]
         message.set_content(text)
         message.add_alternative(html, subtype="html")
+        for attachment in attachments or []:
+            content = attachment.get("content")
+            filename = str(attachment.get("filename") or "attachment").replace("\r", " ").replace("\n", " ").strip()
+            if not isinstance(content, bytes) or not content or not filename:
+                raise ValueError("SMTP attachments require a non-empty filename and byte content")
+            content_type = str(attachment.get("content_type") or guess_type(filename)[0] or "application/octet-stream")
+            maintype, _, subtype = content_type.partition("/")
+            if attachment.get("disposition") == "inline" and attachment.get("content_id"):
+                html_part = message.get_payload()[-1]
+                html_part.add_related(
+                    content,
+                    maintype=maintype or "image",
+                    subtype=subtype or "octet-stream",
+                    cid=f"<{str(attachment['content_id']).strip('<>')}>",
+                    filename=filename,
+                    disposition="inline",
+                )
+            else:
+                message.add_attachment(content, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
 
         factory = self.smtp_factory
         if factory is None:
@@ -390,6 +433,17 @@ class MailClient:
             client.login(username, password)
             client.send_message(message, from_addr=envelope_from, to_addrs=[to_email])
         return str(message["Message-ID"])
+
+
+def _api_attachment(attachment: dict[str, Any]) -> dict[str, str]:
+    content = attachment.get("content")
+    filename = str(attachment.get("filename") or "").replace("\r", " ").replace("\n", " ").strip()
+    if not isinstance(content, bytes) or not content or not filename:
+        raise ValueError("Mail attachments require a non-empty filename and byte content")
+    result = {"filename": filename, "content": base64.b64encode(content).decode("ascii")}
+    if attachment.get("content_id"):
+        result["content_id"] = str(attachment["content_id"]).strip("<>")[:127]
+    return result
 
 
 def _smtp_metadata_header(key: Any) -> str | None:

@@ -132,3 +132,19 @@ def test_send_readiness_uses_current_icp_assessment_instead_of_stale_import_scor
 
     assert readiness["ok"]
     assert readiness["score"] == 62
+
+
+def test_strict_automation_requires_named_decision_maker_and_higher_score():
+    contact = {
+        "company_name": "Luxury Store",
+        "job_title": "Procurement Manager",
+        "email": "pat@example.com",
+        "email_status": "valid",
+        "lead_score": 80,
+    }
+
+    readiness = send_readiness(contact, strict_automation=True)
+
+    assert not readiness["ok"]
+    assert "missing_person_identity" in readiness["reasons"]
+    assert "title_not_decision_role" in readiness["reasons"]

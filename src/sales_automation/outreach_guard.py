@@ -27,6 +27,8 @@ ROLE_BASED_PREFIXES = {
 DECISION_TITLE_KEYWORDS = {
     "bd",
     "business development",
+    "buyer",
+    "category director",
     "ceo",
     "chairman",
     "channel",
@@ -34,6 +36,9 @@ DECISION_TITLE_KEYWORDS = {
     "co-founder",
     "cofounder",
     "director",
+    "dealer",
+    "distributor",
+    "franchise",
     "founder",
     "head",
     "managing director",
@@ -42,7 +47,7 @@ DECISION_TITLE_KEYWORDS = {
     "partnership",
     "president",
     "principal",
-    "procurement",
+    "merchandis",
     "retail",
     "sales director",
     "vp",
@@ -107,7 +112,12 @@ def is_low_value_title(title: str | None) -> bool:
     return bool(normalized) and any(keyword in normalized for keyword in LOW_VALUE_TITLE_KEYWORDS)
 
 
-def send_readiness(contact: dict[str, Any], *, min_score: int = 50) -> dict[str, Any]:
+def send_readiness(
+    contact: dict[str, Any],
+    *,
+    min_score: int = 50,
+    strict_automation: bool = False,
+) -> dict[str, Any]:
     reasons: list[str] = []
     warnings: list[str] = []
     email = str(contact.get("email") or "")
@@ -129,6 +139,12 @@ def send_readiness(contact: dict[str, Any], *, min_score: int = 50) -> dict[str,
         reasons.append("low_value_title")
     elif contact.get("job_title") and not is_decision_title(contact.get("job_title")):
         warnings.append("title_not_decision_role")
+    if strict_automation:
+        if not (contact.get("first_name") or contact.get("last_name")):
+            reasons.append("missing_person_identity")
+        if not is_decision_title(contact.get("job_title")):
+            reasons.append("title_not_decision_role")
+        min_score = max(70, min_score)
     score = lead_quality_score(contact)
     if score < min_score:
         reasons.append("lead_score_below_threshold")

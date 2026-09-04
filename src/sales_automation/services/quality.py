@@ -32,8 +32,14 @@ class OutboundQualityService:
         profile = self.repo.get_active_icp_profile() if hasattr(self.repo, "get_active_icp_profile") else None
         return score_lead_list(rows, profile)
 
-    def review_draft(self, subject: str, body: str) -> dict[str, Any]:
-        return review_email_copy(subject, body)
+    def review_draft(
+        self,
+        subject: str,
+        body: str,
+        *,
+        contact: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return review_email_copy(subject, body, contact=contact)
 
     def experiment_assignment(
         self,

@@ -143,7 +143,7 @@ def outreach_framework(contact: dict[str, Any]) -> dict[str, str]:
         "intent": f"Assess whether {company} could consider operating a local VERTU boutique or selective distribution channel.",
         "business_match": business_match,
         "our_value": "Position VERTU headquarters as a practical partner for a differentiated luxury category, local boutique model, and selective distribution plan without promising a commercial outcome.",
-        "low_barrier_ask": "Ask permission to send a one-page local-market partnership outline; do not request a meeting or call in the first email.",
+        "low_barrier_ask": "Offer a market-specific partnership deck or ask whether a short discussion would be useful; keep one clear, low-pressure next step.",
         "close": "Keep the ending direct, polite, and easy to say yes/no to.",
     }
 
@@ -183,7 +183,7 @@ def pain_point_strategy(contact: dict[str, Any]) -> dict[str, str]:
         "outreach_angle": angle,
         "message_hook": _message_hook(contact, pain),
         "evidence_to_use": context.get("hiring_signal_summary") or context.get("seed_reason") or proof,
-        "question_to_ask": f"May I send a one-page view of how a VERTU boutique or selective distribution model could be assessed for {company}'s market?",
+        "question_to_ask": f"Would it be useful if I sent a brief market-specific partnership deck for {company}, covering the channel model, product mix, and next steps?",
         "avoid": f"Do not claim {company} has a confirmed problem unless it appears in source notes; frame it as a practical fit question for {role}.",
     }
 
@@ -225,7 +225,7 @@ def _message_hook(contact: dict[str, Any], pain: str) -> str:
     if context.get("hiring_signal_summary"):
         return f"I noticed a public hiring signal relevant to {company}: {context['hiring_signal_summary']}"
     if context.get("seed_reason"):
-        return f"I noticed {company} in our account research: {context['seed_reason']}"
+        return f"A relevant point for {company}: {context['seed_reason']}"
     category = context.get("seed_category") or contact.get("industry")
     if category:
         return f"I noticed {company} is relevant to {category}; this usually means the right premium category must protect margin, service quality, and customer fit."
@@ -236,7 +236,7 @@ def _business_match_sentence(company: str, role: str, source_context: dict[str, 
     if source_context.get("hiring_signal_summary"):
         return f"I noticed recent public hiring activity around {company}; your role as {role} looks relevant to a selective channel discussion."
     if source_context.get("seed_reason"):
-        return f"I noticed {company} in our market research: {source_context['seed_reason']}"
+        return f"A relevant point for {company}: {source_context['seed_reason']}"
     category = source_context.get("seed_category") or str(industry or "").strip()
     if category:
         return f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."

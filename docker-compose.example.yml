@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     ports:
       - "8765:8765"
-    environment:
+    environment: &salesbot-environment
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER}
@@ -43,3 +43,40 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  mailbox-worker:
+    build: .
+    restart: unless-stopped
+    environment: *salesbot-environment
+    command: >
+      sh -ec 'while true; do
+        salesbot mailbox-poll --config config.yaml --limit 200;
+        touch /tmp/salesbot-worker-success;
+        sleep "$${MAILBOX_POLL_INTERVAL_SECONDS:-60}";
+      done'
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/salesbot-worker-success -mmin -3 -print -quit | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
+
+  scheduler-worker:
+    build: .
+    restart: unless-stopped
+    environment: *salesbot-environment
+    command: >
+      sh -ec 'while true; do
+        salesbot scheduler --config config.yaml
+          --enrich-limit "$${SALESBOT_SCHEDULER_ENRICH_LIMIT:-100}"
+          --queue-limit "$${SALESBOT_SCHEDULER_QUEUE_LIMIT:-100}"
+          --send-limit "$${SALESBOT_SCHEDULER_SEND_LIMIT:-0}";
+        touch /tmp/salesbot-worker-success;
+        sleep "$${SALESBOT_SCHEDULER_INTERVAL_SECONDS:-300}";
+      done'
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/salesbot-worker-success -mmin -15 -print -quit | grep -q ."]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 5m

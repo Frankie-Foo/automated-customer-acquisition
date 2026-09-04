@@ -69,6 +69,7 @@ function CustomerWorkspace() {
 
   const contact = detail?.contact;
   const activities = detail?.activities || [];
+  const emailReady = Boolean(contact?.email) && contact?.email_status === "valid";
 
   const loadSuggestions = useCallback(async () => {
     const responses = await Promise.all([
@@ -294,53 +295,30 @@ function CustomerWorkspace() {
     <>
       <div className="followup-head">
         <div>
-          <span className="eyebrow">Customer workspace</span>
-          <h2>客户生命周期工作台</h2>
+          <span className="eyebrow">邮件工作台</span>
+          <h2>审核并发送邮件</h2>
         </div>
-        <p>记录真实沟通与成交进展；邮件送达、打开、退信只属于触达反馈。</p>
+        <p>一次只处理一个客户。系统准备资料和草稿，你确认后发送。</p>
       </div>
       {!contact ? (
         <div className="workspace-empty workspace-picker">{loading ? "正在加载客户..." : <><strong>选择一个待触达客户</strong><span>队列按“待审核 → 已审核可发送 → 待生成草稿”排列。</span>{suggestions.length ? <div className="workspace-suggestions">{suggestions.map((item) => <button type="button" key={item.id} onClick={() => loadDetail(item.id)}><span><b>{[item.first_name, item.last_name].filter(Boolean).join(" ") || item.company_name}</b><small>{item.company_name || item.company_domain || ""}</small></span><em>{draftActionLabel(item)}</em></button>)}</div> : <a className="empty-state-action" href="#research">去领取或核验客户</a>}</>}</div>
       ) : (
-        <div className="workspace-content">
+        <div className="workspace-content novice-workspace">
           {error && <div className="admin-alert is-error">{error}</div>}
+          <WorkspaceContactSummary contact={contact} emailReady={emailReady} />
           <WorkflowStrip contact={contact} research={detail?.research} draft={detail?.draft} feedback={detail?.feedback} />
-          <WorkspaceProfile
+          <CustomerJourneyPanel
             contact={contact}
             research={detail?.research}
-            onResearch={() => guarded(researchContact)}
-            onAdoptEmail={(email) => guarded(() => adoptEmail(email))}
-            onIcpFeedback={(expected) => guarded(() => reviewIcp(expected))}
+            activities={activities}
+            journey={detail?.journey}
+            feedback={detail?.feedback}
           />
-          <div className="workspace-form">
-            <div className="workspace-stage-note wide" role="note">
-              <strong>更新客户生命周期</strong>
-              <span>按客户真实进展选择阶段。邮件打开不代表客户已回复，也不会自动升级阶段。</span>
-            </div>
-            <label>客户生命周期阶段
-              <select value={stage} onChange={(event) => setStage(event.target.value)}>
-                {lifecycleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
-            <label>记录类型
-              <select value={activityType} onChange={(event) => setActivityType(event.target.value)}>
-                {activityTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
-            <label className="wide">阶段记录
-              <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="粘贴客户回复、会议纪要、订单信息、协议条款、门店资料等" />
-            </label>
-            <div className="panel-actions">
-              <button type="button" disabled={loading} onClick={() => guarded(saveActivity)}>保存记录</button>
-              <button type="button" disabled={loading} className="primary" onClick={() => guarded(() => analyzeStage())}>AI 分析阶段</button>
-            </div>
-          </div>
-          <StageAnalysis analysis={analysis} />
           <div className="email-composer">
             <div className="composer-head">
               <div>
-                <strong>邮件跟进</strong>
-                <span>可以自定义邮件内容，或让 AI 根据客户线索和阶段记录生成个性化邮件。</span>
+                <strong>{Number(contact.sequence_step || 0) > 0 ? "准备下一封邮件" : "准备第一封邮件"}</strong>
+                <span>{emailReady ? `收件人：${contact.email}` : "该客户还没有已验证邮箱，请先补齐联系方式。"}</span>
               </div>
               <label>模式
                 <select value={emailMode} onChange={(event) => { setEmailMode(event.target.value); setApproved(false); }}>
@@ -355,17 +333,70 @@ function CustomerWorkspace() {
             <CopyQualityReview review={qualityReview} />
             <div className={`draft-approval ${approved ? "approved" : "pending"}`}><strong>{approved ? "草稿已审核锁定" : "草稿尚未审核"}</strong><span>{approved ? "若修改主题或正文，需要重新审核。" : "检查收件人、事实依据、主题和正文后再锁定发送。"}</span></div>
             <div className="panel-actions">
-              <button type="button" disabled={loading} onClick={() => guarded(draftEmail)}>{loading ? (operationLabel || "处理中...") : (emailMode === "ai" ? "调研并生成草稿" : "套用自定义草稿")}</button>
-              <button type="button" disabled={loading} onClick={() => guarded(approveEmail)}>审核并锁定</button>
-              <button type="button" disabled={loading || !approved} className="primary" onClick={() => guarded(sendCustomEmail)}>发送已审核邮件</button>
+              <button type="button" disabled={loading || !emailReady} onClick={() => guarded(draftEmail)}>{loading ? (operationLabel || "处理中...") : (emailMode === "ai" ? "1 生成邮件" : "1 套用内容")}</button>
+              <button type="button" disabled={loading || !emailReady} onClick={() => guarded(approveEmail)}>2 确认内容</button>
+              <button type="button" disabled={loading || !approved || !emailReady} className="primary" onClick={() => guarded(sendCustomEmail)}>3 发送邮件</button>
             </div>
             {!approved && <p className="composer-send-note">发送按钮会在草稿审核锁定后启用，避免误发未确认内容。</p>}
             {loading && operationLabel && <div className="composer-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{operationLabel}</strong><small>实时调研和 AI 生成通常需要 10-30 秒，请勿重复点击。</small></div></div>}
           </div>
-          <ActivityList activities={activities} onAnalyze={(activityId) => guarded(() => analyzeStage({ activity_id: activityId }))} />
+          <details className="workspace-details" open={!emailReady}>
+            <summary><span><strong>客户资料与联系方式</strong><small>{emailReady ? "已具备发信条件，可按需查看依据" : "需要先找到并验证邮箱"}</small></span><b>{emailReady ? "已就绪" : "待处理"}</b></summary>
+            <WorkspaceProfile
+              contact={contact}
+              research={detail?.research}
+              onResearch={() => guarded(researchContact)}
+              onAdoptEmail={(email) => guarded(() => adoptEmail(email))}
+              onIcpFeedback={(expected) => guarded(() => reviewIcp(expected))}
+            />
+          </details>
+          <details className="workspace-details">
+            <summary><span><strong>记录客户进展</strong><small>客户回复、会议或订单有新进展时再填写</small></span><b>{activities.length} 条</b></summary>
+            <div className="workspace-form">
+              <div className="workspace-stage-note wide" role="note">
+                <strong>更新客户生命周期</strong>
+                <span>按客户真实进展选择阶段。邮件打开不代表客户已回复。</span>
+              </div>
+              <label>客户生命周期阶段
+                <select value={stage} onChange={(event) => setStage(event.target.value)}>
+                  {lifecycleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label>记录类型
+                <select value={activityType} onChange={(event) => setActivityType(event.target.value)}>
+                  {activityTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label className="wide">发生了什么
+                <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="粘贴客户回复、会议纪要、订单信息等" />
+              </label>
+              <div className="panel-actions">
+                <button type="button" disabled={loading} onClick={() => guarded(saveActivity)}>保存进展</button>
+                <button type="button" disabled={loading} className="primary" onClick={() => guarded(() => analyzeStage())}>分析下一步</button>
+              </div>
+            </div>
+            <StageAnalysis analysis={analysis} />
+            <ActivityList activities={activities} onAnalyze={(activityId) => guarded(() => analyzeStage({ activity_id: activityId }))} />
+          </details>
         </div>
       )}
     </>
+  );
+}
+
+function WorkspaceContactSummary({ contact, emailReady }) {
+  return (
+    <section className="workspace-contact-summary">
+      <div>
+        <span className="eyebrow">当前客户</span>
+        <h3>{fullName(contact)}</h3>
+        <p>{contact.job_title || "职位待确认"} · {contact.company_name || contact.company_domain || "公司待确认"}</p>
+      </div>
+      <div className={`workspace-readiness ${emailReady ? "ready" : "waiting"}`}>
+        <strong>{emailReady ? "可以准备邮件" : "先补齐邮箱"}</strong>
+        <span>{emailReady ? contact.email : "系统不会向未验证邮箱发信"}</span>
+      </div>
+    </section>
   );
 }
 
@@ -409,6 +440,198 @@ function WorkflowStrip({ contact, research, draft, feedback }) {
     <header><strong>触达执行进度</strong><span>用于准备和发送邮件，不等于客户生命周期</span></header>
     <div className="workflow-strip">{steps.map(([label, done, note], index) => <article key={label} className={done ? "done" : "pending"}><b>{index + 1}</b><div><strong>{label}</strong><span>{note}</span></div></article>)}</div>
   </section>;
+}
+
+function CustomerJourneyPanel({ contact, research, activities, journey = {}, feedback = {} }) {
+  const sources = journey.sources || [];
+  const messages = journey.messages || [];
+  const events = journey.events || [];
+  const interactions = journey.interactions || [];
+  const tasks = journey.tasks || [];
+  const openTask = tasks.find((task) => task.status === "open");
+  const timeline = buildCustomerTimeline({ sources, messages, events, interactions, activities, tasks, research });
+  const primarySource = sources[0];
+  const rawFields = usefulRawFields(primarySource?.raw_data);
+
+  return (
+    <section className="customer-journey" aria-labelledby="customer-journey-title">
+      <header className="customer-journey-head">
+        <div>
+          <span className="eyebrow">客户全景</span>
+          <h3 id="customer-journey-title">从线索到成交的完整记录</h3>
+        </div>
+        <span>{timeline.length} 条动态</span>
+      </header>
+      <div className="customer-journey-overview">
+        <section>
+          <strong>线索来源</strong>
+          <b>{sourceLabel(primarySource?.source_type || contact.source)}</b>
+          <span>{primarySource?.campaign_name || primarySource?.source_ref || "系统客户库"}</span>
+          {primarySource?.source_row && <small>原文件第 {primarySource.source_row} 行</small>}
+        </section>
+        <section>
+          <strong>联系方式</strong>
+          <b>{contact.email || "邮箱待补齐"}</b>
+          <span>{contact.phone || contact.linkedin_url || "电话与社媒待补齐"}</span>
+          <small>{contact.email_status || "unknown"} · 身份置信度 {contact.identity_confidence || "--"}</small>
+        </section>
+        <section>
+          <strong>触达反馈</strong>
+          <b>发送 {Number(feedback.sent || 0)} · 打开 {Number(feedback.opened || 0)} · 回复 {Number(feedback.replied || 0)}</b>
+          <span>{feedback.last_event_type ? `最近：${eventLabel(feedback.last_event_type)}` : "等待首次触达"}</span>
+          <small>{formatDate(feedback.last_event_at) || "暂无回流"}</small>
+        </section>
+        <section>
+          <strong>当前推进</strong>
+          <b>{lifecycleLabels[contact.lifecycle_stage] || contact.lifecycle_stage || "陌生线索"}</b>
+          <span>{openTask?.title || "暂无待办"}</span>
+          <small>{openTask?.due_at ? `截止 ${formatDate(openTask.due_at)}` : `SABCD：${contact.sabcd_stage || "D"}`}</small>
+        </section>
+      </div>
+      {rawFields.length > 0 && (
+        <details className="source-record">
+          <summary>查看原始导入资料</summary>
+          <dl>{rawFields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{displayValue(value)}</dd></div>)}</dl>
+        </details>
+      )}
+      <div className="customer-timeline" role="region" aria-label="客户完整时间线">
+        {timeline.length ? timeline.slice(0, 40).map((item) => <TimelineItem key={item.key} item={item} />) : (
+          <div className="customer-timeline-empty">客户还没有动态。完成背调、发送邮件或记录沟通后，会自动出现在这里。</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TimelineItem({ item }) {
+  return (
+    <article className={`customer-timeline-item tone-${item.tone || "neutral"}`}>
+      <span className="timeline-marker" aria-hidden="true" />
+      <div>
+        <header><strong>{item.title}</strong><time>{formatDate(item.at)}</time></header>
+        {item.summary && <p>{item.summary}</p>}
+        {item.body && <details><summary>查看内容</summary><pre>{item.body}</pre></details>}
+      </div>
+    </article>
+  );
+}
+
+function buildCustomerTimeline({ sources, messages, events, interactions, activities, tasks, research }) {
+  const rows = [];
+  sources.forEach((source) => rows.push({
+    key: `source-${source.id}`,
+    at: source.created_at,
+    title: "线索进入系统",
+    summary: [sourceLabel(source.source_type), source.campaign_name, source.source_row ? `第 ${source.source_row} 行` : ""].filter(Boolean).join(" · "),
+    tone: "source",
+  }));
+  if (research?.researched_at) rows.push({
+    key: "research",
+    at: research.researched_at,
+    title: "完成客户背调",
+    summary: `${research.summary || "已更新公司、人物与新闻证据"}${Array.isArray(research.sources) ? ` · ${research.sources.length} 条来源` : ""}`,
+    tone: "research",
+  });
+  messages.forEach((message) => rows.push({
+    key: `message-${message.id}`,
+    at: message.sent_at || message.created_at,
+    title: `${message.status === "draft" ? "生成邮件草稿" : "邮件触达"} · 第 ${message.sequence_step || 1} 封`,
+    summary: [message.subject, outreachStatusLabel(message.status), message.provider].filter(Boolean).join(" · "),
+    body: message.body,
+    tone: message.bounced_at || message.error ? "risk" : message.replied_at ? "reply" : "email",
+  }));
+  events.filter((event) => event.event_type !== "sent").forEach((event) => rows.push({
+    key: `event-${event.id}`,
+    at: event.occurred_at,
+    title: eventLabel(event.event_type),
+    summary: [event.email_subject, event.sequence_step ? `第 ${event.sequence_step} 封` : ""].filter(Boolean).join(" · "),
+    tone: ["bounced", "complained", "unsubscribed"].includes(event.event_type) ? "risk" : event.event_type === "replied" ? "reply" : "event",
+  }));
+  interactions.forEach((interaction) => rows.push({
+    key: `interaction-${interaction.id}`,
+    at: interaction.occurred_at,
+    title: `${interaction.direction === "inbound" ? "客户" : "销售"}${interactionLabel(interaction.interaction_type, interaction.channel)}`,
+    summary: [interaction.subject, interaction.outcome].filter(Boolean).join(" · "),
+    body: interaction.content,
+    tone: interaction.direction === "inbound" ? "reply" : "interaction",
+  }));
+  activities.forEach((activity) => rows.push({
+    key: `activity-${activity.id}`,
+    at: activity.created_at,
+    title: `生命周期推进至 ${lifecycleLabels[activity.lifecycle_stage] || activity.lifecycle_stage}`,
+    summary: activityTypeLabel(activity.activity_type),
+    body: activity.content,
+    tone: "stage",
+  }));
+  tasks.forEach((task) => rows.push({
+    key: `task-${task.id}`,
+    at: task.completed_at || task.created_at,
+    title: task.status === "completed" ? "完成跟进任务" : task.status === "cancelled" ? "取消跟进任务" : "创建跟进任务",
+    summary: [task.title, task.due_at ? `截止 ${formatDate(task.due_at)}` : "", priorityLabel(task.priority)].filter(Boolean).join(" · "),
+    body: task.description,
+    tone: task.status === "open" ? "task" : "neutral",
+  }));
+  return rows.filter((row) => row.at).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+}
+
+function usefulRawFields(rawData) {
+  if (!rawData || typeof rawData !== "object" || Array.isArray(rawData)) return [];
+  return Object.entries(rawData)
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim())
+    .slice(0, 18);
+}
+
+function displayValue(value) {
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
+function sourceLabel(source) {
+  return {
+    csv: "CSV 导入",
+    excel: "Excel 导入",
+    company_seed_import: "公司种子导入",
+    linkedin_public_search: "LinkedIn 公网搜索",
+    manual: "手工录入",
+    api: "API 导入",
+  }[source] || source || "未知来源";
+}
+
+function eventLabel(event) {
+  return {
+    delivered: "邮件已送达",
+    opened: "客户打开邮件",
+    clicked: "客户点击链接",
+    replied: "客户回复邮件",
+    bounced: "邮件退信",
+    complained: "客户投诉",
+    unsubscribed: "客户退订",
+    sent: "邮件已发送",
+  }[event] || event || "邮件动态";
+}
+
+function outreachStatusLabel(status) {
+  return {
+    draft: "草稿",
+    approved: "已审核",
+    sent: "已发送",
+    delivered: "已送达",
+    opened: "已打开",
+    replied: "已回复",
+    bounced: "已退信",
+    failed: "发送失败",
+  }[status] || status || "待处理";
+}
+
+function interactionLabel(type, channel) {
+  if (channel === "phone") return "电话沟通";
+  if (channel === "whatsapp") return " WhatsApp 沟通";
+  if (channel === "email") return "邮件沟通";
+  return `记录${activityTypeLabel(type)}`;
+}
+
+function priorityLabel(priority) {
+  return { urgent: "紧急", high: "高优先", normal: "普通", low: "低优先" }[priority] || priority || "";
 }
 
 function refreshRelatedViews() {
@@ -619,9 +842,11 @@ function CopyQualityReview({ review }) {
         <div className="copy-quality-rules" aria-label="冷邮件写作规则">
           <span className={review.rules.peer_to_peer ? "pass" : "fail"}>同行语气</span>
           <span className={review.rules.word_count_in_range ? "pass" : "fail"}>
-            正文 {Number(review.rules.prospect_word_count || 0)} 词（目标 70-100）
+            正文 {Number(review.rules.prospect_word_count || 0)} 词（目标 {(review.rules.target_word_range || [100, 220]).join("-")}）
           </span>
           <span className={review.rules.single_low_friction_cta ? "pass" : "fail"}>单一低门槛 CTA</span>
+          <span className={review.rules.recipient_name_matched !== false ? "pass" : "fail"}>客户姓名匹配</span>
+          <span className={review.rules.company_matched !== false ? "pass" : "fail"}>客户公司匹配</span>
         </div>
       )}
       {issues.length > 0 && (
@@ -642,12 +867,21 @@ function copyIssueLabel(issue) {
     missing_subject: "缺少具体主题",
     body_too_short: "正文太短，缺少价值信息和明确问题",
     body_too_long: "正文过长，建议压缩",
-    body_below_target_words: "正文少于 70 词，补足一条真实观察或本地渠道价值",
-    body_above_target_words: "正文超过 100 词，删除重复介绍和泛化宣传（产品图已展示品类）",
+    body_below_target_words: "正文少于 100 词，补足真实客户事实、渠道价值或合作路径",
+    body_above_target_words: "正文超过 220 词，删除重复介绍和泛化宣传",
     unresolved_placeholders: "存在未处理的模板变量",
     internal_data_exposed: "正文暴露了内部评分、核验或来源字段",
+    recipient_name_mismatch: "称呼与当前客户姓名不一致",
+    company_not_grounded: "邮件没有明确对应当前客户公司",
     fake_urgency: "存在人为制造紧迫感的措辞",
     unverifiable_return: "包含无法核实的收益承诺",
+    unsupported_travel_or_meeting: "包含无依据的行程或会面安排，已禁止发送",
+    unsupported_case_study: "包含无来源支撑的客户案例，已禁止发送",
+    unsupported_product_news: "包含无来源支撑的产品发布或新闻，已禁止发送",
+    unsupported_market_stat: "包含未经核实的市场规模、预测或比例，已禁止发送",
+    unsupported_local_commitment: "包含未经批准的本地组装或制造承诺，已禁止发送",
+    unsupported_partner_progress: "包含未经核实的在谈伙伴或筛选进度，已禁止发送",
+    unsupported_partner_deadline: "包含未经确认的伙伴筛选截止日期，已禁止发送",
     generic_flattery: "开场赞美过于泛化",
     template_cliche: "包含明显模板化开场",
     salesy_pitch: "语气像推销广告，改成同行之间的商业判断",
@@ -655,7 +889,7 @@ function copyIssueLabel(issue) {
     subject_all_caps: "主题包含连续大写词",
     missing_question: "缺少低门槛的确认问题",
     too_many_questions: "问题过多，只保留一个主要行动指令",
-    high_friction_cta: "首封不要直接约会；改为询问是否可发送一页合作思路",
+    high_friction_cta: "首封不要强行约会；改为市场合作方案或简短沟通",
     missing_unsubscribe: "缺少退订链接",
     missing_greeting: "缺少自然称呼",
     missing_cta: "缺少清晰且低门槛的下一步",
@@ -667,7 +901,7 @@ function copyIssueLabel(issue) {
     malformed_placeholder: "模板变量格式不正确",
     weak_personalization: "个性化信息不足",
   };
-  return detail || labels[code] || String(code || "需要人工复核");
+  return labels[code] || detail || String(code || "需要人工复核");
 }
 
 function fullName(contact) {
@@ -717,7 +951,7 @@ function formatDate(value) {
 function defaultEmailSubject(contact) {
   if (isInternalTestContact(contact)) return "[Test] Outbound Ops delivery and feedback flow";
   const company = contact?.company_name || "your business";
-  return `Possible Vertu channel fit for ${company}`;
+  return `VERTU x ${company} — ${defaultRecipientMandate(contact).subjectAngle}`;
 }
 
 function defaultEmailBody(contact) {
@@ -745,16 +979,22 @@ function defaultEmailBody(contact) {
   const matchLine = reason
     ? `I noticed ${company} in our market research: ${reason}`
     : `I noticed ${company} is relevant to ${category}, and your role as ${role} looks close to channel or commercial decisions.`;
+  const routes = defaultPartnershipRoutes(contact);
+  const mandate = defaultRecipientMandate(contact);
   return [
     `Hi ${firstName},`,
     "",
-    matchLine,
+    `I’m {{sender_name}} from VERTU’s international channel development team. ${matchLine}`,
     "",
-    "From VERTU headquarters, I work with prospective local partners on whether a VERTU boutique or selective distribution model could suit their market.",
+    "The opportunity is not simply to add another device brand. VERTU can extend an existing relationship with affluent customers across luxury smartphones, watches, jewelry, fine leather goods and connected luxury products, supported by a boutique-level service model.",
     "",
-    "VERTU combines luxury mobile products, accessories and a differentiated retail experience for high-value customers. For the right operator, this can create a distinct premium category alongside an existing luxury portfolio, subject to a practical local market plan.",
+    `For ${company}, two practical routes may be worth assessing:`,
+    `1. ${routes[0]}`,
+    `2. ${routes[1]}`,
     "",
-    `May I send a one-page view of how a VERTU channel partnership could be assessed for ${company}'s market?`,
+    `Given your responsibility for ${mandate.responsibility}, the useful question is ${mandate.decisionQuestion}.`,
+    "",
+    `Would it be useful if I sent a brief market-specific partnership deck covering the channel model, product mix and next steps?`,
     "",
     "Best regards,",
     "{{sender_name}} You",
@@ -762,6 +1002,61 @@ function defaultEmailBody(contact) {
     "",
     "Unsubscribe: {{unsubscribe_url}}",
   ].join("\n");
+}
+
+function defaultPartnershipRoutes(contact) {
+  const context = contact?.source_context || {};
+  const text = [contact?.industry, context.seed_category, context.seed_reason, contact?.company_name].filter(Boolean).join(" ").toLowerCase();
+  if (/automotive|dealer|supercar|luxury car/.test(text)) return [
+    "a selective VERTU shop-in-shop or VIP display within the premium automotive network",
+    "a regional distribution and client-activation model for existing high-value customers",
+  ];
+  if (/watch|jewelry|jewellery|boutique|fashion/.test(text)) return [
+    "a curated VERTU category alongside the existing luxury portfolio",
+    "a boutique, shop-in-shop or private-client event model built around VIP customers",
+  ];
+  if (/hotel|hospitality|resort|concierge/.test(text)) return [
+    "a concierge, VIP gifting or private-client experience",
+    "a selective retail or shop-in-shop format for affluent guests",
+  ];
+  return [
+    "selective local distribution with a controlled premium positioning",
+    "a boutique or shop-in-shop model aligned with the existing customer base",
+  ];
+}
+
+function defaultRecipientMandate(contact) {
+  const title = String(contact?.job_title || "").toLowerCase();
+  if (/owner|founder|ceo|president|chairman|general manager/.test(title)) return {
+    responsibility: "growth, portfolio strategy and partner economics",
+    decisionQuestion: "whether VERTU creates a credible adjacent luxury category rather than operational distraction",
+    subjectAngle: "strategic growth paths",
+  };
+  if (/buyer|buying|procurement|merchand|category/.test(title)) return {
+    responsibility: "assortment, customer fit and commercial performance",
+    decisionQuestion: "which product mix and trial format could complement the existing portfolio",
+    subjectAngle: "portfolio fit",
+  };
+  if (/retail|store|franchise|operations|channel/.test(title)) return {
+    responsibility: "store format, service standards and rollout execution",
+    decisionQuestion: "which boutique or shop-in-shop model can be operated consistently in the local network",
+    subjectAngle: "retail format",
+  };
+  if (/marketing|brand|communications|crm|clienteling/.test(title)) return {
+    responsibility: "brand relevance, VIP engagement and customer activation",
+    decisionQuestion: "how VERTU can create a credible private-client story and activation plan",
+    subjectAngle: "VIP client activation",
+  };
+  if (/design|product|technology|technical|engineering/.test(title)) return {
+    responsibility: "product experience, differentiation and technical delivery",
+    decisionQuestion: "where product experience and luxury craftsmanship can create a meaningful collaboration",
+    subjectAngle: "product collaboration",
+  };
+  return {
+    responsibility: "commercial development and local partner selection",
+    decisionQuestion: "which cooperation model best fits the customer base and local operation",
+    subjectAngle: "partnership options",
+  };
 }
 
 function isInternalTestContact(contact) {

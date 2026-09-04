@@ -2,11 +2,13 @@ Hi {{first_name}},
 
 {{ai_opener}}
 
-Based on that context, I wanted to ask whether a discreet Vertu partnership or overseas channel cooperation is worth exploring.
+I work with VERTU's international channel development team. We assess local partners whose existing customers already value premium products, attentive service and a differentiated retail experience.
 
-If this is relevant, I can send a short idea tailored to {{company_name}}.
+For {{company_name}}, two practical routes may be worth assessing: {{partnership_route_1}}; or {{partnership_route_2}}. The purpose is not to assume a fit, but to understand whether VERTU's luxury smartphones, watches, jewelry, fine leather goods and connected luxury products could complement your current channel and customer relationships.
 
-Best,
+Given your responsibility for {{recipient_responsibility}}, would a short market-specific partnership discussion be useful?
+
+Best regards,
 {{sender_name}}
 
 Unsubscribe: {{unsubscribe_url}}

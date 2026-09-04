@@ -22,6 +22,7 @@ COPY templates ./templates
 COPY migrations ./migrations
 COPY scripts ./scripts
 COPY tools ./tools
+COPY assets ./assets
 COPY config.example.yaml ./config.yaml
 
 RUN for attempt in 1 2 3; do \

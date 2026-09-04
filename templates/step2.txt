@@ -1,10 +1,14 @@
 Hi {{first_name}},
 
-Quick follow-up on my note about {{company_name}}.
+I am following up on my note about whether VERTU could fit {{company_name}}'s existing premium customer channel.
 
-Would it be useful if I shared a concise example of how similar teams reduce manual prospecting work?
+The relevant question is not simply whether to add another product line. It is whether a selective VERTU format can complement the customer relationships, retail standards and service model that {{company_name}} already operates. Two routes appear practical for assessment: {{partnership_route_1}}; or {{partnership_route_2}}.
 
-Best,
+VERTU's portfolio spans luxury smartphones, watches, jewelry, fine leather goods and connected luxury products. Any cooperation would still need to be evaluated against local demand, product mix, store format and operating responsibilities rather than assumed in advance.
+
+Given your responsibility for {{recipient_responsibility}}, would you prefer a brief market partnership outline or a short initial discussion?
+
+Best regards,
 {{sender_name}}
 
 Unsubscribe: {{unsubscribe_url}}

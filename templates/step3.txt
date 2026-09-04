@@ -1,10 +1,14 @@
 Hi {{first_name}},
 
-I will close the loop here.
+I will close the loop on my earlier notes about a possible VERTU partnership with {{company_name}}.
 
-If outbound automation becomes relevant for {{company_name}}, I am happy to share a practical checklist.
+The commercial rationale remains specific: an existing premium channel may be able to extend its relationship with affluent customers through luxury smartphones, watches, jewelry, fine leather goods and connected luxury products. For {{company_name}}, the most relevant structures to evaluate would be {{partnership_route_1}} or {{partnership_route_2}}.
 
-Best,
+This is only a channel-fit hypothesis. It would need to be tested against your local customer profile, portfolio priorities, retail format and service expectations before either side assumes a business case.
+
+If this is relevant to your responsibility for {{recipient_responsibility}}, would a short market-specific discussion be useful at a later point?
+
+Best regards,
 {{sender_name}}
 
 Unsubscribe: {{unsubscribe_url}}

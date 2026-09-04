@@ -7,6 +7,7 @@ from ..config import AppConfig
 from ..db import Repository
 from ..email_discovery import build_email_discovery_engine
 from ..logging_utils import log
+from ..outbound_quality import enrichment_readiness
 from ..provider_budget import ProviderBudgetGateway
 
 
@@ -19,6 +20,15 @@ class EnrichmentService:
         hunter, ninjapear, prospeo, proxycurl = self._clients()
         ok = failed = 0
         for contact in self.repo.list_for_enrichment(limit, user=user):
+            quality = enrichment_readiness(contact)
+            if not quality["ok"]:
+                log(
+                    "enrich.skipped_quality_gate",
+                    contact_id=contact.get("id"),
+                    reasons=quality["reasons"],
+                    score=quality["score"],
+                )
+                continue
             try:
                 self._enrich_and_save(contact, hunter, proxycurl, ninjapear, prospeo)
                 ok += 1

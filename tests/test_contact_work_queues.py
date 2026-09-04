@@ -54,9 +54,15 @@ def test_contact_list_applies_customer_intelligence_fallback():
 def test_approved_send_to_reply_advances_customer_lifecycle(monkeypatch):
     subject = "A practical channel idea for Example"
     body = (
-        "I noticed Example is expanding its premium retail portfolio. "
-        "Vertu may fit customers who value differentiated products and service. "
-        "Would a brief channel discussion be relevant this quarter?"
+        "Hi Ada,\n\nI noticed Example operates a premium retail portfolio serving customers who value differentiated "
+        "products and attentive service. I work with VERTU's international channel development team, assessing whether "
+        "existing luxury channels could support a selective local partnership. The commercial question is whether a "
+        "VERTU category can complement Example's customer relationships, portfolio and retail standards without adding "
+        "operational distraction. Two practical routes could be a controlled shop-in-shop format or selective local "
+        "distribution supported by private-client activation. Any option would need to be assessed against local demand, "
+        "product mix, service expectations and operating responsibilities rather than assumed in advance. Would a short "
+        "market-specific channel discussion be useful this quarter?\n\nBest regards,\nAda\n\n"
+        "Unsubscribe: {{unsubscribe_url}}"
     )
 
     class Repo:
@@ -153,8 +159,15 @@ def test_approved_send_to_reply_advances_customer_lifecycle(monkeypatch):
 def test_admin_send_uses_logged_in_admin_identity(monkeypatch):
     subject = "A relevant VERTU partnership idea"
     body = (
-        "I noticed your premium retail positioning and thought a selective VERTU partnership "
-        "could be relevant. Would a brief discussion be useful this quarter?"
+        "Hi Lead,\n\nI noticed Example operates in premium retail, where customer trust, service standards and a "
+        "differentiated store experience matter alongside the product portfolio. I work with VERTU's international "
+        "channel development team, assessing whether established luxury channels could support a selective local "
+        "partnership. The relevant question is whether VERTU can complement Example's current customer relationships "
+        "without creating operational distraction. Two routes could be a controlled shop-in-shop format or selective "
+        "distribution supported by private-client activation. Any option would need to be evaluated against local demand, "
+        "product mix, service expectations and operating responsibilities rather than assumed in advance. Would a short "
+        "market-specific discussion be useful this quarter?\n\nBest regards,\nAdmin\n\n"
+        "Unsubscribe: {{unsubscribe_url}}"
     )
     captured = {}
 

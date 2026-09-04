@@ -315,25 +315,23 @@ function ContactsPipeline() {
       {taskId?.length > 0 && <TaskScopeBanner taskIds={taskId} context={taskContext} contactCount={contacts.length} onClear={clearTaskScope} />}
       <div className="section-head">
         <div>
-          <span className="eyebrow">Pipeline</span>
+          <span className="eyebrow">客户队列</span>
           <h2>{filter === "public_pool" ? "公共客户池" : filter === "private_pool" && sessionUser.role === "manager" ? "团队客户" : filter === "mine" || filter === "private_pool" ? "我的客户" : "销售任务"}</h2>
-          <p>{filter === "public_pool" ? "先查看客户资料和质量，确认适合后领取到自己的客户池。" : "系统已经把客户分组，优先处理可发送和需确认的客户。"} <span className="sync-status">{lastSyncedAt ? `自动同步 ${formatSyncTime(lastSyncedAt)}` : "正在同步"}</span></p>
+          <p>{filter === "public_pool" ? "挑选合适客户并领取，领取后只有你能跟进。" : "按队列处理，不需要逐条理解技术状态。"} <span className="sync-status">{lastSyncedAt ? `更新于 ${formatSyncTime(lastSyncedAt)}` : "正在更新"}</span></p>
         </div>
         <div className="toolbar">
-          <label htmlFor="contact-status-filter">Status<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
-          <label htmlFor="contact-view-filter">视图<select id="contact-view-filter" name="contact_view" value={filter} onChange={(event) => { clearTaskScope(); setFilter(event.target.value); }}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
-          <label htmlFor="contact-search">Search<input id="contact-search" name="contact_search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="姓名、公司、邮箱、职位" /></label>
+          <label htmlFor="contact-status-filter">状态<select id="contact-status-filter" name="contact_status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{statuses.map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select></label>
+          <label htmlFor="contact-view-filter">客户范围<select id="contact-view-filter" name="contact_view" value={filter} onChange={(event) => { clearTaskScope(); setFilter(event.target.value); }}>{filters.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
+          <label htmlFor="contact-search">搜索<input id="contact-search" name="contact_search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="输入姓名或公司" /></label>
         </div>
       </div>
       <nav className="pipeline-quick-filters" aria-label="客户快捷筛选">
         {[
-          ["public_pool", "公共池"],
-          ["mine", "我的客户"],
-          ["auto_enrich", "系统可补"],
-          ["needs_review", "需人工确认"],
-          ["missing_draft", "待写草稿"],
-          ["draft_pending", "待审核"],
-          ["draft_approved", "可发送"],
+          ["mine", "全部"],
+          ["ready_to_send", "可以发邮件"],
+          ["auto_enrich", "系统继续处理"],
+          ["needs_review", "需要我确认"],
+          ["public_pool", "公共客户池"],
         ].map(([value, label]) => <button key={value} type="button" className={filter === value ? "active" : ""} aria-pressed={filter === value} onClick={() => { clearTaskScope(); setStatus(""); setSearch(""); setFilter(value); }}>{label}</button>)}
       </nav>
       <SalesWorkQueue contacts={contacts} activeFilter={filter} setFilter={(value) => { clearTaskScope(); setStatus(""); setSearch(""); setFilter(value); }} onBulkAction={runBulkAction} bulkBusy={bulkBusy} canBulkProcess={filter !== "public_pool"} />

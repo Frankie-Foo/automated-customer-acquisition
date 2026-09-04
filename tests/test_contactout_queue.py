@@ -36,6 +36,12 @@ class FakeRepo:
             "id": 7,
             "first_name": "Ada",
             "last_name": "Lovelace",
+            "job_title": "Founder",
+            "company_name": "Premium Retail Group",
+            "industry": "luxury retail",
+            "location": "London",
+            "identity_confidence": 90,
+            "source_context": {"seed_reason": "premium retail operator"},
             "linkedin_url": "https://www.linkedin.com/in/ada/?trk=test",
         }
         self.account = {"id": 3, "status": "active", "credential_ref": "contactout/ada"}
@@ -195,6 +201,22 @@ def test_auto_enqueue_reports_no_authorized_account_without_calling_provider():
     assert result["queued"] == 0
     assert result["skipped"] == [{"contact_id": 7, "reason": "contactout_account_unavailable"}]
     assert adapter.calls == 0
+
+
+def test_auto_enqueue_skips_low_quality_contact_before_spending_quota():
+    repo = FakeRepo()
+    repo.contact = {
+        "id": 7,
+        "company_name": "Appliance Manufacturer",
+        "linkedin_url": "https://www.linkedin.com/company/appliance",
+    }
+    repo.candidates = [{"id": 7, "owner_user_id": 2}]
+
+    result = ContactOutQueueService(config(), repo, adapter=Adapter()).auto_enqueue(1)
+
+    assert result["queued"] == 0
+    assert result["skipped"] == [{"contact_id": 7, "reason": "quality_gate:missing_role"}]
+    assert repo.jobs == []
 
 
 def test_exact_match_is_structured_for_conservative_promotion():
