@@ -181,6 +181,9 @@ def make_handler(config, repo: Repository):
             if parsed.path == "/api/summary":
                 self._json(lambda: repo.dashboard_summary(user=self._current_user()))
                 return
+            if parsed.path == "/api/loop-status":
+                self._json(lambda: repo.system_loop_status(user=self._current_user()))
+                return
             if parsed.path == "/api/owner-import-report":
                 self._json(lambda: repo.owner_import_report(user=self._current_user()))
                 return
@@ -1229,17 +1232,17 @@ def make_handler(config, repo: Repository):
                 def approve_email_draft() -> dict[str, Any]:
                     user = self._current_user()
                     contact_id = int(payload["contact_id"])
-                    if not repo.get_private_contact_for_user(contact_id, user):
+                    contact = repo.get_private_contact_for_user(contact_id, user)
+                    if not contact:
                         raise RuntimeError("Contact not found")
                     pending = repo.get_latest_email_draft(contact_id, user_id=int(user["id"]))
                     if not pending:
                         raise RuntimeError("No draft is available for approval")
-                    review = pending.get("quality_review") if isinstance(pending.get("quality_review"), dict) else {}
-                    if not review:
-                        review = OutboundQualityService(repo).review_draft(
-                            pending.get("subject") or "",
-                            pending.get("body") or "",
-                        )
+                    review = OutboundQualityService(repo).review_draft(
+                        pending.get("subject") or "",
+                        pending.get("body") or "",
+                        contact=contact,
+                    )
                     if review.get("status") == "blocked":
                         codes = ", ".join(
                             item.get("code", "quality_error")

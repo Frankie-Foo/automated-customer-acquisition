@@ -2,6 +2,7 @@ from sales_automation.outbound_quality import (
     assess_icp,
     calibration_summary,
     classify_reply,
+    enrichment_readiness,
     prospect_copy_word_count,
     review_email_copy,
     score_lead_list,
@@ -38,6 +39,49 @@ def test_icp_assessment_is_explainable_and_blocks_bad_roles():
     assert strong["breakdown"]["account_fit"] == 25
     assert weak["tier"] == "disqualified"
     assert "low_value_role" in weak["disqualifiers"]
+
+
+def test_icp_rejects_company_only_and_procurement_records_before_enrichment():
+    company_only = assess_icp({"company_name": "Luxury Store", "linkedin_url": "https://linkedin.com/company/store"})
+    procurement = enrichment_readiness(
+        {
+            "first_name": "Pat",
+            "last_name": "Lee",
+            "job_title": "Senior Procurement Manager",
+            "company_name": "Consumer Appliance Manufacturer",
+            "location": "Malaysia",
+            "linkedin_url": "https://linkedin.com/in/pat-lee",
+        },
+        paid=True,
+    )
+
+    assert company_only["tier"] == "disqualified"
+    assert {"missing_person_identity", "missing_role"} <= set(company_only["disqualifiers"])
+    assert not procurement["ok"]
+    assert procurement["score"] < 70
+
+
+def test_paid_enrichment_accepts_channel_decision_maker_without_email():
+    readiness = enrichment_readiness(_strong_contact(email=None, email_status="unknown"), paid=True)
+
+    assert readiness["ok"]
+    assert readiness["tier"] in {"priority", "qualified"}
+
+
+def test_paid_enrichment_accepts_explicit_dealer_role():
+    readiness = enrichment_readiness(
+        {
+            "first_name": "Carson",
+            "last_name": "L.",
+            "job_title": "Subsidiary Dealer",
+            "company_name": "DJI",
+            "location": "Malaysia",
+            "linkedin_url": "https://linkedin.com/in/carson",
+        },
+        paid=True,
+    )
+
+    assert readiness["ok"]
 
 
 def test_icp_qualified_flag_follows_the_configured_threshold():
@@ -109,6 +153,31 @@ def test_copy_review_accepts_concise_specific_email():
     assert review["rules"]["single_low_friction_cta"]
 
 
+def test_copy_review_blocks_draft_written_for_the_wrong_contact():
+    body = (
+        "Hi Bob,\n\nI work with VERTU's international channel development team. Another Retail's established "
+        "luxury customer channel may be relevant to a selective partnership assessment. The commercial question is "
+        "whether VERTU can complement the current portfolio, service model and retail experience without creating "
+        "operational distraction. Two routes could be a controlled shop-in-shop format or selective local distribution. "
+        "Any option would need validation against customer fit, location economics and operating responsibilities. "
+        "This is a working hypothesis rather than an assumption about the business. I can share a concise market-specific "
+        "outline covering the product mix, channel format and practical next steps for an initial assessment. Would that "
+        "be useful?\n\nBest regards,\nFrank\n\nUnsubscribe: {{unsubscribe_url}}"
+    )
+
+    review = review_email_copy(
+        "VERTU x Another Retail",
+        body,
+        contact={"first_name": "Amy", "company_name": "Premium Retail"},
+    )
+
+    assert review["status"] == "blocked"
+    assert {item["code"] for item in review["blocking_issues"]} >= {
+        "recipient_name_mismatch",
+        "company_not_grounded",
+    }
+
+
 def test_copy_review_flags_salesy_language_and_meeting_first_cta():
     review = review_email_copy(
         "Exclusive opportunity for Premium Retail",
@@ -139,6 +208,71 @@ def test_copy_review_blocks_unverifiable_commercial_returns():
 
     assert review["status"] == "blocked"
     assert "unverifiable_return" in {item["code"] for item in review["blocking_issues"]}
+
+
+def test_copy_review_hard_blocks_word_limits_and_fake_urgency():
+    too_short = review_email_copy(
+        "VERTU x Premium Retail",
+        "Hi Amy,\n\nWould a short market partnership discussion be useful?\n\n"
+        "Best regards,\nFrank\n\nUnsubscribe: {{unsubscribe_url}}",
+    )
+    fake_urgency = review_email_copy(
+        "VERTU x Premium Retail",
+        "Hi Amy,\n\nI work with VERTU's international channel team. Premium Retail's luxury channel may be relevant "
+        "to a selective boutique or distribution assessment. The purpose is to understand whether the customer base, "
+        "portfolio and service model support a credible adjacent category. We would assess product mix, local demand, "
+        "store format and operating responsibilities before either side assumes a business case. Two practical routes "
+        "could be a controlled shop-in-shop format or selective distribution for established private clients. This is "
+        "only a commercial hypothesis based on the stated channel profile. Act now because this is a limited time offer. "
+        "Would a short market-specific discussion be useful?\n\nBest regards,\nFrank\n\n"
+        "Unsubscribe: {{unsubscribe_url}}",
+    )
+
+    assert "body_below_target_words" in {item["code"] for item in too_short["blocking_issues"]}
+    assert "fake_urgency" in {item["code"] for item in fake_urgency["blocking_issues"]}
+
+
+def test_copy_review_blocks_unsupported_travel_cases_and_product_news():
+    base = (
+        "Hi Amy,\n\nI work with VERTU's international channel development team. Premium Retail's existing luxury "
+        "customer channel may be relevant to a selective partnership assessment. The commercial question is whether "
+        "VERTU can complement the current portfolio, service model and retail experience without creating operational "
+        "distraction. Two routes could be a controlled shop-in-shop format or selective local distribution. Any option "
+        "would need to be assessed against local demand, product mix, customer fit and operating responsibilities. "
+        "{claim} This is a working hypothesis rather than an assumed commercial outcome. Would a short market-specific "
+        "discussion be useful?\n\nBest regards,\nFrank\n\nUnsubscribe: {{{{unsubscribe_url}}}}"
+    )
+    claims = {
+        "unsupported_travel_or_meeting": "I will be visiting Singapore next month.",
+        "unsupported_case_study": "We have helped several local partners grow this category.",
+        "unsupported_product_news": "VERTU will launch a new product this month.",
+    }
+
+    for expected_code, claim in claims.items():
+        review = review_email_copy("VERTU x Premium Retail", base.format(claim=claim))
+        assert expected_code in {item["code"] for item in review["blocking_issues"]}
+
+
+def test_copy_review_blocks_unverified_strategy_claims():
+    base = (
+        "Hi Amy,\n\nI work with VERTU's international channel development team. Premium Retail's existing luxury "
+        "customer channel may be relevant to a selective partnership assessment. The commercial question is whether "
+        "VERTU can complement the current portfolio and service model without creating operational distraction. "
+        "Two routes could be a controlled boutique format or selective local distribution. Any option would need to "
+        "be assessed against local demand, product mix, customer fit and operating responsibilities. {claim} This is a "
+        "working hypothesis rather than an assumed commercial outcome. Would a short market-specific discussion be "
+        "useful?\n\nBest regards,\nApril Yang\n\nUnsubscribe: {{{{unsubscribe_url}}}}"
+    )
+    claims = {
+        "unsupported_market_stat": "The market will reach $30 billion by 2030.",
+        "unsupported_local_commitment": "We are committed to local assembly through an SKD model.",
+        "unsupported_partner_progress": "We have already identified several regional partners.",
+        "unsupported_partner_deadline": "We are finalizing our partners by January.",
+    }
+
+    for expected_code, claim in claims.items():
+        review = review_email_copy("Strategic fit: VERTU x Premium Retail", base.format(claim=claim))
+        assert expected_code in {item["code"] for item in review["blocking_issues"]}
 
 
 def test_prospect_copy_word_count_excludes_signature_and_unsubscribe_line():

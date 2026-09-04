@@ -2,21 +2,24 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <div class="mark">LA</div>
+    <div class="mark">V</div>
     <div>
-      <h1>Outbound Ops</h1>
-      <p>LinkedIn sales automation</p>
+      <h1>VERTU Sales</h1>
+      <p>客户开发工作台</p>
     </div>
   </div>
 
   <nav class="nav" aria-label="Primary">
-    <a href="#dashboard" class="active" data-page-link="dashboard">工作台</a>
-    <a href="#source" data-page-link="source">1 获客</a>
-    <a href="#research" data-page-link="research">2 核验客户</a>
-    <a href="#outreach" data-page-link="outreach">3 邮件触达</a>
-    <a href="#followup" data-page-link="followup">4 跟进推进</a>
-    <a href="#report" data-page-link="report">运营周报</a>
-    <a href="#admin" data-page-link="admin" id="nav-admin-link" class="hidden">管理员控制台</a>
+    <span class="nav-label">每天从这里开始</span>
+    <a href="#dashboard" class="active" data-page-link="dashboard"><b>今日</b><span>我的工作</span></a>
+    <span class="nav-label">客户开发</span>
+    <a href="#source" data-page-link="source"><b>1</b><span>找客户</span></a>
+    <a href="#research" data-page-link="research"><b>2</b><span>准备客户</span></a>
+    <a href="#outreach" data-page-link="outreach"><b>3</b><span>发邮件</span></a>
+    <a href="#followup" data-page-link="followup"><b>4</b><span>跟进客户</span></a>
+    <span class="nav-label nav-label-manage">管理</span>
+    <a href="#report" data-page-link="report"><b>数</b><span>团队数据</span></a>
+    <a href="#admin" data-page-link="admin" id="nav-admin-link" class="hidden"><b>管</b><span>系统管理</span></a>
   </nav>
 
   <section class="side-section">
@@ -36,19 +39,24 @@
         <strong id="account-name">未登录</strong>
         <span id="quota-status">今日配额 --</span>
       </div>
-      <button id="logout-button" type="button">退出</button>
-      <button id="export-button" type="button">导出客户</button>
-      <button id="refresh-button" type="button">刷新</button>
+      <details class="account-actions">
+        <summary aria-label="账户与页面操作">更多</summary>
+        <div>
+          <button id="refresh-button" type="button">刷新页面</button>
+          <button id="export-button" type="button">导出客户</button>
+          <button id="logout-button" type="button">退出登录</button>
+        </div>
+      </details>
     </div>
   </header>
 
   <section id="notice" class="notice hidden"></section>
 
   <nav id="workflow-nav" class="workflow-nav hidden" aria-label="销售工作流">
-    <a href="#source" data-flow-page="source"><b>1</b><span><strong>获取线索</strong><small>搜索或批量导入</small></span></a>
-    <a href="#research" data-flow-page="research"><b>2</b><span><strong>核验客户</strong><small>领取、补资料、看画像</small></span></a>
-    <a href="#outreach" data-flow-page="outreach"><b>3</b><span><strong>邮件触达</strong><small>写信、发送、看回流</small></span></a>
-    <a href="#followup" data-flow-page="followup"><b>4</b><span><strong>跟进推进</strong><small>处理回复并推进 SABCD</small></span></a>
+    <a href="#source" data-flow-page="source"><b>1</b><span><strong>找客户</strong><small>上传名单或搜索</small></span></a>
+    <a href="#research" data-flow-page="research"><b>2</b><span><strong>准备客户</strong><small>系统补资料，你只看结果</small></span></a>
+    <a href="#outreach" data-flow-page="outreach"><b>3</b><span><strong>发邮件</strong><small>生成、审核、发送</small></span></a>
+    <a href="#followup" data-flow-page="followup"><b>4</b><span><strong>跟进客户</strong><small>处理回复与下一步</small></span></a>
   </nav>
 
   <section class="app-page active" data-page="dashboard">
@@ -77,8 +85,8 @@
   <section class="app-page" data-page="outreach">
     <div class="page-stack">
       <nav class="outreach-view-nav" aria-label="邮件触达视图">
-        <button type="button" class="active" data-outreach-view="workspace">客户写信工作台</button>
-        <button type="button" data-outreach-view="history">发送记录与回流</button>
+        <button type="button" class="active" data-outreach-view="workspace">写信与发送</button>
+        <button type="button" data-outreach-view="history">已发送邮件</button>
       </nav>
       <section class="customer-workspace" id="customer-workspace">
         <div id="react-workspace-root"></div>

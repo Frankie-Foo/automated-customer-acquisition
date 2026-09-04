@@ -3,14 +3,14 @@ import { createPortal } from "react-dom";
 import { api } from "./api.js";
 
 const primaryTabs = [
-  ["company-seeds", "批量导入"],
-  ["linkedin", "精确找人"],
-  ["source", "条件搜索"],
-  ["csv", "CSV 导入"],
-  ["manual", "单个录入"],
+  ["company-seeds", "上传客户名单"],
+  ["linkedin", "按姓名找人"],
+  ["source", "按条件找客户"],
 ];
 
 const advancedTabs = [
+  ["manual", "手动添加一个客户"],
+  ["csv", "旧版 CSV 导入"],
   ["runbook", "批量处理"],
   ["status", "状态管理"],
 ];
@@ -80,7 +80,7 @@ function Workbench() {
           ))}
         </div>
         <details className="advanced-tools">
-          <summary>更多工具</summary>
+          <summary>其他方式</summary>
           <div className="advanced-menu">
             {advancedTabs.map(([id, label]) => <button key={id} type="button" className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>{label}</button>)}
           </div>
@@ -187,33 +187,35 @@ function CompanySeedPanelV2({ guarded, notify }) {
         <strong>{regionMode.label}</strong>
         <span>{regionMode.description}</span>
       </div>
-      <div className="helper">
-        <strong>批量获客导入</strong>
-        <p>销售直接上传 Excel/CSV。系统会解析公司、官网、职位、电话、邮箱，自动找公开 LinkedIn 联系人，并把结果分成“去重可发送”和“需复核候选”。</p>
-      </div>
-      <div className="helper subtle">
-        <strong>推荐表头</strong>
-        <p>company_name, category, reason, website, job_titles, industry, location, phone, email。中文也支持：公司/店铺名称、类别、简短背调、官网/联系链接、职位、地区、电话、邮箱。</p>
-      </div>
-      <div className="form-grid">
-        <label>上传 Excel/CSV
+      <div className="source-start">
+        <div className="source-start-copy">
+          <span className="eyebrow">推荐</span>
+          <h3>上传 Excel 或 CSV 名单</h3>
+          <p>文件中有公司名或官网即可开始。系统会在后台找联系人、邮箱和公开资料，不会自动发信。</p>
+        </div>
+        <label className={`upload-dropzone ${file ? "has-file" : ""}`}>选择客户名单
           <input type="file" accept=".xlsx,.xlsm,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setFile(event.target.files?.[0] || null)} />
-          {file && <small>{file.name}</small>}
+          <strong>{file ? file.name : "点击选择文件"}</strong>
+          <small>{file ? "文件已选择，可以开始处理" : "支持 .xlsx 和 .csv"}</small>
         </label>
-        <Field label="默认地区" value={form.default_location} onChange={(v) => setForm({ ...form, default_location: v })} placeholder="India / UAE / Russia，可选" />
-        <Field label="默认行业" value={form.default_industry} onChange={(v) => setForm({ ...form, default_industry: v })} placeholder="luxury / watch / hotel，可选" />
-        <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
-      </div>
-      <div className="option-row">
-        <Check label="分配后自动准备客户画像和待审核邮件草稿" checked={form.auto_prepare_drafts} onChange={(v) => setForm({ ...form, auto_prepare_drafts: v })} />
-        <span className="safe-flow-note">导入不会自动发信。请到“核验客户”检查结果，再到“邮件触达”确认内容。</span>
       </div>
       <div className="panel-actions">
         <button className="primary" type="button" disabled={working} onClick={() => guarded(submitImport)}>
-          {working ? "处理中..." : "上传并开始获客"}
+          {working ? "正在上传..." : "开始处理名单"}
         </button>
         <button type="button" onClick={() => downloadCompanySeedTemplate()}>下载导入模板</button>
       </div>
+      <details className="optional-fields">
+        <summary>设置地区、行业和联系人数量</summary>
+        <div className="form-grid">
+          <Field label="默认地区" value={form.default_location} onChange={(v) => setForm({ ...form, default_location: v })} placeholder="India / UAE / Russia，可选" />
+          <Field label="默认行业" value={form.default_industry} onChange={(v) => setForm({ ...form, default_industry: v })} placeholder="luxury / watch / hotel，可选" />
+          <Field label="每家公司最多联系人" type="number" value={form.per_company_limit} onChange={(v) => setForm({ ...form, per_company_limit: v })} />
+        </div>
+        <div className="option-row">
+          <Check label="自动准备客户画像和待审核邮件草稿" checked={form.auto_prepare_drafts} onChange={(v) => setForm({ ...form, auto_prepare_drafts: v })} />
+        </div>
+      </details>
       <AutomationRuns runs={runs} guarded={guarded} notify={notify} reload={loadRuns} />
     </div>
   );
@@ -250,7 +252,7 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
 
   return (
     <section className="automation-runs">
-      <header><div><span className="eyebrow">Background tasks</span><h3>批量获客任务</h3></div><button type="button" onClick={() => guarded(reload)}>刷新</button></header>
+      <header><div><span className="eyebrow">处理进度</span><h3>最近上传的名单</h3></div><button type="button" onClick={() => guarded(reload)}>刷新</button></header>
       <div className="automation-run-list">
         {runs.slice(0, 8).map((run) => {
           const current = Number(run.progress_current || 0);
@@ -271,7 +273,7 @@ function AutomationRuns({ runs, guarded, notify, reload }) {
             : companies.join("、") || "公司清单见客户池";
           return (
             <article key={run.id} className={`automation-run ${run.status}`}>
-              <div className="automation-run-title"><strong>#{run.id} 公司批量获客</strong><span>{automationStatus(run.status)}</span></div>
+              <div className="automation-run-title"><strong>{sourceFilename}</strong><span>{automationStatus(run.status)}</span></div>
               <div className="automation-run-context" aria-label="批次上下文">
                 <span><b>负责人</b>{owner}</span>
                 <span><b>来源</b>{sourceFilename}</span>

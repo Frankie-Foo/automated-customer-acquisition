@@ -25,14 +25,56 @@ def render_template(path: Path, values: dict[str, Any]) -> tuple[str, str]:
     return text, html_body
 
 
-def build_html_body(text: str, *, product_images: dict[str, Any] | None = None) -> str:
+def build_html_body(
+    text: str,
+    *,
+    product_images: dict[str, Any] | None = None,
+    signature: dict[str, Any] | None = None,
+) -> str:
     """Build email HTML body from plain text, optionally appending product images."""
-    html_body = "<br>".join(html.escape(line) for line in str(text).splitlines())
+    html_body = _build_text_html(str(text), signature or {})
     if product_images and product_images.get("enabled"):
         image_html = build_product_image_html(product_images)
         if image_html:
             html_body += image_html
     return html_body
+
+
+def _build_text_html(text: str, signature: dict[str, Any]) -> str:
+    lines = text.splitlines()
+    if not signature or "Best regards," not in lines:
+        return "<br>".join(html.escape(line) for line in lines)
+    start = lines.index("Best regards,")
+    unsubscribe = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("Unsubscribe:")), len(lines))
+    body = "<br>".join(html.escape(line) for line in lines[:start])
+    trailing = "<br>".join(html.escape(line) for line in lines[unsubscribe:])
+    parts = [body, _build_signature_card_html(signature)]
+    if trailing:
+        parts.append(f'<div style="margin-top:20px;font-size:11px;color:#888">{trailing}</div>')
+    return "".join(parts)
+
+
+def _build_signature_card_html(signature: dict[str, Any]) -> str:
+    logo_cid = str(signature.get("logo_cid") or "vertu-signature-logo").strip()
+    logo = (
+        f'<td width="76" valign="top" style="padding:0 12px 0 0">'
+        f'<img src="cid:{html.escape(logo_cid, quote=True)}" width="70" height="70" '
+        'alt="VERTU" style="display:block;width:70px;height:70px;border:0" /></td>'
+        if signature.get("logo_path")
+        else ""
+    )
+    name = html.escape(str(signature.get("name") or "").strip())
+    title = html.escape(str(signature.get("title") or "").strip())
+    phone = html.escape(str(signature.get("phone") or "").strip())
+    address = html.escape(str(signature.get("address") or "").strip())
+    details = "<br>".join(value for value in (name, title, phone, address) if value)
+    return (
+        '<div style="margin-top:22px;font-family:Calibri,Arial,Helvetica,sans-serif;color:#111">'
+        '<div style="margin-bottom:8px">Best regards,</div>'
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'
+        f'<tr>{logo}<td valign="top" style="font-size:13px;line-height:1.55">{details}</td></tr>'
+        '</table></div>'
+    )
 
 
 def build_product_image_html(config: dict[str, Any]) -> str:

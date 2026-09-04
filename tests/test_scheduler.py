@@ -22,6 +22,15 @@ class _Db:
 class _Repo:
     db = _Db()
 
+    def __init__(self):
+        self.finished_loop = None
+
+    def start_system_loop(self):
+        return 7
+
+    def finish_system_loop(self, run_id, *, status, result):
+        self.finished_loop = (run_id, status, result)
+
     def close_expired_outreach_sequences(self, **_kwargs):
         return {"waiting": 0, "abandoned": 0}
 
@@ -104,12 +113,16 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
         "contactout": {"auto_queue_limit": 5, "scheduler_limit": 5},
         "apollo_phone": {"auto_queue_limit": 5, "scheduler_limit": 5},
     }, root_dir=Path("."))
-    result = SchedulerService(config, _Repo()).run_once(25, 25, 25)
+    repo = _Repo()
+    result = SchedulerService(config, repo).run_once(25, 25, 25)
 
     assert calls == ["acquisition", "enrichment", "contactout_queue", "contactout_run", "apollo_queue", "apollo_run", "queue", "send"]
     assert result["enrichment"] == {"succeeded": 3, "failed": 2}
     assert result["queued"] == 4
     assert result["sent"] == 4
+    assert repo.finished_loop[0:2] == (7, "completed")
+    assert repo.finished_loop[2]["sent"] == 4
+    assert repo.finished_loop[2]["flywheel"]["status"] == "completed"
 
 
 def test_scheduler_continues_after_provider_failure(monkeypatch):

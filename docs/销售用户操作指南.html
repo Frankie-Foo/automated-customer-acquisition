@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outbound Ops 销售用户操作指南</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root{--teal:#0f766e;--teal-dark:#115e59;--teal-soft:#f0fdfa;--ink:#0f172a;--muted:#64748b;--line:#dbe4ed;--paper:#fff;--ground:#f1f5f9;--warn:#a16207;--warn-bg:#fffbeb;--ok:#047857;--ok-bg:#ecfdf5;--risk:#b42318;--risk-bg:#fff5f4}
+    *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.65 "Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+    .wrap{width:min(1080px,calc(100% - 32px));margin:auto}.mast{padding:58px 0 36px;background:#fff;border-bottom:1px solid var(--line)}
+    .eyebrow{margin:0 0 10px;color:var(--teal);font-size:12px;font-weight:800;letter-spacing:.08em}.mast h1{margin:0;font-size:34px;line-height:1.2}.mast p{max-width:700px;margin:14px 0 0;color:var(--muted)}
+    .rule{display:flex;gap:12px;align-items:center;margin-top:24px;padding:13px 15px;border:1px solid #99ded3;background:var(--teal-soft);border-radius:8px;color:var(--teal-dark);font-weight:700}.rule b{font-size:20px}
+    main{padding:32px 0 56px}.section{margin:0 0 20px;padding:26px;background:var(--paper);border:1px solid var(--line);border-radius:10px}.section h2{margin:0 0 6px;font-size:21px}.section>p{margin:0 0 20px;color:var(--muted)}
+    .steps{display:grid;gap:0}.step{display:grid;grid-template-columns:42px minmax(0,1fr);gap:14px;padding:17px 0;border-top:1px solid var(--line)}.step:first-child{border-top:0;padding-top:0}.num{width:32px;height:32px;display:grid;place-items:center;border-radius:7px;background:var(--teal);color:#fff;font-weight:900}.step h3{margin:0;font-size:16px}.step p{margin:5px 0 0;color:var(--muted)}
+    .actions{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.action{padding:16px;border:1px solid var(--line);border-radius:8px;background:#fff}.action b,.action span{display:block}.action b{font-size:14px}.action span{margin-top:5px;color:var(--muted);font-size:13px}
+    .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.flow article{position:relative;padding:14px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}.flow article:not(:last-child):after{position:absolute;right:-7px;top:50%;z-index:1;width:13px;height:13px;border-top:2px solid var(--teal);border-right:2px solid var(--teal);content:"";transform:translateY(-50%) rotate(45deg);background:var(--ground)}.flow strong,.flow small{display:block}.flow small{margin-top:5px;color:var(--muted);font-size:12px;line-height:1.5}
+    .states{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.state{padding:14px;border-radius:8px;border:1px solid var(--line)}.state strong{display:block}.state span{display:block;margin-top:5px;color:var(--muted);font-size:13px}.state.ok{background:var(--ok-bg);border-color:#9de6c5}.state.warn{background:var(--warn-bg);border-color:#f7d28b}.state.risk{background:var(--risk-bg);border-color:#f5b5ad}.state.neutral{background:#f8fafc}
+    .note{margin-top:14px;padding:13px 15px;border-left:4px solid var(--teal);background:#f8fafc;color:#334155}.note strong{color:var(--ink)}
+    .avoid{margin:0;padding-left:20px}.avoid li{margin:8px 0}.footer{padding:24px 0 44px;color:var(--muted);font-size:12px;text-align:center}
+    @media(max-width:700px){.mast{padding-top:36px}.mast h1{font-size:28px}.actions,.flow,.states{grid-template-columns:1fr}.flow article:not(:last-child):after{right:auto;left:22px;top:auto;bottom:-8px;transform:rotate(135deg);background:var(--ground)}.section{padding:20px}.wrap{width:min(100% - 24px,1080px)}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="wrap">
+    <p class="eyebrow">OUTBOUND OPS · SALES PLAYBOOK</p>
+    <h1>销售用户操作指南</h1>
+    <p>每天只需要做两件事：把名单交给系统处理；处理系统筛出的“可发送”和“需确认”客户。不要手工逐条查邮箱，也不要对同一客户重复触发富化。</p>
+    <div class="rule"><b>→</b><span>标准闭环：获取线索 → 核验客户 → 邮件触达 → 跟进推进</span></div>
+  </div></header>
+  <main class="wrap">
+    <section class="section">
+      <h2>每天怎么用</h2><p>从左侧菜单依次完成，不需要跳步骤。</p>
+      <div class="flow">
+        <article><strong>1. 获取线索</strong><small>上传 Excel/CSV，或精确找人</small></article>
+        <article><strong>2. 核验客户</strong><small>看系统已处理的客户</small></article>
+        <article><strong>3. 邮件触达</strong><small>确认邮件后发送</small></article>
+        <article><strong>4. 跟进推进</strong><small>记录结果并更新阶段</small></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>1. 获取线索</h2><p>适合你已有公司、联系人或展会名单的情况。</p>
+      <div class="steps">
+        <article class="step"><b class="num">1</b><div><h3>进入“获客线索” → “批量导入”</h3><p>上传 Excel 或 CSV。优先保留：公司名称、官网、联系人姓名、职位、国家/地区、行业、邮箱、电话、LinkedIn 链接。已知邮箱和电话也可以直接导入。</p></div></article>
+        <article class="step"><b class="num">2</b><div><h3>填写默认地区和行业，点击“上传并开始获客”</h3><p>系统会自动去重、补齐公司信息、生成客户画像和邮件草稿。导入完成不代表已经发信。</p></div></article>
+        <article class="step"><b class="num">3</b><div><h3>等待任务显示“等待核验”</h3><p>点击“核验客户”进入下一步。不要反复上传同一文件；同一公司/联系人会自动合并或标记重复。</p></div></article>
+      </div>
+      <div class="note"><strong>邮箱补齐说明：</strong>Hunter、Prospeo 等先处理；仍未找到邮箱的客户会自动进入 ContactOut 队列。队列按公司共享日额度执行，显示“次日队列”表示当天额度已经被更早任务占用，不是任务丢失。</div>
+    </section>
+
+    <section class="section">
+      <h2>2. 核验客户</h2><p>系统先做大部分判断，销售只需要处理少数例外。</p>
+      <div class="actions">
+        <article class="action"><b>可发送</b><span>已有有效邮箱。检查公司、联系人和邮件草稿，确认后进入邮件触达。</span></article>
+        <article class="action"><b>系统可自动补</b><span>正在补公司/联系人/邮箱。先等任务完成，不要重复点击补齐。</span></article>
+        <article class="action"><b>需人工确认</b><span>姓名、职位或邮箱候选可能不匹配。打开详情核对后再使用。</span></article>
+      </div>
+      <div class="note"><strong>客户归属：</strong>你默认只看到自己的私有客户池；公共池客户需要领取后才进入你的池子。不要把他人私有客户重复导入。</div>
+    </section>
+
+    <section class="section">
+      <h2>3. 邮件触达</h2><p>每封邮件先由系统结合公司、职位、国家和客户画像生成草稿，再由你确认。</p>
+      <div class="steps">
+        <article class="step"><b class="num">1</b><div><h3>进入“邮件中心”或客户详情</h3><p>只处理“可发送”的客户。打开草稿，检查称呼、公司名称、核心合作理由和签名。</p></div></article>
+        <article class="step"><b class="num">2</b><div><h3>修改到像你本人会说的话</h3><p>保留一条与对方业务直接相关的理由；删除系统内部字段、原始数据备注和不确定的描述。不要承诺未经确认的价格、回报或授权范围。</p></div></article>
+        <article class="step"><b class="num">3</b><div><h3>点击“发送”</h3><p>系统会用当前登录销售绑定的发件身份发送，并记录主题、正文、发送时间和后续反馈。若客户已退订、退信或已回复，系统会停止自动触达。</p></div></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>4. 跟进推进</h2><p>邮件发出后，重点不再是继续发，而是及时判断下一步。</p>
+      <div class="states">
+        <article class="state ok"><strong>已回复</strong><span>先阅读内容，记录沟通要点；将客户推进到“初步沟通/约会/商业计划”等阶段。</span></article>
+        <article class="state warn"><strong>已打开未回复</strong><span>按系统建议准备第二次触达；换一个价值点，不要原文重发。</span></article>
+        <article class="state neutral"><strong>未打开或未反馈</strong><span>等待系统的下次触达建议。不要当天连续发送多封。</span></article>
+        <article class="state risk"><strong>退信、退订或拒绝</strong><span>停止触达并补充原因。退订客户不可再次发送。</span></article>
+      </div>
+      <div class="note"><strong>客户生命周期：</strong>线索 → 已回复 → 初步沟通 → 约会/会议 → 商业计划 → 试订单 → 代理协议 → 门店创建 → 签约维护。每次电话、WhatsApp、会议或报价，都在客户详情里记录一次。</div>
+    </section>
+
+    <section class="section">
+      <h2>销售每天只要记住这 5 件事</h2>
+      <ol class="avoid">
+        <li>上传名单后，先让系统跑完；不要重复导入。</li>
+        <li>只在“可发送”和“需人工确认”里花时间。</li>
+        <li>发送前一定检查邮件第一段是否真的匹配客户。</li>
+        <li>客户一旦回复，当天记录结果并推进生命周期。</li>
+        <li>没有邮箱、退信、退订的客户，不要私下重复发送。</li>
+      </ol>
+    </section>
+  </main>
+  <footer class="footer">Outbound Ops · 销售端操作手册 · 适用于当前生产流程</footer>
+</body>
+</html>

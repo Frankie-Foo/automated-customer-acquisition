@@ -22,3 +22,7 @@ build/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+/artifacts/
+/runtime_assets/
+/build_caviar_recruiting.xlsx.mjs
+/Caviar_*.md

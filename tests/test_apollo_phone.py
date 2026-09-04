@@ -53,6 +53,21 @@ def test_apollo_adapter_requests_phone_only_without_waterfalls():
     assert kwargs["headers"]["x-api-key"] == "test-key"
 
 
+def test_apollo_adapter_accepts_name_and_company_domain_without_linkedin():
+    http = _Http()
+    adapter = ApolloApiAdapter(_config(), http=http)
+
+    adapter.request_phone(
+        {"first_name": "Alex", "last_name": "Example", "company_domain": "example.com"},
+        webhook_url="https://sales.example.com/webhooks/apollo?job_id=1&token=x",
+    )
+
+    _, url, _ = http.calls[0]
+    assert "first_name=Alex" in url
+    assert "last_name=Example" in url
+    assert "domain=example.com" in url
+
+
 def test_apollo_configuration_fails_closed_without_budget_or_secret():
     assert apollo_phone_configured(_config())
     no_secret = _config()
@@ -131,6 +146,22 @@ def test_quota_denial_prevents_apollo_call():
 
     assert result.status == "blocked"
     assert adapter.calls == 0
+
+
+def test_auto_enqueue_skips_low_quality_contact_before_reserving_credits():
+    repo = _Repo()
+    repo.list_apollo_phone_candidates = lambda **_kwargs: [{"id": 2, "owner_user_id": 3}]
+    repo.get_contact = lambda _contact_id: {
+        "id": 2,
+        "company_name": "Appliance Manufacturer",
+        "linkedin_url": "https://www.linkedin.com/company/appliance",
+    }
+    repo.enqueue_apollo_phone_job = lambda **_fields: (_ for _ in ()).throw(AssertionError("must not enqueue"))
+
+    result = ApolloPhoneQueueService(_config(), repo, adapter=_Adapter()).auto_enqueue(1)
+
+    assert result["queued"] == 0
+    assert result["skipped"] == [{"contact_id": 2, "reason": "quality_gate:missing_role"}]
 
 
 def test_dispatch_reserves_before_request_and_waits_for_webhook():

@@ -1108,6 +1108,103 @@ class Repository:
             "dispositions": {row["disposition"]: int(row["count"]) for row in disposition},
         }
 
+    def start_system_loop(self) -> int:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "INSERT INTO system_loop_runs(status) VALUES ('running') RETURNING id"
+            ).fetchone()
+            return int(row["id"])
+
+    def finish_system_loop(self, run_id: int, *, status: str, result: dict[str, Any]) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE system_loop_runs
+                SET status = %s, metrics = %s::jsonb, errors = %s::jsonb,
+                    completed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    json.dumps(result, ensure_ascii=False, default=str),
+                    json.dumps(result.get("errors") or [], ensure_ascii=False, default=str),
+                    run_id,
+                ),
+            )
+
+    def system_loop_status(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        owner_filter, owner_params = self._owner_filter("c", user)
+        with self.db.connect() as conn:
+            latest = conn.execute(
+                """
+                SELECT id, status, errors, started_at, completed_at,
+                       COALESCE(completed_at, started_at) >= NOW() - INTERVAL '15 minutes' AS recent
+                FROM system_loop_runs
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            stages = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS discovered,
+                  COUNT(*) FILTER (WHERE email IS NULL OR email_status IS DISTINCT FROM 'valid') AS needs_enrichment,
+                  COUNT(*) FILTER (
+                    WHERE email IS NOT NULL AND email_status = 'valid'
+                      AND status IN ('new', 'enriched', 'queued')
+                  ) AS ready_for_outreach,
+                  COUNT(*) FILTER (WHERE status IN ('sent_1', 'sent_2', 'sent_3')) AS in_outreach,
+                  COUNT(*) FILTER (
+                    WHERE status = 'replied' OR EXISTS (
+                      SELECT 1 FROM email_events e
+                      WHERE e.contact_id = c.id AND e.event_type IN ('opened', 'replied')
+                    )
+                  ) AS feedback,
+                  COUNT(*) FILTER (
+                    WHERE lifecycle_stage IN ('meeting', 'business_plan', 'trial_order',
+                      'agency_agreement', 'store_visit', 'hq_visit', 'store_creation', 'signed', 'maintenance')
+                  ) AS progressing
+                FROM contacts c
+                {owner_filter}
+                """,
+                tuple(owner_params),
+            ).fetchone()
+            task_filter, task_params = self._owner_filter("c", user, prefix="AND")
+            tasks = conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM followup_tasks t
+                JOIN contacts c ON c.id = t.contact_id
+                WHERE t.status = 'open' {task_filter}
+                """,
+                tuple(task_params),
+            ).fetchone()
+            learning = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM flywheel_learning_events) AS event_count,
+                  MAX(updated_at) AS updated_at
+                FROM flywheel_strategy_snapshots
+                WHERE status = 'active'
+                """
+            ).fetchone()
+        is_recent = bool(latest and latest.get("recent"))
+        return {
+            "worker": {
+                "state": "running" if latest and latest["status"] == "running" and is_recent else "healthy" if is_recent else "stale",
+                "last_status": latest.get("status") if latest else None,
+                "started_at": latest.get("started_at") if latest else None,
+                "completed_at": latest.get("completed_at") if latest else None,
+                "errors": latest.get("errors") if latest else [],
+            },
+            "stages": {
+                **{key: int(value or 0) for key, value in stages.items()},
+                "next_actions": int(tasks["count"] or 0),
+                "learning_events": int(learning["event_count"] or 0),
+            },
+            "learned_at": learning.get("updated_at") if learning else None,
+        }
+
     def owner_import_report(self, *, user: dict[str, Any] | None = None) -> dict[str, Any]:
         tracked_owners = ("April", "Haiwen", "Viki", "Ivan", "Vivi")
         owner_scope = ""
@@ -3673,12 +3770,11 @@ class Repository:
                 """
                 UPDATE apollo_phone_enrichment_jobs
                 SET status = %s, credits_consumed = %s, phone_candidates = %s::jsonb,
-                    provider_request_id = COALESCE(%s, provider_request_id), completed_at = NOW(),
-                    error_code = NULL, updated_at = NOW()
+                    completed_at = NOW(), error_code = NULL, updated_at = NOW()
                 WHERE id = %s
                 RETURNING *
                 """,
-                (status, credits, json.dumps(phone_candidates), provider_request_id, job_id),
+                (status, credits, json.dumps(phone_candidates), job_id),
             ).fetchone()
             return {"job": updated, "duplicate": False}
 
@@ -3715,6 +3811,30 @@ class Repository:
                 """,
                 ("blocked" if charge_reserved else "failed", error_code, job_id),
             )
+
+    def fail_apollo_phone_webhook_result(self, job_id: int, error_code: str) -> dict[str, Any] | None:
+        """Finish a terminal Apollo polling failure without charging an unproven result."""
+        with self.db.connect() as conn:
+            job = conn.execute(
+                """
+                SELECT * FROM apollo_phone_enrichment_jobs
+                WHERE id = %s AND status = 'awaiting_webhook'
+                FOR UPDATE
+                """,
+                (job_id,),
+            ).fetchone()
+            if not job:
+                return None
+            self._settle_apollo_phone_quota(conn, job, 0)
+            return conn.execute(
+                """
+                UPDATE apollo_phone_enrichment_jobs
+                SET status = 'failed', error_code = %s, completed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (error_code, job_id),
+            ).fetchone()
 
     @staticmethod
     def _block_apollo_phone_job(conn: Any, job: dict[str, Any], error_code: str) -> None:
@@ -4827,6 +4947,77 @@ class Repository:
             "research": self.get_contact_research(contact_id),
             "draft": self.get_latest_email_draft(contact_id, user_id=int(user["id"]) if user else None),
             "feedback": self.contact_feedback_summary(contact_id),
+            "journey": self.contact_journey(contact_id),
+        }
+
+    def contact_journey(self, contact_id: int, *, limit: int = 100) -> dict[str, list[dict[str, Any]]]:
+        safe_limit = max(1, min(int(limit), 200))
+        with self.db.connect() as conn:
+            sources = conn.execute(
+                """
+                SELECT l.id, l.source_type, l.source_ref, l.source_row, l.raw_data,
+                       l.status, l.quality_score, l.failure_reason, l.created_at,
+                       c.name AS campaign_name
+                FROM leads l
+                LEFT JOIN campaigns c ON c.id = l.campaign_id
+                WHERE l.contact_id = %s
+                ORDER BY l.created_at DESC, l.id DESC
+                LIMIT %s
+                """,
+                (contact_id, safe_limit),
+            ).fetchall()
+            messages = conn.execute(
+                """
+                SELECT id, channel, sequence_step, subject, body, language, status, provider,
+                       provider_message_id, personalization_evidence, quality_review, error,
+                       sent_at, delivered_at, opened_at, replied_at, bounced_at,
+                       created_at, updated_at
+                FROM outreach_messages
+                WHERE contact_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (contact_id, safe_limit),
+            ).fetchall()
+            events = conn.execute(
+                """
+                SELECT id, sequence_step, event_type, email_subject, message_id,
+                       occurred_at, metadata
+                FROM email_events
+                WHERE contact_id = %s
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT %s
+                """,
+                (contact_id, safe_limit),
+            ).fetchall()
+            interactions = conn.execute(
+                """
+                SELECT id, interaction_type, direction, channel, subject, content, outcome,
+                       occurred_at, source_ref, metadata
+                FROM interactions
+                WHERE contact_id = %s
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT %s
+                """,
+                (contact_id, safe_limit),
+            ).fetchall()
+            tasks = conn.execute(
+                """
+                SELECT id, task_type, priority, title, description, due_at, status,
+                       completed_at, trigger_rule, created_at, updated_at
+                FROM followup_tasks
+                WHERE contact_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (contact_id, safe_limit),
+            ).fetchall()
+        return {
+            "sources": sources,
+            "messages": messages,
+            "events": events,
+            "interactions": interactions,
+            "tasks": tasks,
         }
 
     def get_contact_research(self, contact_id: int) -> dict[str, Any] | None:
@@ -5085,6 +5276,9 @@ class Repository:
                     AND email IS NOT NULL
                     AND email NOT LIKE '%%*%%'
                     AND email LIKE '%%@%%'
+                    AND COALESCE(NULLIF(BTRIM(first_name), ''), NULLIF(BTRIM(last_name), '')) IS NOT NULL
+                    AND NULLIF(BTRIM(job_title), '') IS NOT NULL
+                    AND job_title ~* '(owner|founder|co-founder|chief|ceo|president|managing director|general manager|commercial|business development|channel|partnership|retail|buyer|merchandis|category director|sales director|vp|vice president|dealer|distributor|franchise)'
                     AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
                     AND COALESCE(lead_score, 60) >= 50
                     AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
@@ -5116,6 +5310,9 @@ class Repository:
                   AND c.email IS NOT NULL
                   AND c.email NOT LIKE '%%*%%'
                   AND c.email LIKE '%%@%%'
+                  AND COALESCE(NULLIF(BTRIM(c.first_name), ''), NULLIF(BTRIM(c.last_name), '')) IS NOT NULL
+                  AND NULLIF(BTRIM(c.job_title), '') IS NOT NULL
+                  AND c.job_title ~* '(owner|founder|co-founder|chief|ceo|president|managing director|general manager|commercial|business development|channel|partnership|retail|buyer|merchandis|category director|sales director|vp|vice president|dealer|distributor|franchise)'
                   AND lower(split_part(c.email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
                   AND COALESCE(c.lead_score, 60) >= 50
                   AND COALESCE(c.job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
@@ -5142,6 +5339,9 @@ class Repository:
                   AND email IS NOT NULL
                   AND email NOT LIKE '%%*%%'
                   AND email LIKE '%%@%%'
+                  AND COALESCE(NULLIF(BTRIM(first_name), ''), NULLIF(BTRIM(last_name), '')) IS NOT NULL
+                  AND NULLIF(BTRIM(job_title), '') IS NOT NULL
+                  AND job_title ~* '(owner|founder|co-founder|chief|ceo|president|managing director|general manager|commercial|business development|channel|partnership|retail|buyer|merchandis|category director|sales director|vp|vice president|dealer|distributor|franchise)'
                   AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
                   AND COALESCE(lead_score, 60) >= 50
                   AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'
@@ -5169,6 +5369,9 @@ class Repository:
                   AND email IS NOT NULL
                   AND email NOT LIKE '%%*%%'
                   AND email LIKE '%%@%%'
+                  AND COALESCE(NULLIF(BTRIM(first_name), ''), NULLIF(BTRIM(last_name), '')) IS NOT NULL
+                  AND NULLIF(BTRIM(job_title), '') IS NOT NULL
+                  AND job_title ~* '(owner|founder|co-founder|chief|ceo|president|managing director|general manager|commercial|business development|channel|partnership|retail|buyer|merchandis|category director|sales director|vp|vice president|dealer|distributor|franchise)'
                   AND lower(split_part(email, '@', 1)) NOT IN ('admin','billing','contact','hello','help','info','office','press','sales','support','team')
                   AND COALESCE(lead_score, 60) >= 50
                   AND COALESCE(job_title, '') !~* '(assistant|customer service|intern|reception|receptionist|support)'

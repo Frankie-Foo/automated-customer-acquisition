@@ -12,6 +12,7 @@ from .clients import is_full_email
 from .config import AppConfig
 from .http import HttpClient
 from .logging_utils import log
+from .outbound_quality import enrichment_readiness
 
 
 class ContactOutAdapter(Protocol):
@@ -146,6 +147,11 @@ class ContactOutQueueService:
         for candidate in candidates:
             contact_id = int(candidate["id"])
             owner_user_id = int(candidate["owner_user_id"])
+            contact = self.repo.get_contact(contact_id) or candidate
+            quality = enrichment_readiness(contact, paid=True)
+            if not quality["ok"]:
+                skipped.append({"contact_id": contact_id, "reason": f"quality_gate:{quality['reasons'][0]}"})
+                continue
             try:
                 jobs.append(self.enqueue_auto(contact_id, owner_user_id=owner_user_id))
             except ContactOutConflict:

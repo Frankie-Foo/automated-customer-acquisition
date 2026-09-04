@@ -28,6 +28,7 @@ class SchedulerService:
             if hasattr(conn, "commit"):
                 conn.commit()
             errors: list[dict[str, str]] = []
+            loop_run_id = self.repo.start_system_loop() if hasattr(self.repo, "start_system_loop") else None
 
             def step(name: str, callback, fallback):
                 try:
@@ -141,11 +142,47 @@ class SchedulerService:
                     "tasks": tasks,
                     "flywheel": flywheel,
                 }
+                if loop_run_id is not None and hasattr(self.repo, "finish_system_loop"):
+                    self.repo.finish_system_loop(loop_run_id, status=result["status"], result=_loop_metrics(result))
                 log("scheduler.completed", **result)
                 return result
+            except Exception as exc:
+                if loop_run_id is not None and hasattr(self.repo, "finish_system_loop"):
+                    self.repo.finish_system_loop(
+                        loop_run_id,
+                        status="failed",
+                        result={"status": "failed", "errors": [{"step": "scheduler", "error": str(exc)[:500]}]},
+                    )
+                raise
             finally:
                 conn.execute("SELECT pg_advisory_unlock(20260603)")
                 if hasattr(conn, "commit"):
                     conn.commit()
+
+def _loop_metrics(result: dict) -> dict:
+    flywheel = result.get("flywheel") if isinstance(result.get("flywheel"), dict) else {}
+    learning = flywheel.get("learning") if isinstance(flywheel.get("learning"), dict) else {}
+    return {
+        "status": result.get("status"),
+        "errors": result.get("errors") or [],
+        "acquisition": result.get("acquisition") or {},
+        "enrichment": result.get("enrichment") or {},
+        "contactout_queued": int((result.get("contactout_auto_queue") or {}).get("queued") or 0),
+        "contactout_processed": len(result.get("contactout") or []),
+        "apollo_queued": int((result.get("apollo_phone_auto_queue") or {}).get("queued") or 0),
+        "apollo_processed": len(result.get("apollo_phone") or []),
+        "queued": int(result.get("queued") or 0),
+        "sent": int(result.get("sent") or 0),
+        "waiting": int(result.get("waiting") or 0),
+        "abandoned": int(result.get("abandoned") or 0),
+        "recycled": int(result.get("recycled") or 0),
+        "tasks": int(result.get("tasks") or 0),
+        "flywheel": {
+            "status": flywheel.get("status"),
+            "snapshots": len(flywheel.get("snapshots") or []),
+            "learning_applied": len(learning.get("applied") or []),
+        },
+    }
+
 
 __all__ = ["SchedulerService"]

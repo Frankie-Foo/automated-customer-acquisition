@@ -67,6 +67,7 @@ def sender_transport_for_user(
         "provider": "smtp",
         "email": str(mailbox.get("email") or username).strip(),
         "name": str((user or {}).get("display_name") or default_sender.get("name") or "VERTU").strip(),
+        "signature": dict(mailbox.get("signature") or {}),
     }
     smtp["username"] = username
     smtp["envelope_from"] = str(smtp.get("envelope_from") or username).strip()

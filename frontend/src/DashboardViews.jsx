@@ -63,6 +63,7 @@ export default function DashboardViewsPortal({ activePage = "dashboard" }) {
 function DashboardViews({ targets, activePage }) {
   const [user, setUser] = useState(() => window.SALESBOT_SESSION?.user || null);
   const [summary, setSummary] = useState(null);
+  const [loop, setLoop] = useState(null);
   const [ops, setOps] = useState(null);
   const [lifecycle, setLifecycle] = useState(null);
   const [contacts, setContacts] = useState([]);
@@ -78,12 +79,14 @@ function DashboardViews({ targets, activePage }) {
   const load = useCallback(async () => {
     if (!user) return;
     if (activePage === "dashboard") {
-      const [summaryData, contactsData, publicData] = await Promise.all([
+      const [summaryData, loopData, contactsData, publicData] = await Promise.all([
         api("/api/summary"),
+        api("/api/loop-status"),
         api(user.role === "admin" ? "/api/contacts?limit=100" : "/api/contacts?limit=100&filter=private_pool"),
         user.role === "admin" ? Promise.resolve({ contacts: [] }) : api("/api/contacts?limit=100&filter=public_pool"),
       ]);
       setSummary(summaryData);
+      setLoop(loopData);
       setContacts(contactsData.contacts || []);
       setPublicContacts(publicData.contacts || []);
       return;
@@ -124,7 +127,7 @@ function DashboardViews({ targets, activePage }) {
   return (
     <>
       {targets.dashboard && activePage === "dashboard" && createPortal(<Metrics summary={summary || {}} />, targets.dashboard)}
-      {targets.quickstart && activePage === "dashboard" && createPortal(<QuickStart user={user} contacts={contacts} publicContacts={publicContacts} />, targets.quickstart)}
+      {targets.quickstart && activePage === "dashboard" && createPortal(<><LoopStatus data={loop || {}} /><QuickStart user={user} contacts={contacts} publicContacts={publicContacts} /></>, targets.quickstart)}
       {targets.ops && activePage === "report" && createPortal(<OpsReport report={ops || {}} user={user} />, targets.ops)}
       {targets.followups && activePage === "followup" && createPortal(<Followups contacts={contacts} tasks={tasks} reload={load} />, targets.followups)}
       {targets.lifecycle && activePage === "followup" && createPortal(<Lifecycle lifecycle={lifecycle || {}} contacts={contacts} />, targets.lifecycle)}
@@ -136,12 +139,12 @@ function Metrics({ summary }) {
   const events = summary.events_7d || {};
   const sabcd = summary.sabcd || {};
   const cards = [
-    ["客户总数", summary.total_contacts || 0, "当前可见客户"],
-    ["今日发送", summary.sent_today || 0, "当天真实/演练发送"],
-    ["待发送", summary.statuses?.queued || 0, "已入队等待触达"],
-    ["7天打开", events.opened || 0, "最近 7 天打开事件"],
-    ["已回复", summary.statuses?.replied || 0, "需要销售跟进"],
-    ["A/S 客户", Number(sabcd.A || 0) + Number(sabcd.S || 0), "商业计划、试订单、签约建店"],
+    ["我的客户", summary.total_contacts || 0, "当前由我负责"],
+    ["今天已发", summary.sent_today || 0, "今天发送的邮件"],
+    ["等待发送", summary.statuses?.queued || 0, "邮件已准备好"],
+    ["最近打开", events.opened || 0, "近 7 天打开邮件"],
+    ["客户回复", summary.statuses?.replied || 0, "需要马上跟进"],
+    ["重点客户", Number(sabcd.A || 0) + Number(sabcd.S || 0), "已进入商务阶段"],
   ];
   return (
     <section className="metrics">
@@ -323,6 +326,33 @@ function ConversionFunnel({ funnel }) {
   </section>;
 }
 
+function LoopStatus({ data }) {
+  const stages = data.stages || {};
+  const worker = data.worker || {};
+  const items = [
+    ["线索", stages.discovered, "进入客户库"],
+    ["富化", stages.needs_enrichment, "待补联系方式"],
+    ["触达", stages.in_outreach, "邮件序列中"],
+    ["反馈", stages.feedback, "打开或回复"],
+    ["推进", stages.progressing, `待办 ${Number(stages.next_actions || 0)}`],
+    ["学习", stages.learning_events, "已应用规则"],
+  ];
+  const healthy = ["healthy", "running"].includes(worker.state);
+  return <section className="loop-status">
+    <header>
+      <div><span className="eyebrow">AUTOMATION LOOP</span><h2>客户开发闭环</h2></div>
+      <div className={`loop-worker ${healthy ? "is-healthy" : "is-stale"}`}><i />{worker.state === "running" ? "本轮运行中" : healthy ? "后台自动运行" : "后台循环未运行"}</div>
+    </header>
+    <div className="flywheel-loop">
+      {items.map(([label, value, hint], index) => <div className="flywheel-node" key={label}>
+        <span>{index + 1}</span><strong>{label}</strong><b>{Number(value || 0)}</b><small>{hint}</small>
+        {index < items.length - 1 && <i aria-hidden="true">→</i>}
+      </div>)}
+    </div>
+    <p className="loop-caption">学习结果自动进入下一轮客户评分和邮件策略 · {worker.completed_at ? `最近完成：${formatDate(worker.completed_at)}` : "尚无后台运行记录"}{data.learned_at ? ` · 最近学习：${formatDate(data.learned_at)}` : ""}</p>
+  </section>;
+}
+
 function PipelineBlockers({ blockers }) {
   const items = [
     ["公共池待分配", "public_unassigned", "#research"],
@@ -501,15 +531,15 @@ function Lifecycle({ lifecycle, contacts }) {
           </a>;
         })}
       </div>
-      <section className="lifecycle-details lifecycle-details-static" aria-label="详细客户生命周期阶段">
-        <header><span><strong>详细客户阶段</strong><small>从陌生线索到签约维护，共 14 个客户生命周期节点</small></span><b>{total}</b></header>
+      <details className="lifecycle-details lifecycle-details-static" aria-label="详细客户生命周期阶段">
+        <summary><span><strong>查看详细客户阶段</strong><small>从陌生线索到签约维护，共 14 个节点</small></span><b>{total}</b></summary>
         <div className="lifecycle-grid">
           {lifecycleStages.map(([key, label]) => {
             const examples = contacts.filter((c) => c.lifecycle_stage === key).slice(0, 2);
             return <article key={key} className={`lifecycle-card ${key}`}><strong>{label}</strong><b>{stages[key] || 0}</b><div>{examples.length ? examples.map((c) => <span key={c.id}>{fullName(c)}</span>) : <span>暂无客户</span>}</div></article>;
           })}
         </div>
-      </section>
+      </details>
     </section>
   );
 }

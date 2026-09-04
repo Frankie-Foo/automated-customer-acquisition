@@ -4,6 +4,7 @@ import html
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from ..clients import MailClient
@@ -12,8 +13,9 @@ from ..customer_intelligence import build_customer_profile, outreach_framework
 from ..db import Repository
 from ..llm_gateway import LLMGateway
 from ..logging_utils import log
-from ..mailbox_accounts import sender_identity_user, sender_transport_for_user
+from ..mailbox_accounts import sales_mailbox, sender_identity_user, sender_transport_for_user
 from ..outbound_identity import outbound_sender, signed_reply_address
+from ..outbound_quality import review_email_copy
 from ..outreach_copy import (
     clean_public_research_item,
     contains_internal_outreach_data,
@@ -46,6 +48,7 @@ class PersonalizedEmailService:
         if not contact:
             raise ValueError("Contact not found or not claimed")
         sender_user = sender_identity_user(self.repo, contact, user)
+        signature = _signature_profile(self.config, sender_user)
         quality_service = OutboundQualityService(self.repo)
         experiment = quality_service.experiment_assignment(
             contact_id=int(contact["id"]),
@@ -58,12 +61,15 @@ class PersonalizedEmailService:
                     custom_body or "",
                     sender_user,
                     fallback_name=self.config.sender.get("name", ""),
+                    signature=signature,
                     unsubscribe_value="{{unsubscribe_url}}",
                 )
                 if custom_body
                 else "",
             }
-            result["quality_review"] = quality_service.review_draft(result["subject"], result["body"])
+            result["quality_review"] = quality_service.review_draft(
+                result["subject"], result["body"], contact=contact
+            )
             result["experiment"] = experiment
             self._save_draft(contact, result, mode=mode, user=user)
             return result
@@ -74,10 +80,13 @@ class PersonalizedEmailService:
                 draft["body"],
                 sender_user,
                 fallback_name=self.config.sender.get("name", ""),
+                signature=signature,
                 unsubscribe_value="{{unsubscribe_url}}",
             ),
         }
-        result["quality_review"] = quality_service.review_draft(result["subject"], result["body"])
+        result["quality_review"] = quality_service.review_draft(
+            result["subject"], result["body"], contact=contact
+        )
         result["experiment"] = experiment
         self._save_draft(contact, result, mode=mode, user=user)
         return result
@@ -99,7 +108,7 @@ class PersonalizedEmailService:
                 raise ValueError("Email draft must be approved before sending")
             if approved.get("subject") != subject or approved.get("body") != body:
                 raise ValueError("Email content changed after approval; approve the draft again")
-        quality_review = OutboundQualityService(self.repo).review_draft(subject, body)
+        quality_review = OutboundQualityService(self.repo).review_draft(subject, body, contact=contact)
         if quality_review["status"] == "blocked":
             codes = ", ".join(item["code"] for item in quality_review["blocking_issues"])
             raise ValueError(f"Email quality check failed: {codes}")
@@ -130,18 +139,22 @@ class PersonalizedEmailService:
         values = {
             **contact,
             "sender_name": _sender_signature_name(sender_user, sender.get("name", "")),
-            "sender_signature": _sender_signature(sender_user, sender.get("name", "")),
+            "sender_signature": _sender_signature(sender_user, sender.get("name", ""), sender.get("signature")),
             "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
         }
         text = render_string(body, values)
-        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
+        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), signature=sender.get("signature"), unsubscribe_value=values["unsubscribe_url"])
         if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
-        html_body = build_html_body(text, product_images=getattr(self.config, "product_images", {}))
+        html_body = build_html_body(
+            text,
+            product_images=getattr(self.config, "product_images", {}),
+            signature=sender.get("signature"),
+        )
         html_body += f'<img src="{open_pixel_url(contact, step, base_url, tracking_secret)}" width="1" height="1" alt="" />'
         idempotency_key = f"contact-{contact['id']}-step-{step}"
         attempt = self.repo.reserve_send_attempt(
@@ -163,6 +176,7 @@ class PersonalizedEmailService:
                 metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
+                attachments=_brand_attachments(self.config, sender.get("signature")),
             )
         except Exception as exc:
             self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
@@ -313,7 +327,10 @@ class PersonalizedEmailService:
         experiment: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         copy_contact = customer_visible_contact(contact)
-        fallback = self._fallback_draft(copy_contact, user=user)
+        research = self.repo.get_contact_research(int(contact["id"])) if hasattr(self.repo, "get_contact_research") else None
+        research = research or {}
+        segment = _account_segment(copy_contact, research)
+        fallback = self._fallback_draft(copy_contact, user=user, research=research)
         gateway = LLMGateway(self.config, self.repo)
         if not gateway.can_generate(contact):
             return fallback
@@ -323,8 +340,8 @@ class PersonalizedEmailService:
         framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(copy_contact)
         pain_strategy = insights.get("pain_point_strategy") if isinstance(insights.get("pain_point_strategy"), dict) else {}
         followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
+        recipient_mandate = _recipient_mandate(copy_contact)
         flywheel = DataFlywheelService(self.config, self.repo).context_for_contact(copy_contact)
-        research = self.repo.get_contact_research(int(contact["id"])) or {}
         research_sources = []
         for item in (research.get("sources") or [])[:6]:
             cleaned = clean_public_research_item(item)
@@ -335,13 +352,18 @@ class PersonalizedEmailService:
             "The commercial purpose is to identify a credible local partner who could open and operate a VERTU boutique or develop selective local distribution. "
             "This email will be sent with VERTU product images displayed below the text, so you do not need to describe phones, watches, or wearables in the body. "
             "Frame the value as a differentiated luxury category and potential commercial upside for the partner's high-value customer base; never promise revenue, margin, returns, or an outcome. "
-            "Output strict JSON only with fields: subject, body. Body must be plain text, 70-110 prospect-facing words before the signature, natural, and specific. "
+            "Output strict JSON only with fields: subject, body. Body must be plain text, 100-220 prospect-facing words before the signature, natural, specific, and easy to scan. "
             "Do not invent revenue, funding, customer names, case studies, news, meetings, or product claims. "
             "You may use at most one current signal from research_sources, only when its title and snippet directly support the wording. "
             "Treat undated or ambiguous sources as weak evidence and phrase them as an observation, not a confirmed business fact. "
-            "Use a peer-to-peer commercial tone, not a sales script. Every sentence must add a fact, business observation, or practical partner value. "
-            "Use this structure without headings: observed account context; local boutique/distribution opportunity; why VERTU may fit the partner's customer base; exactly one low-friction permission question; brief close with a reference like 'the products attached below give a quick sense of our range'. "
-            "The only CTA should ask whether you may send a one-page local-market partnership outline. Do not request a meeting, call, calendar invite, or attachment in the first email. "
+            "Use a peer-to-peer commercial tone, not a sales script. Every sentence must add a fact, commercial hypothesis, or practical partner value. "
+            "Use this structure without headings: direct sender introduction; one or two verified account facts; a clear commercial thesis explaining why the recipient's existing customer base or channel could fit VERTU; two or three concise cooperation routes when supported; one business rationale; exactly one low-friction next-step question. "
+            "The CTA may offer a market-specific partnership deck or ask whether a short discussion is useful, but never manufacture travel plans, meetings, attachments, deadlines, scarcity, or urgency. "
+            "Mention VERTU's broader luxury portfolio only when relevant, using only these approved categories: luxury smartphones, watches, jewelry, fine leather goods, and connected luxury products. "
+            f"Use this approved brand introduction once: {_APPROVED_BRAND_INTRO} "
+            f"Use this approved market intention once: {_market_intent(copy_contact, segment)} "
+            f"State that VERTU's approved 2026 roadmap includes only: {', '.join(_APPROVED_2026_PORTFOLIO)}. Present it compactly and do not add claims, launch dates, specifications, or performance promises. Use 'return' only for India; for another verified country use 'expand in'; if the country is unknown, do not name a market. "
+            "Personalize for the recipient's actual decision lens. A CEO/owner should receive a strategic growth case; a buyer a portfolio and customer-fit case; retail operations a store-format and service case; marketing a VIP activation case. Do not send different roles at the same company the same argument. "
             "Avoid generic claims such as 'we are a leading brand', 'exclusive opportunity', 'hope this email finds you well', or 'high quality and good price'. "
             "Never expose CRM fields, lead scores, verification status, follow-up status, owners, source IDs, or internal notes. "
             f"Recipient: {copy_contact.get('first_name')} {copy_contact.get('last_name')}; role: {copy_contact.get('job_title')}; "
@@ -349,13 +371,17 @@ class PersonalizedEmailService:
             f"approved public context: {json.dumps(source_context, ensure_ascii=False)}; account context sentence: {account_context}; "
             f"five-part framework: {json.dumps(framework, ensure_ascii=False)}; "
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
+            f"recipient decision lens: {json.dumps(recipient_mandate, ensure_ascii=False)}; "
+            f"engagement context: sequence_step={int(copy_contact.get('sequence_step') or 0)}, status={str(copy_contact.get('status') or 'new')}, last_event={str(copy_contact.get('last_event_type') or 'none')}; "
             f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
             f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
             f"validated flywheel guidance: {json.dumps(flywheel, ensure_ascii=False)}; "
             "Use flywheel guidance only to choose among facts already present; never invent evidence from it. "
+            f"account segment: {segment}. For luxury_group accounts, emphasize portfolio adjacency, selective distribution or boutique formats, VIP/private-client activation, and operating governance. "
+            f"Use this exact subject unless it conflicts with a verified fact: {_email_subject(copy_contact, str(copy_contact.get('company_name') or 'your business'), recipient_mandate, segment)}. "
             f"experiment instruction: {str((experiment or {}).get('instruction') or 'none')}; "
             "The experiment instruction may change only the stated experiment variable and must not weaken factual accuracy. "
-            f"sender: {self.config.sender.get('name')}."
+            f"sender: {_sender_signature_name(user, self.config.sender.get('name', ''))}."
         )
         text = gateway.complete(
             operation="personalized_email_draft",
@@ -380,11 +406,26 @@ class PersonalizedEmailService:
             return fallback
         subject = str(draft.get("subject") or fallback["subject"])[:160]
         body = str(draft.get("body") or fallback["body"])[:3000]
+        if segment in {"automotive_group", "luxury_group"}:
+            subject = _email_subject(
+                copy_contact,
+                str(copy_contact.get("company_name") or "your business"),
+                _recipient_mandate(copy_contact),
+                segment,
+            )
         if contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
+            return fallback
+        if review_email_copy(subject, body, contact=copy_contact)["status"] == "blocked":
             return fallback
         return {"subject": subject, "body": body}
 
-    def _fallback_draft(self, contact: dict[str, Any], *, user: dict[str, Any] | None = None) -> dict[str, str]:
+    def _fallback_draft(
+        self,
+        contact: dict[str, Any],
+        *,
+        user: dict[str, Any] | None = None,
+        research: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         contact = customer_visible_contact(contact)
         company = contact.get("company_name") or "your business"
         first = contact.get("first_name") or "there"
@@ -397,16 +438,35 @@ class PersonalizedEmailService:
         match = strategy.get("message_hook") or framework.get("business_match") or _fallback_opening(contact)
         if not match or match.startswith("Reference the recipient"):
             match = f"I noticed {company} is relevant to {category}, and your role as {role} looks close to channel or commercial decisions."
-        pain = strategy.get("suspected_pain") or f"For partners in {category}, the practical question is whether a new luxury category can fit their customer base and local operating model."
-        subject = f"Possible Vertu channel fit for {company}"
+        routes = _partnership_routes(contact, research)
+        mandate = _recipient_mandate(contact)
+        segment = _account_segment(contact, research)
+        signature = _signature_profile(self.config, user)
+        subject = _email_subject(contact, company, mandate, segment)
+        opportunity = (
+            "VERTU can complement the portfolio as a selective adjacent category spanning smartphones, watches, jewelry, leather goods and connected products."
+            if segment == "luxury_group"
+            else "VERTU can extend an existing relationship with affluent customers across smartphones, watches, jewelry, leather goods and connected products, supported by boutique-level service."
+        )
+        cta = (
+            "Would a short discussion be useful to assess the market role, product mix and operating model before either side develops a formal partnership roadmap?"
+            if segment == "luxury_group"
+            else "Would it be useful if I sent a brief market-specific partnership deck covering the channel model, product mix and next steps?"
+        )
         body = (
             f"Hi {first},\n\n"
-            f"{match.rstrip('.')}. "
-            f"From VERTU headquarters, I work with prospective local partners on whether a VERTU boutique or selective distribution model could suit their market.\n\n"
-            f"{pain[0].upper() + pain[1:] if pain else 'The relevant question is whether the category can fit the local customer base and operating model.'} "
-            "The products below give a quick sense of our range — including AI phones, smartwatches, mechanical watches and premium wearables.\n\n"
-            f"May I send a one-page view of how a VERTU channel partnership could be assessed for {company}'s market?\n\n"
-            f"{_sender_signature(user, self.config.sender.get('name', ''))}\n\n"
+            f"I’m {_sender_signature_name(user, self.config.sender.get('name', ''))} from VERTU’s international channel development team. "
+            f"{match.rstrip('.')}.\n\n"
+            f"{_APPROVED_BRAND_INTRO} {_market_intent(contact, segment)}\n\n"
+            "VERTU in 2026 is no longer phones only. Our roadmap spans:\n"
+            f"{_portfolio_list()}\n\n"
+            f"{opportunity}\n\n"
+            "These two practical routes may be worth assessing:\n"
+            f"1. {routes[0]}\n"
+            f"2. {routes[1]}\n\n"
+            f"Given your responsibility for {mandate['responsibility']}, the useful question is {mandate['decision_question']}.\n\n"
+            f"{cta}\n\n"
+            f"{_sender_signature(user, self.config.sender.get('name', ''), signature)}\n\n"
             "Unsubscribe: {{unsubscribe_url}}"
         )
         return {"subject": subject, "body": body}
@@ -448,7 +508,7 @@ class OutreachService:
         sender_user = sender_identity_user(self.repo, contact, user)
         sender_user_id = int(sender_user["id"]) if sender_user else None
         actor_user_id = int(user["id"]) if user else None
-        readiness = send_readiness(contact)
+        readiness = send_readiness(contact, strict_automation=True)
         if not readiness["ok"]:
             log("send.skipped_quality_gate", contact_id=contact.get("id"), email=contact.get("email"), reasons=readiness["reasons"], score=readiness["score"])
             return False
@@ -476,18 +536,26 @@ class OutreachService:
         values = {
             **contact,
             "sender_name": _sender_signature_name(sender_user, sender.get("name", "")),
-            "sender_signature": _sender_signature(sender_user, sender.get("name", "")),
+            "sender_signature": _sender_signature(sender_user, sender.get("name", ""), sender.get("signature")),
             "unsubscribe_url": unsubscribe_url(contact, base_url, tracking_secret),
             "account_context": _account_context(contact),
             "seed_reason": _source_context(contact).get("seed_reason", ""),
             "seed_category": _source_context(contact).get("seed_category", ""),
             "ai_opener": _ai_opener(gateway, contact) if step_cfg.get("ai_opener") else "",
+            "partnership_route_1": _partnership_routes(contact)[0],
+            "partnership_route_2": _partnership_routes(contact)[1],
+            "recipient_responsibility": _recipient_mandate(contact)["responsibility"],
         }
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
-        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), unsubscribe_value=values["unsubscribe_url"])
-        html_body = build_html_body(text, product_images=self.config.product_images)
+        text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), signature=sender.get("signature"), unsubscribe_value=values["unsubscribe_url"])
+        html_body = build_html_body(text, product_images=self.config.product_images, signature=sender.get("signature"))
         validate_email_body(subject, text)
+        quality_review = review_email_copy(subject, text, contact=contact)
+        if quality_review["status"] == "blocked":
+            reasons = [item["code"] for item in quality_review["blocking_issues"]]
+            log("send.skipped_copy_policy", contact_id=contact.get("id"), reasons=reasons)
+            return False
         html_body += f'<img src="{open_pixel_url(contact, int(step_cfg["step"]), base_url, tracking_secret)}" width="1" height="1" alt="" />'
         step = int(step_cfg["step"])
         reply_to = signed_reply_address(
@@ -517,6 +585,7 @@ class OutreachService:
                 metadata={"contact_id": contact["id"], "sequence_step": step, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
+                attachments=_brand_attachments(self.config, sender.get("signature")),
             )
         except Exception as exc:
             self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
@@ -576,6 +645,202 @@ def _account_context(contact: dict[str, Any]) -> str:
     if signal:
         parts.append(f"public signal: {signal}")
     return "; ".join(parts)
+
+
+_AUTOMOTIVE_SIGNALS = (
+    "automotive",
+    "dealer",
+    "supercar",
+    "luxury car",
+    " cars",
+    "porsche",
+    "mercedes",
+    "bmw",
+    "bentley",
+    "ferrari",
+    "lamborghini",
+)
+
+_APPROVED_BRAND_INTRO = (
+    "VERTU is a British luxury technology brand combining craftsmanship, technology and personalized service."
+)
+_APPROVED_2026_PORTFOLIO = (
+    "Luxury smartphones",
+    "Watches",
+    "Jewelry",
+    "Fine leather goods",
+    "Luxury SUV",
+    "Monthly new AIoT products",
+)
+_COUNTRY_ALIASES = {
+    "india": "India",
+    "turkey": "Türkiye",
+    "türkiye": "Türkiye",
+    "russia": "Russia",
+    "kazakhstan": "Kazakhstan",
+    "tajikistan": "Tajikistan",
+    "kyrgyzstan": "Kyrgyzstan",
+    "united arab emirates": "the UAE",
+    "uae": "the UAE",
+    "saudi arabia": "Saudi Arabia",
+    "iran": "Iran",
+    "iraq": "Iraq",
+    "kuwait": "Kuwait",
+    "bahrain": "Bahrain",
+    "qatar": "Qatar",
+    "oman": "Oman",
+    "malaysia": "Malaysia",
+    "singapore": "Singapore",
+    "indonesia": "Indonesia",
+    "thailand": "Thailand",
+    "vietnam": "Vietnam",
+    "philippines": "the Philippines",
+    "united kingdom": "the UK",
+    "uk": "the UK",
+    "france": "France",
+    "germany": "Germany",
+    "italy": "Italy",
+    "spain": "Spain",
+    "united states": "the United States",
+    "usa": "the United States",
+}
+
+
+def _partnership_routes(contact: dict[str, Any], research: dict[str, Any] | None = None) -> tuple[str, str]:
+    segment = _account_segment(contact, research)
+    if segment == "automotive_group":
+        return (
+            "a selective VERTU shop-in-shop or VIP display within the premium automotive network",
+            "a regional distribution and client-activation model for existing high-value customers",
+        )
+    if segment == "luxury_group":
+        return (
+            "a curated VERTU category alongside the existing luxury portfolio",
+            "a boutique, shop-in-shop or private-client event model built around VIP customers",
+        )
+    if segment == "hospitality_group":
+        return (
+            "a concierge, VIP gifting or private-client experience",
+            "a selective retail or shop-in-shop format for affluent guests",
+        )
+    return (
+        "selective local distribution with a controlled premium positioning",
+        "a boutique or shop-in-shop model aligned with the existing customer base",
+    )
+
+
+def _market_intent(contact: dict[str, Any], segment: str) -> str:
+    market = _market_name(contact)
+    if market == "India":
+        direction = "including automotive-related directions" if segment == "automotive_group" else "across broader luxury lifestyle categories"
+        return f"VERTU is ready to return to India, and we are expanding beyond phones {direction}."
+    if market:
+        direction = "including automotive-related directions" if segment == "automotive_group" else "across broader luxury lifestyle categories"
+        return f"VERTU is ready to expand in {market}, moving beyond phones {direction}."
+    return "VERTU is expanding beyond phones across a broader luxury lifestyle portfolio."
+
+
+def _portfolio_list() -> str:
+    return "\n".join(f"- {item}" for item in _APPROVED_2026_PORTFOLIO)
+
+
+def _market_name(contact: dict[str, Any]) -> str:
+    context = _source_context(contact)
+    direct = contact.get("country") or context.get("country")
+    if direct:
+        text = str(direct).strip()
+        lowered = text.lower()
+        return next((name for alias, name in _COUNTRY_ALIASES.items() if alias == lowered), text[:80])
+    evidence = " ".join(
+        str(value or "").lower()
+        for value in (contact.get("location"), context.get("seed_location"), context.get("seed_reason"))
+    )
+    for alias, name in sorted(_COUNTRY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", evidence):
+            return name
+    return ""
+
+
+def _account_segment(contact: dict[str, Any], research: dict[str, Any] | None = None) -> str:
+    context = _source_context(contact)
+    company_segment = _segment_from_text(str(contact.get("company_name") or "").lower())
+    if company_segment != "general":
+        return company_segment
+    primary_text = " ".join(
+        str(value or "").lower()
+        for value in (
+            "" if contact.get("industry") == "premium retail and distribution" else contact.get("industry"),
+            context.get("seed_category"),
+            context.get("seed_reason"),
+            contact.get("company_name"),
+            contact.get("job_title"),
+        )
+    )
+    segment = _segment_from_text(primary_text)
+    if segment != "general" or not research:
+        return segment
+    return _segment_from_text(json.dumps(research, ensure_ascii=False, default=str).lower())
+
+
+def _segment_from_text(text: str) -> str:
+    signals = {
+        "automotive_group": _AUTOMOTIVE_SIGNALS,
+        "hospitality_group": ("hotel", "hospitality", "resort", "concierge"),
+        "luxury_group": ("luxury", "watch", "jewelry", "jewellery", "diamond", "fashion", "boutique", "department store", "premium retail"),
+    }
+    scores = {segment: sum(token in text for token in tokens) for segment, tokens in signals.items()}
+    best = max(scores.values())
+    winners = [segment for segment, score in scores.items() if score == best]
+    return winners[0] if best and len(winners) == 1 else "general"
+
+
+def _email_subject(contact: dict[str, Any], company: str, mandate: dict[str, str], segment: str) -> str:
+    if segment == "automotive_group":
+        return f"VERTU × {company} — Luxury Tech + Automotive Synergy"
+    if segment == "luxury_group" and mandate["subject_angle"] == "strategic growth paths":
+        market = _market_name(contact)
+        market_prefix = f"{market} " if market else ""
+        return f"Strategic Vision: VERTU × {company} — {market_prefix}Partnership Roadmap"
+    return f"VERTU × {company} — {mandate['subject_angle']}"
+
+
+def _recipient_mandate(contact: dict[str, Any]) -> dict[str, str]:
+    title = str(contact.get("job_title") or "").lower()
+    if any(token in title for token in ("owner", "founder", "ceo", "president", "chairman", "general manager", "general director", "managing director")):
+        return {
+            "responsibility": "growth, portfolio strategy and partner economics",
+            "decision_question": "whether VERTU creates a credible adjacent luxury category rather than operational distraction",
+            "subject_angle": "strategic growth paths",
+        }
+    if any(token in title for token in ("buyer", "buying", "procurement", "merchand", "category")):
+        return {
+            "responsibility": "assortment, customer fit and commercial performance",
+            "decision_question": "which product mix and trial format could complement the existing portfolio",
+            "subject_angle": "portfolio fit",
+        }
+    if any(token in title for token in ("retail", "store", "franchise", "operations", "channel")):
+        return {
+            "responsibility": "store format, service standards and rollout execution",
+            "decision_question": "which boutique or shop-in-shop model can be operated consistently in the local network",
+            "subject_angle": "retail format",
+        }
+    if any(token in title for token in ("marketing", "brand", "communications", "crm", "clienteling")):
+        return {
+            "responsibility": "brand relevance, VIP engagement and customer activation",
+            "decision_question": "how VERTU can create a credible private-client story and activation plan",
+            "subject_angle": "VIP client activation",
+        }
+    if any(token in title for token in ("design", "product", "technology", "technical", "engineering")):
+        return {
+            "responsibility": "product experience, differentiation and technical delivery",
+            "decision_question": "where product experience and luxury craftsmanship can create a meaningful collaboration",
+            "subject_angle": "product collaboration",
+        }
+    return {
+        "responsibility": "commercial development and local partner selection",
+        "decision_question": "which cooperation model best fits the customer base and local operation",
+        "subject_angle": "partnership options",
+    }
 
 
 def _fallback_opening(contact: dict[str, Any]) -> str:
@@ -638,6 +903,8 @@ def _validated_draft_text(text: str) -> str | None:
     body = str(parsed.get("body") or "").strip()[:3000]
     if not subject or not body or contains_internal_outreach_data(subject) or contains_internal_outreach_data(body):
         return None
+    if review_email_copy(subject, body)["status"] == "blocked":
+        return None
     return json.dumps({"subject": subject, "body": body}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -662,8 +929,31 @@ def _sender_signature_name(user: dict[str, Any] | None, fallback_name: str = "")
     return value or "Vertu"
 
 
-def _sender_signature(user: dict[str, Any] | None, fallback_name: str = "") -> str:
+def _signature_profile(config: AppConfig, user: dict[str, Any] | None) -> dict[str, Any]:
+    mailbox = sales_mailbox(config, user) or {}
+    return dict(mailbox.get("signature") or {})
+
+
+def _sender_signature(user: dict[str, Any] | None, fallback_name: str = "", signature: dict[str, Any] | None = None) -> str:
     name = _sender_signature_name(user, fallback_name)
+    profile = signature or {}
+    if profile:
+        lines = [
+            "Best regards,",
+            str(profile.get("name") or name).strip(),
+            str(profile.get("title") or "").strip(),
+            str(profile.get("phone") or "").strip(),
+            str(profile.get("address") or "").strip(),
+        ]
+        return "\n".join(line for line in lines if line)
+    normalized = name.lower()
+    if normalized in {"april", "jingjing yang", "jingjing yang (april)"}:
+        return (
+            "Best regards,\nApril Yang\n"
+            "Head of CIS & South Asia | Vertu International Corporation Limited\n"
+            "Phone: +008619003165328 | Room 505, 5th Floor, Beverley Commercial Centre,\n"
+            "87-105 Chatham Road South, Tsim Sha Tsui, Kowloon. Hong Kong"
+        )
     signature_name = name if name.lower().endswith(" you") else f"{name} You"
     return f"Best regards,\n{signature_name}\nBD Manager Of Media East Region | VERTU"
 
@@ -676,6 +966,7 @@ def _normalize_sender_signature(
     user: dict[str, Any] | None,
     *,
     fallback_name: str = "",
+    signature: dict[str, Any] | None = None,
     unsubscribe_value: str | None = None,
 ) -> str:
     body = str(text or "").rstrip()
@@ -688,8 +979,46 @@ def _normalize_sender_signature(
         unsubscribe = f"Unsubscribe: {unsubscribe_value}"
 
     body = _SIGNOFF_RE.sub("", body).rstrip()
-    parts = [part for part in [body, _sender_signature(user, fallback_name), unsubscribe] if part]
+    parts = [part for part in [body, _sender_signature(user, fallback_name, signature), unsubscribe] if part]
     return "\n\n".join(parts)
+
+
+def _brand_attachments(config: AppConfig, signature: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    outreach = config.raw.get("outreach", {})
+    configured = str(outreach.get("brand_pdf_path") or "").strip()
+    if configured:
+        path = Path(configured)
+        if not path.is_absolute():
+            path = config.root_dir / path
+        if path.suffix.lower() != ".pdf" or not path.is_file():
+            raise RuntimeError(f"Configured VERTU brand PDF is missing or invalid: {path}")
+        content = path.read_bytes()
+        if not content.startswith(b"%PDF") or len(content) > 20 * 1024 * 1024:
+            raise RuntimeError("Configured VERTU brand PDF must be a valid PDF no larger than 20 MB")
+        filename = str(outreach.get("brand_pdf_filename") or "VERTU Brand Introduction.pdf").strip()
+        attachments.append({"filename": filename, "content": content, "content_type": "application/pdf"})
+
+    profile = signature or {}
+    logo_path = Path(str(profile.get("logo_path") or "").strip())
+    if str(logo_path) not in {"", "."}:
+        if not logo_path.is_absolute():
+            logo_path = config.root_dir / logo_path
+        if logo_path.suffix.lower() not in {".png", ".jpg", ".jpeg"} or not logo_path.is_file():
+            raise RuntimeError(f"Configured signature logo is missing or invalid: {logo_path}")
+        logo_content = logo_path.read_bytes()
+        if not logo_content or len(logo_content) > 1024 * 1024:
+            raise RuntimeError("Configured signature logo must be no larger than 1 MB")
+        attachments.append(
+            {
+                "filename": logo_path.name,
+                "content": logo_content,
+                "content_type": "image/png" if logo_path.suffix.lower() == ".png" else "image/jpeg",
+                "disposition": "inline",
+                "content_id": str(profile.get("logo_cid") or "vertu-signature-logo").strip("<>"),
+            }
+        )
+    return attachments
 
 
 __all__ = ["OutreachService", "PersonalizedEmailService"]

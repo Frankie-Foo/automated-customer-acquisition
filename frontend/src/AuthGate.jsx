@@ -144,9 +144,9 @@ function AuthGate({ onSessionChange }) {
     <>
       {mode === "login" && (
         <form className="login-card" onSubmit={login}>
-          <div className="mark">LA</div>
-          <h1>登录获客系统</h1>
-          <p>请输入分配给你的账号。管理员默认账号仅用于初始化，上线前需要改密码。</p>
+          <div className="mark">V</div>
+          <h1>登录 VERTU Sales</h1>
+          <p>使用公司分配的账号和密码登录。</p>
           <label htmlFor="login-username">
             账号
             <input id="login-username" name="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
@@ -155,13 +155,13 @@ function AuthGate({ onSessionChange }) {
             密码
             <input id="login-password" name="password" type="password" autoComplete="current-password" placeholder="输入密码" value={password} onChange={(event) => setPassword(event.target.value)} />
           </label>
-          <button className="primary" type="submit">登录</button>
+          <button className="primary" type="submit">进入工作台</button>
           <div className="login-error">{error}</div>
         </form>
       )}
       {mode === "change-password" && (
         <form className="login-card" onSubmit={changePassword}>
-          <div className="mark">LA</div>
+          <div className="mark">V</div>
           <h1>首次登录请修改密码</h1>
           <p>为了账号安全，请把管理员分配的临时密码改成你自己的密码。</p>
           <label htmlFor="current-password">

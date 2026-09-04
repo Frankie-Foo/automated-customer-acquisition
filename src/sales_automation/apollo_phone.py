@@ -13,6 +13,7 @@ from .config import AppConfig
 from .contactout_queue import contactout_bridge_configured
 from .http import HttpClient
 from .logging_utils import log
+from .outbound_quality import enrichment_readiness
 
 
 class ApolloPhoneAdapter(Protocol):
@@ -54,7 +55,7 @@ class ApolloApiAdapter:
                 params["last_name"] = contact["last_name"]
             if contact.get("company_domain"):
                 params["domain"] = contact["company_domain"]
-        if not params.get("linkedin_url") and not (params.get("first_name") and params.get("company_domain")):
+        if not params.get("linkedin_url") and not (params.get("first_name") and params.get("domain")):
             raise ValueError("apollo_identity_insufficient")
         url = "https://api.apollo.io/api/v1/people/match?" + urllib.parse.urlencode(params)
         return self.http.request(
@@ -91,7 +92,13 @@ class ApolloPhoneQueueService:
             require_contactout_terminal=contactout_required,
         )
         jobs = []
+        skipped = []
         for contact in candidates:
+            full_contact = self.repo.get_contact(int(contact["id"])) or contact
+            quality = enrichment_readiness(full_contact, paid=True)
+            if not quality["ok"]:
+                skipped.append({"contact_id": int(contact["id"]), "reason": f"quality_gate:{quality['reasons'][0]}"})
+                continue
             input_hash = _identity_hash(contact)
             jobs.append(
                 self.repo.enqueue_apollo_phone_job(
@@ -104,7 +111,7 @@ class ApolloPhoneQueueService:
                     quota_units=self.max_credits_per_lookup,
                 )
             )
-        return {"candidates": len(candidates), "queued": len(jobs), "jobs": jobs}
+        return {"candidates": len(candidates), "queued": len(jobs), "skipped": skipped, "jobs": jobs}
 
     def dispatch_next(self) -> ApolloPhoneRun | None:
         self.repo.expire_apollo_phone_jobs()

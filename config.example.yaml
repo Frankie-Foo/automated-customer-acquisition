@@ -115,6 +115,13 @@ sales_mailboxes:
   april:
     active: ${APRIL_MAILBOX_ACTIVE}
     email: ${APRIL_MAILBOX_EMAIL}
+    signature:
+      name: April Yang
+      title: Head of CIS & South Asia | Vertu International Corporation Limited
+      phone: "Phone: +008619003165328 | Room 505, 5th Floor, Beverley Commercial Centre,"
+      address: 87-105 Chatham Road South, Tsim Sha Tsui, Kowloon. Hong Kong
+      logo_path: assets/brand/vertu_signature_logo.png
+      logo_cid: vertu-signature-logo
     smtp:
       host: ${APRIL_SMTP_HOST}
       port: ${APRIL_SMTP_PORT}
@@ -355,6 +362,8 @@ outreach:
   waiting_pool_after_days: 14
   send_delay_seconds: 10
   send_jitter_seconds: 5
+  brand_pdf_path: assets/brand/VERTU_BRAND_INTRODUCTION.pdf
+  brand_pdf_filename: VERTU Brand Introduction.pdf
 
 automation:
   max_auto_prepare_drafts: 20
