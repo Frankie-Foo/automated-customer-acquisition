@@ -130,6 +130,7 @@ def make_handler(config, repo: Repository):
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            self._session_user_loaded = False
             bind_actor(None)
             parsed = urlparse(self.path)
             if parsed.path == "/":
@@ -253,6 +254,10 @@ def make_handler(config, repo: Repository):
                 limit = int(qs.get("limit", ["100"])[0])
                 self._json(lambda: {"emails": repo.list_sent_emails(user=self._current_user(), limit=limit, search=search)})
                 return
+            if parsed.path == "/api/email-performance":
+                qs = parse_qs(parsed.query)
+                self._json(lambda: repo.email_performance(user=self._current_user(), observation_days=int(qs.get("days", ["14"])[0])))
+                return
             if parsed.path == "/api/ops-report":
                 self._json(lambda: repo.operations_report(user=self._current_user()))
                 return
@@ -358,6 +363,7 @@ def make_handler(config, repo: Repository):
             self.send_error(404)
 
         def do_POST(self) -> None:
+            self._session_user_loaded = False
             bind_actor(None)
             parsed = urlparse(self.path)
             if not self._require_safe_post(parsed.path):
@@ -1659,13 +1665,17 @@ def make_handler(config, repo: Repository):
                 log("audit.write_failed", action=action, error_type=type(exc).__name__)
 
         def _current_user(self) -> dict[str, Any] | None:
-            token = parse_session_cookie(self.headers.get("Cookie"))
-            try:
-                user = repo.get_session_user(token)
-                bind_actor(user)
-                return user
-            except Exception:
-                return None
+            # One authorization snapshot per request; never reuse it across requests.
+            if not getattr(self, "_session_user_loaded", False):
+                self._session_user = None
+                token = parse_session_cookie(self.headers.get("Cookie"))
+                try:
+                    self._session_user = repo.get_session_user(token)
+                except Exception:
+                    pass
+                self._session_user_loaded = True
+            bind_actor(self._session_user)
+            return self._session_user
 
         def _require_database(self) -> bool:
             if check_database(repo)["ok"]:

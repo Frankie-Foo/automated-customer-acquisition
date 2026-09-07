@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
+import EmailPerformance from "./EmailPerformance.jsx";
 
 export default function SentEmailsPortal() {
   const [target, setTarget] = useState(null);
@@ -70,6 +71,7 @@ function SentEmails() {
 
   return (
     <>
+      {active && <EmailPerformance />}
       <div className="section-head">
         <div>
           <span className="eyebrow">Email log</span>

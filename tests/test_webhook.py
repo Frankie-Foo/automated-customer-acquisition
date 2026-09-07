@@ -1,8 +1,31 @@
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from sales_automation.services import WebhookService, _extract_contact_id, _extract_event_type, _extract_message_id, _extract_recipient_email, _extract_sender_email
 from sales_automation.services.webhooks import _furthest_lifecycle_stage
+
+
+@pytest.mark.parametrize("body,event", [("Please send details", "replied"), ("Unsubscribe", "unsubscribed")])
+@pytest.mark.parametrize("outbound_id", ["<original@example.com>", None])
+def test_reply_interaction_preserves_exact_attribution_without_guessing(body, event, outbound_id):
+    class Repo:
+        def record_event(self, *args):
+            self.event = args[1]
+
+        def record_interaction(self, **kwargs):
+            self.interaction = kwargs
+
+    repo = Repo()
+    result = WebhookService(repo).process_payload("smtp", {
+        "event": "replied", "contact_id": 42, "text": body,
+        "message_id": "<incoming@example.com>", "in_reply_to": outbound_id,
+    })
+    assert result == "replied"
+    assert repo.event == event
+    assert repo.interaction["interaction_type"] == "email_reply"
+    assert repo.interaction["metadata"]["outbound_message_id"] == outbound_id
+    assert repo.interaction["source_ref"] == "<incoming@example.com>"
 
 
 def test_auto_reply_event_is_supported_by_database_schema():

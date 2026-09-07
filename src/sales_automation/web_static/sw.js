@@ -1,4 +1,4 @@
-const CACHE = "outbound-ops-shell-v1";
+const CACHE = "outbound-ops-shell-v2-performance";
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
@@ -11,7 +11,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith("outbound-ops-shell-") && key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });

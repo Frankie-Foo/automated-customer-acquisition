@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
     "build:python-static": "vite build && node scripts/copy-to-python-static.mjs",
-    "check": "vite build --mode test"
+    "check": "node --test scripts/pwa.test.mjs && vite build --mode test"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

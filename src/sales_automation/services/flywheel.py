@@ -208,12 +208,12 @@ def build_learning_plan(
             measured = item.get("measured_variants") or item.get("variants") or []
             analysis = summarize_experiment(measured)
         winner = analysis.get("winner")
-        if winner:
+        if winner or item.get("winner_variant"):
             experiment_actions.append({
-                "action": "select_experiment_winner",
+                "action": "select_experiment_winner" if winner else "revoke_experiment_winner",
                 "experiment_id": item.get("id"),
                 "experiment_name": item.get("name"),
-                "variant": str(winner),
+                "variant": str(winner) if winner else None,
                 "reason": analysis.get("recommendation") or "Decision-grade positive-reply evidence.",
                 "analysis": analysis,
             })
@@ -310,8 +310,11 @@ class DataFlywheelService:
                 skipped.append({"action": "select_experiment_winner", "experiment_id": experiment_id, "reason": "repository_not_ready"})
                 continue
             updated = self.repo.set_outbound_experiment_winner(int(experiment_id), variant=action["variant"])
+            if not updated:
+                skipped.append({"action": action["action"], "experiment_id": experiment_id, "reason": "update_not_applied"})
+                continue
             event = {
-                "action_type": "select_experiment_winner",
+                "action_type": action["action"],
                 "scope_type": "global",
                 "scope_key": "global",
                 "target_id": int(experiment_id),
@@ -322,7 +325,7 @@ class DataFlywheelService:
             }
             if hasattr(self.repo, "record_flywheel_learning_event"):
                 self.repo.record_flywheel_learning_event(event)
-            applied.append({"action": "select_experiment_winner", "experiment_id": experiment_id, "variant": action["variant"], "updated": bool(updated)})
+            applied.append({"action": action["action"], "experiment_id": experiment_id, "variant": action["variant"], "updated": bool(updated)})
         return {"status": "applied" if applied else "collecting", "plan": plan, "applied": applied, "skipped": skipped}
 
     def context_for_contact(self, contact: dict[str, Any]) -> dict[str, Any]:
