@@ -1512,6 +1512,48 @@ class Repository:
         if clause:
             clauses.append(clause)
 
+    def email_performance(self, *, user: dict[str, Any], observation_days: int = 14) -> dict[str, Any]:
+        if not user or not user.get("id"):
+            raise PermissionError("Authentication required")
+        days = int(observation_days)
+        if days not in (7, 14, 30):
+            raise ValueError("Observation days must be 7, 14 or 30")
+        owner_filter, owner_params = self._owner_filter("c", user, prefix="AND")
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                WITH messages AS (
+                  SELECT om.*, om.sent_at + (%s * INTERVAL '1 day') AS deadline
+                  FROM outreach_messages om JOIN contacts c ON c.id = om.contact_id
+                  WHERE om.sent_at IS NOT NULL AND om.sent_at <= NOW() AND om.channel = 'email'
+                    AND om.sent_at >= NOW() - INTERVAL '90 days'
+                    AND COALESCE(om.metadata->>'dry_run', 'false') != 'true'
+                    {owner_filter}
+                )
+                SELECT date_trunc('week', m.sent_at AT TIME ZONE 'Asia/Shanghai')::date AS week,
+                       COUNT(*)::integer AS sent,
+                       COUNT(*) FILTER (WHERE m.deadline <= NOW())::integer AS matured,
+                       COUNT(*) FILTER (WHERE m.deadline <= NOW() AND r.human)::integer AS replied,
+                       COUNT(*) FILTER (WHERE m.deadline <= NOW() AND r.positive)::integer AS positive,
+                       COUNT(*) FILTER (WHERE m.deadline <= NOW() AND m.bounced_at <= m.deadline)::integer AS bounced,
+                       COUNT(*) FILTER (WHERE m.deadline <= NOW() AND r.unsubscribed)::integer AS unsubscribed
+                FROM messages m
+                LEFT JOIN LATERAL (
+                  SELECT BOOL_OR(COALESCE(i.metadata->'reply_classification'->>'label', 'other') NOT IN ('ooo','bounce')) AS human,
+                         BOOL_OR(i.metadata->'reply_classification'->>'positive' = 'true') AS positive,
+                         BOOL_OR(i.metadata->'reply_classification'->>'label' = 'unsubscribe') AS unsubscribed
+                  FROM interactions i
+                  WHERE i.contact_id = m.contact_id AND i.interaction_type = 'email_reply'
+                    AND i.metadata->>'outbound_message_id' = m.provider_message_id
+                    AND i.occurred_at BETWEEN m.sent_at AND m.deadline
+                ) r ON TRUE
+                GROUP BY 1 ORDER BY 1 DESC
+                """, (days, *owner_params),
+            ).fetchall()
+        return {"observation_days": days, "lookback_days": 90, "grouping": "send_week",
+                "scope": "all" if user.get("role") == "admin" else "current_owner",
+                "timezone": "Asia/Shanghai", "attribution": "exact_message_id", "weeks": rows}
+
     def list_sent_emails(
         self,
         *,
@@ -4760,7 +4802,7 @@ class Repository:
                 (action_type, target_id, target_id, days),
             ).fetchone()
 
-    def set_outbound_experiment_winner(self, experiment_id: int, *, variant: str) -> dict[str, Any] | None:
+    def set_outbound_experiment_winner(self, experiment_id: int, *, variant: str | None) -> dict[str, Any] | None:
         with self.db.connect() as conn:
             return conn.execute(
                 """
@@ -4771,7 +4813,7 @@ class Repository:
                 WHERE id = %s AND status = 'active'
                 RETURNING *
                 """,
-                (variant.strip(), experiment_id),
+                (variant.strip() if variant else None, experiment_id),
             ).fetchone()
 
     def outbound_quality_dashboard(self, *, user: dict[str, Any]) -> dict[str, Any]:
@@ -4875,24 +4917,27 @@ class Repository:
                 ) d ON d.experiment_id = e.id
                 LEFT JOIN LATERAL (
                   SELECT
-                    COUNT(*) FILTER (WHERE om.sent_at IS NOT NULL)::integer AS sent,
-                    COUNT(*) FILTER (WHERE om.delivered_at IS NOT NULL)::integer AS delivered,
-                    COUNT(*) FILTER (WHERE om.opened_at IS NOT NULL)::integer AS opened,
-                    COUNT(*) FILTER (WHERE om.replied_at IS NOT NULL)::integer AS replies,
-                    COUNT(*) FILTER (
-                      WHERE i.metadata->'reply_classification'->>'positive' = 'true'
+                    COUNT(DISTINCT om.id) FILTER (WHERE om.sent_at IS NOT NULL)::integer AS sent,
+                    COUNT(DISTINCT om.id) FILTER (WHERE om.delivered_at <= om.sent_at + INTERVAL '14 days')::integer AS delivered,
+                    COUNT(DISTINCT om.id) FILTER (WHERE om.opened_at <= om.sent_at + INTERVAL '14 days')::integer AS opened,
+                    COUNT(DISTINCT om.id) FILTER (WHERE i.id IS NOT NULL)::integer AS replies,
+                    COUNT(DISTINCT om.id) FILTER (
+                      WHERE om.sent_at IS NOT NULL AND i.metadata->'reply_classification'->>'positive' = 'true'
                     )::integer AS positive_replies,
-                    COUNT(*) FILTER (WHERE om.bounced_at IS NOT NULL)::integer AS bounced,
-                    COUNT(*) FILTER (
+                    COUNT(DISTINCT om.id) FILTER (WHERE om.bounced_at <= om.sent_at + INTERVAL '14 days')::integer AS bounced,
+                    COUNT(DISTINCT om.id) FILTER (
                       WHERE i.metadata->'reply_classification'->>'label' = 'unsubscribe'
                     )::integer AS unsubscribed
                   FROM outreach_messages om
                   LEFT JOIN interactions i
                     ON i.contact_id = om.contact_id
                    AND i.interaction_type = 'email_reply'
-                   AND i.occurred_at >= COALESCE(om.sent_at, om.created_at)
+                   AND i.metadata->>'outbound_message_id' = om.provider_message_id
+                   AND i.occurred_at >= om.sent_at
+                   AND i.occurred_at <= om.sent_at + INTERVAL '14 days'
                   WHERE om.experiment_id = e.id
                     AND om.experiment_variant = d.experiment_variant
+                    AND om.sent_at <= NOW() - INTERVAL '14 days'
                 ) m ON TRUE
                 WHERE %s::bigint IS NULL OR e.owner_user_id = %s
                 GROUP BY e.id
@@ -4906,7 +4951,10 @@ class Repository:
         experiment_rows = []
         for experiment in experiments:
             measured = experiment.get("measured_variants") or experiment.get("variants") or []
-            experiment_rows.append({**experiment, "analysis": summarize_experiment(measured)})
+            experiment_rows.append({**experiment, "analysis": {
+                **summarize_experiment(measured), "observation_days": 14,
+                "attribution": "exact_message_id", "matured_only": True,
+            }})
         sent_count = int(sent_total.get("total") or 0)
         positive = int(replies.get("positive") or 0)
         return {

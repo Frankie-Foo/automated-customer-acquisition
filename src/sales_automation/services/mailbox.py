@@ -117,13 +117,13 @@ class MailboxReplyService:
         return stats
 
     def _match_contact(self, message: Message, sender: str) -> tuple[int | None, str | None]:
-        references = []
-        for header in ("In-Reply-To", "References"):
-            references.extend(_message_ids(message.get(header)))
-        for message_id in reversed(references):
+        direct = _message_ids(message.get("In-Reply-To"))
+        references = [*direct, *reversed(_message_ids(message.get("References")))]
+        for message_id in dict.fromkeys(references):
             contact_id = self.repo.find_contact_id_by_message_id(message_id)
             if contact_id:
-                return contact_id, message_id
+                # An ancestor identifies the customer, not the exact email replied to.
+                return contact_id, message_id if message_id in direct else None
         return self.repo.find_contact_id_by_email(sender), None
 
 

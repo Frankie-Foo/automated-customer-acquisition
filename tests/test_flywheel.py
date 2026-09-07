@@ -127,3 +127,32 @@ def test_automatic_learning_proposes_bounded_icp_update_and_experiment_winner():
         min_samples=5,
     )
     assert "正向回复" in strategy["guidance"]["prompt_guidance"]
+
+
+def test_learning_revokes_winner_when_evidence_no_longer_supports_it():
+    from sales_automation.services.flywheel import DataFlywheelService
+
+    class Repo:
+        events = []
+        winner = "B"
+
+        def outbound_quality_dashboard(self, **kwargs):
+            return {"experiments": [{"id": 8, "status": "active", "winner_variant": self.winner,
+                "measured_variants": [{"name": "A", "sent": 120, "positive_replies": 5},
+                                      {"name": "B", "sent": 120, "positive_replies": 6}]}]}
+
+        def set_outbound_experiment_winner(self, experiment_id, *, variant):
+            self.winner = variant
+            return {"id": experiment_id, "winner_variant": variant}
+
+        def record_flywheel_learning_event(self, event):
+            self.events.append(event)
+
+    repo = Repo()
+    service = DataFlywheelService(None, repo)
+    result = service.learn_once(rows=[])
+    assert result["applied"][0]["action"] == "revoke_experiment_winner"
+    assert repo.winner is None
+    assert repo.events[0]["before_state"] == {"winner_variant": "B"}
+    assert repo.events[0]["after_state"] == {"winner_variant": None}
+    assert service.learn_once(rows=[])["applied"] == []

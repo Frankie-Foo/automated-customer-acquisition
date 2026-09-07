@@ -601,15 +601,38 @@ def summarize_experiment(variants: Iterable[dict[str, Any]]) -> dict[str, Any]:
         return {"variants": [], "winner": None, "status": "no_data", "recommendation": "No experiment data yet."}
     enough_sample = len(rows) >= 2 and all(row["sent"] >= 100 for row in rows)
     ordered = sorted(rows, key=lambda row: (row["positive_reply_rate"], row["positive_replies"]), reverse=True)
-    winner = ordered[0]["name"] if enough_sample and ordered[0]["positive_reply_rate"] > ordered[1]["positive_reply_rate"] else None
+    # Conservative evidence gate, not a claim of causal or sequential significance.
+    def interval(row: dict[str, Any]) -> tuple[float, float]:
+        n = row["sent"]
+        if not n:
+            return (0.0, 1.0)
+        p = min(1.0, row["positive_replies"] / n)
+        z = 1.96
+        denominator = 1 + z * z / n
+        centre = (p + z * z / (2 * n)) / denominator
+        margin = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denominator
+        return (centre - margin, centre + margin)
+
+    valid = all(row["positive_replies"] <= row["sent"] for row in rows)
+    separated = valid and enough_sample and interval(ordered[0])[0] > max(interval(row)[1] for row in ordered[1:])
+    safe = all(
+        ordered[0][key] / max(1, ordered[0]["sent"]) <= limit
+        for key, limit in (("bounced", 0.05), ("unsubscribed", 0.01))
+    )
+    winner = ordered[0]["name"] if separated and safe else None
     return {
         "variants": rows,
         "winner": winner,
+        "decision_reason": (
+            "invalid_counts" if not valid else "insufficient_sample" if not enough_sample
+            else "risk_limit" if not safe else "uncertain_difference" if not separated
+            else "supported_difference"
+        ),
         "status": "decision_ready" if winner else "collecting",
         "recommendation": (
-            f"Keep {winner}; it has the highest positive-reply rate."
+            f"Prefer {winner}; retain 20% control traffic and re-evaluate outcomes."
             if winner
-            else "Keep the test single-variable and collect at least 100 sends per variant before choosing a winner."
+            else "Keep comparing: require 100 sends per variant, separated positive-reply intervals, and safe bounce/unsubscribe rates."
         ),
         "sample_warning": "" if enough_sample else "Sample size is not yet decision-grade.",
     }

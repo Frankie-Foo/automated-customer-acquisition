@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Iterable
+from hashlib import sha256
 
 from ..outbound_quality import assess_icp, review_email_copy, score_lead_list
 
@@ -60,10 +61,16 @@ class OutboundQualityService:
             (item for item in variants if str(item.get("name") if isinstance(item, dict) else item) == winner_name),
             None,
         ) if winner_name else None
+        # Stable holdout: regenerating a draft must not reshuffle its recipient.
+        bucket = int.from_bytes(sha256(f"{experiment['id']}:{contact_id}".encode()).digest()[:8], "big")
+        holdout = learned_variant is not None and bucket % 5 == 0
         variant = learned_variant
+        if holdout:
+            controls = [item for item in variants if item != learned_variant]
+            variant = controls[(bucket // 5) % len(controls)]
         if variant is None:
             variant = variants[contact_id % len(variants)]
-        winner_selected = learned_variant is not None
+        winner_selected = learned_variant is not None and not holdout
         if isinstance(variant, str):
             variant = {"name": variant}
         if not isinstance(variant, dict):
@@ -75,6 +82,7 @@ class OutboundQualityService:
             "instruction": str(variant.get("instruction") or "")[:500],
             "variable_name": experiment.get("variable_name"),
             "winner_selected": winner_selected,
+            "holdout": holdout,
         }
 
 

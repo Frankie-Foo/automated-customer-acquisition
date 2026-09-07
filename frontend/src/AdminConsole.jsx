@@ -519,7 +519,7 @@ function QualityExperimentPanel({ data, onRefresh }) {
       </div>
 
       <section className="experiment-history">
-        <div className="quality-panel-title"><div><strong>实验复盘</strong><span>每个版本至少发送 100 封后再判断胜出</span></div></div>
+        <div className="quality-panel-title"><div><strong>邮件效果与下一轮策略</strong><span>14 天观察窗口 · 仅计入可归因的回复</span></div></div>
         {!experiments.length ? <div className="empty-state">尚未创建实验</div> : experiments.map((experiment) => (
           <article key={experiment.id}>
             <header>
@@ -530,13 +530,20 @@ function QualityExperimentPanel({ data, onRefresh }) {
               {(experiment.analysis?.variants || []).map((variant) => (
                 <div key={variant.name}>
                   <b>{variant.name}</b>
-                  <span>发送 {variant.sent}</span>
-                  <span>回复 {variant.replies}</span>
-                  <span>有效回复 {variant.positive_reply_rate}%</span>
+                  <span>满 14 天发送 {variant.sent}</span>
+                  <span>人工回复 {variant.replies}</span>
+                  <span>正向回复 {variant.positive_replies} · {variant.positive_reply_rate}%</span>
+                  <span>退信 {variant.bounced} · 退订 {variant.unsubscribed}</span>
                 </div>
               ))}
             </div>
-            <p>{experiment.analysis?.winner ? `胜出版本：${experiment.analysis.winner}` : "样本仍在积累，暂不下结论。"}</p>
+            <p>{experiment.analysis?.winner ? `证据支持：${experiment.analysis.winner}` : ({
+              insufficient_sample: "观察样本不足：每个版本至少需要 100 封满观察期邮件。",
+              uncertain_difference: "差异尚不明确，继续对照，暂不扩大某个版本。",
+              risk_limit: "退信或退订超出门槛，先核查名单与触达频率。",
+              invalid_counts: "统计异常，暂停选优并核查数据。",
+            }[experiment.analysis?.decision_reason] || "尚无可比较的结果。")}</p>
+            <p>{experiment.winner_variant ? `当前执行：${experiment.winner_variant}，保留约 20% 对照流量。` : "当前执行：各版本均衡对照。"}</p>
             {experiment.status === "active" && <button type="button" disabled={busy} onClick={() => updateExperiment(experiment.id, "completed")}>结束并保留结果</button>}
           </article>
         ))}

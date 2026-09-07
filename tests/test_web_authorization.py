@@ -40,6 +40,75 @@ class FakeRepo:
         return None
 
 
+def test_email_performance_api_auth_scope_and_validation(monkeypatch):
+    class PerformanceRepo(FakeRepo):
+        def email_performance(self, *, user, observation_days):
+            assert user['id'] == 2 and user['role'] == 'sales'
+            if observation_days not in (7, 14, 30):
+                raise ValueError('Invalid observation window')
+            return {'weeks': [], 'observation_days': observation_days}
+
+    monkeypatch.setattr(web, 'check_database', lambda repo: {'ok': True})
+    handler = web.make_handler(SimpleNamespace(raw={'app': {}}), PerformanceRepo())
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f'http://127.0.0.1:{server.server_port}/api/email-performance'
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base, timeout=5)
+        assert error.value.code == 401
+        for days in ('7', '14', '30', '8', 'bad'):
+            request = urllib.request.Request(base + '?days=' + days, headers={'Cookie': 'salesbot_session=sales-token'})
+            if days in ('8', 'bad'):
+                with pytest.raises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(request, timeout=5)
+                assert error.value.code == 400
+            else:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    assert json.load(response)['data']['observation_days'] == int(days)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_session_revocation_does_not_change_actor_mid_request(monkeypatch):
+    class RevokingRepo(FakeRepo):
+        reads = 0
+
+        def get_session_user(self, token):
+            self.reads += 1
+            return super().get_session_user(token) if self.reads == 1 else None
+
+        def list_followup_tasks(self, *, user, status, limit):
+            assert user['id'] == 2
+            return []
+
+    monkeypatch.setattr(web, 'check_database', lambda repo: {'ok': True})
+    repo = RevokingRepo()
+    handler = web.make_handler(SimpleNamespace(raw={'app': {}}), repo)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{server.server_port}/api/followup-tasks',
+            headers={'Cookie': 'salesbot_session=sales-token'},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert json.load(response)['data']['tasks'] == []
+        assert repo.reads == 1
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 401
+        assert repo.reads == 2
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_sales_user_cannot_run_global_admin_operations(monkeypatch):
     monkeypatch.setattr(web, "check_database", lambda repo: {"ok": True})
     handler = web.make_handler(SimpleNamespace(raw={"app": {}}), FakeRepo())

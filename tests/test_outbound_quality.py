@@ -333,7 +333,7 @@ def test_experiment_summary_waits_for_sample_then_selects_positive_reply_winner(
     ready = summarize_experiment(
         [
             {"name": "A", "sent": 120, "positive_replies": 5},
-            {"name": "B", "sent": 120, "positive_replies": 10},
+            {"name": "B", "sent": 120, "positive_replies": 40},
         ]
     )
 
@@ -359,6 +359,30 @@ def test_future_experiment_assignment_uses_learned_winner():
 
     assert assignment["variant"] == "B"
     assert assignment["winner_selected"]
+
+
+def test_experiment_does_not_learn_from_noise_or_unsafe_winner():
+    baseline = {"name": "A", "sent": 120, "positive_replies": 5}
+    for candidate in (
+        {"name": "B", "sent": 120, "positive_replies": 10},
+        {"name": "B", "sent": 120, "positive_replies": 40, "bounced": 20},
+        {"name": "B", "sent": 120, "positive_replies": 40, "unsubscribed": 3},
+        {"name": "B", "sent": 120, "positive_replies": 121},
+    ):
+        assert summarize_experiment([baseline, candidate])["winner"] is None
+
+
+def test_learned_winner_keeps_stable_control_traffic():
+    class Repo:
+        def get_active_outbound_experiment(self, **kwargs):
+            return {"id": 3, "winner_variant": "B", "variants": ["A", "B"]}
+
+    service = OutboundQualityService(Repo())
+    assignments = [service.experiment_assignment(contact_id=i, owner_user_id=2) for i in range(1000)]
+    controls = [a for a in assignments if a["holdout"]]
+    assert 150 < len(controls) < 250
+    assert all(a["variant"] == "A" and not a["winner_selected"] for a in controls)
+    assert assignments == [service.experiment_assignment(contact_id=i, owner_user_id=2) for i in range(1000)]
 
 
 def test_icp_calibration_recommends_tighter_threshold_after_false_positives():

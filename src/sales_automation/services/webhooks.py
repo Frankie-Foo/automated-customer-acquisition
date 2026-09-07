@@ -144,18 +144,19 @@ class WebhookService:
                 contact_id,
                 owner_user_id=owner_user_id,
             )
-        if effective_event_type in {"replied", "bounced", "failed"} and hasattr(self.repo, "record_interaction"):
+        if effective_event_type in {"replied", "bounced", "failed", "unsubscribed"} and hasattr(self.repo, "record_interaction"):
             self.repo.record_interaction(
                 contact_id=contact_id,
                 user_id=owner_user_id,
-                interaction_type="email_reply" if effective_event_type == "replied" else "email_delivery_failure",
+                interaction_type="email_reply" if effective_event_type in {"replied", "unsubscribed"} else "email_delivery_failure",
                 direction="inbound",
                 channel="email",
                 subject=_extract_subject(payload),
                 content=_extract_message_text(payload),
                 outcome=reply_classification.get("label") if reply_classification else effective_event_type,
                 source_ref=message_id,
-                metadata={"provider": provider, "reply_classification": reply_classification or {}},
+                metadata={"provider": provider, "reply_classification": reply_classification or {},
+                          "outbound_message_id": outbound_message_id},
             )
         if human_reply and hasattr(self.repo, "add_lifecycle_activity"):
             self.repo.add_lifecycle_activity(

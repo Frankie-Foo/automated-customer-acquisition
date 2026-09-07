@@ -150,15 +150,22 @@ function syncPageFromHash() {
     setPage("dashboard", true);
     return;
   }
-  setPage(page, key !== page);
+  setPage(page, key !== page && !["emails", "sent-emails"].includes(key));
   if (page === "outreach") setOutreachView(["emails", "sent-emails"].includes(key) ? "history" : "workspace");
 }
 
 function setOutreachView(view) {
   const safeView = view === "history" ? "history" : "workspace";
+  if (currentPage() === "outreach") {
+    history.replaceState(null, "", safeView === "history" ? "#sent-emails" : "#outreach");
+  }
   customerWorkspace?.classList.toggle("hidden", safeView !== "workspace");
   sentEmails?.classList.toggle("hidden", safeView !== "history");
-  outreachViewButtons.forEach((button) => button.classList.toggle("active", button.dataset.outreachView === safeView));
+  outreachViewButtons.forEach((button) => {
+    const active = button.dataset.outreachView === safeView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
   window.dispatchEvent(new CustomEvent("salesbot:outreach-view", { detail: { view: safeView } }));
 }
 
