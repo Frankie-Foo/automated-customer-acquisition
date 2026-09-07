@@ -14,6 +14,7 @@ from .contactout_queue import contactout_bridge_configured
 from .http import HttpClient
 from .logging_utils import log
 from .outbound_quality import enrichment_readiness
+from .outreach_guard import company_identity_issues
 
 
 class ApolloPhoneAdapter(Protocol):
@@ -118,6 +119,14 @@ class ApolloPhoneQueueService:
         job = self.repo.claim_apollo_phone_job()
         if not job:
             return None
+        contact = self.repo.get_contact(int(job["contact_id"]))
+        issues = company_identity_issues(contact) if contact else ["contact_not_found"]
+        if issues:
+            code = "quality_gate:" + issues[0]
+            self.repo.fail_apollo_phone_dispatch(
+                int(job["id"]), str(job["lease_token"]), code, charge_reserved=False
+            )
+            return ApolloPhoneRun(int(job["id"]), "failed", code)
         global_limit = max(0, int(self.config.raw.get("apollo_phone", {}).get("global_daily_credit_limit") or 0))
         reservation = self.repo.reserve_apollo_phone_quota(
             int(job["id"]), str(job["lease_token"]), global_limit=global_limit
@@ -130,6 +139,13 @@ class ApolloPhoneQueueService:
                 int(job["id"]), str(job["lease_token"]), "contact_not_found", charge_reserved=False
             )
             return ApolloPhoneRun(int(job["id"]), "failed", "contact_not_found")
+        issues = company_identity_issues(contact)
+        if issues:
+            code = "quality_gate:" + issues[0]
+            self.repo.fail_apollo_phone_dispatch(
+                int(job["id"]), str(job["lease_token"]), code, charge_reserved=False
+            )
+            return ApolloPhoneRun(int(job["id"]), "failed", code)
         webhook_url = self.webhook_url(job)
         try:
             response = self.adapter.request_phone(contact, webhook_url=webhook_url)

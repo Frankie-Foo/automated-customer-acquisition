@@ -62,6 +62,21 @@ LOW_VALUE_TITLE_KEYWORDS = {
     "support",
 }
 
+COMPANY_REVIEW_NAMES = frozenset({
+    "linkedin", "leadiq", "professional profile", "entrepreneur",
+    "unknown", "n/a", "none", "null", "not available",
+})
+
+
+def company_identity_issues(contact: dict[str, Any]) -> list[str]:
+    name = str(contact.get("company_name") or "").strip().lower()
+    domain = str(contact.get("company_domain") or "").strip()
+    if not name and not domain:
+        return ["missing_company_identity"]
+    if name in COMPANY_REVIEW_NAMES:
+        return ["company_identity_needs_review"]
+    return []
+
 
 def is_sendable_email(value: str | None) -> bool:
     if not value or not is_full_email(value):
@@ -118,7 +133,7 @@ def send_readiness(
     min_score: int = 50,
     strict_automation: bool = False,
 ) -> dict[str, Any]:
-    reasons: list[str] = []
+    reasons: list[str] = company_identity_issues(contact)
     warnings: list[str] = []
     email = str(contact.get("email") or "")
     if contact.get("email_status") != "valid":

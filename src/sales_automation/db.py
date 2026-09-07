@@ -15,6 +15,7 @@ from .auth import hash_password, new_session_token, session_expires_at, verify_p
 from .config import AppConfig
 from .customer_intelligence import build_customer_profile
 from .outbound_quality import assess_icp, calibration_summary, default_icp_profile, summarize_experiment
+from .outreach_guard import COMPANY_REVIEW_NAMES, company_identity_issues
 from .sabcd import stage_from_payload
 from .status import advance_outreach_status, validate_status
 
@@ -1480,6 +1481,13 @@ class Repository:
         return ""
 
     def _append_contact_filter(self, clauses: list[str], filter_key: str) -> None:
+        # Fixed policy constants only; never interpolate user-provided values.
+        review_names = ",".join("'" + name.replace("'", "''") + "'" for name in sorted(COMPANY_REVIEW_NAMES))
+        company_review = (
+            "((BTRIM(COALESCE(c.company_name, ''), E' \\t\\r\\n') = '' "
+            "AND BTRIM(COALESCE(c.company_domain, ''), E' \\t\\r\\n') = '') "
+            f"OR LOWER(BTRIM(COALESCE(c.company_name, ''), E' \\t\\r\\n')) IN ({review_names}))"
+        )
         filters = {
             "mine": "c.owner_user_id IS NOT NULL",
             "public_pool": "c.pool_type = 'public'",
@@ -1510,6 +1518,10 @@ class Repository:
         }
         clause = filters.get(filter_key)
         if clause:
+            if filter_key == "needs_review":
+                clause = f"({clause} OR {company_review})"
+            elif filter_key in {"auto_enrich", "ready_to_send", "missing_draft", "draft_approved"}:
+                clause = f"({clause}) AND NOT {company_review}"
             clauses.append(clause)
 
     def email_performance(self, *, user: dict[str, Any], observation_days: int = 14) -> dict[str, Any]:
@@ -6483,6 +6495,7 @@ def _contact_identity_url(contact: dict[str, Any]) -> str:
 def _with_customer_intelligence(contact: dict[str, Any] | None) -> dict[str, Any] | None:
     if not contact:
         return contact
+    contact = {**contact, "company_identity_issues": company_identity_issues(contact)}
     insights = contact.get("profile_insights")
     if not isinstance(insights, dict):
         insights = {}

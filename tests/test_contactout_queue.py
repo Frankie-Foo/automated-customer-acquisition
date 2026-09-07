@@ -133,6 +133,31 @@ def config(limit=50):
     return AppConfig(raw={"contactout": {"global_daily_limit": limit}}, root_dir=Path("."))
 
 
+def test_changed_company_blocks_existing_job_before_reserving_quota():
+    repo = FakeRepo()
+    adapter = Adapter()
+    service = ContactOutQueueService(config(), repo, adapter=adapter)
+    service.enqueue(7, owner_user_id=2, account_id=3)
+    repo.contact["company_name"] = "LinkedIn"
+    repo.reserve_contactout_job_quota = lambda *a, **kw: pytest.fail("must not reserve quota")
+
+    run = service.run_next()
+
+    assert run.status == "blocked"
+    assert run.review_required
+    assert adapter.calls == 0
+    assert repo.blocked == [(11, "quality_gate:company_identity_needs_review")]
+    assert repo.account["status"] == "active"
+
+
+def test_manual_enqueue_rejects_placeholder_company():
+    repo = FakeRepo()
+    repo.contact["company_name"] = "LeadIQ"
+    with pytest.raises(ValueError, match="quality_gate:company_identity_needs_review"):
+        ContactOutQueueService(config(), repo, adapter=Adapter()).enqueue(7, owner_user_id=2, account_id=3)
+    assert repo.jobs == []
+
+
 def test_sales_enqueue_policy_fixes_server_controlled_fields():
     sql = (Path(__file__).parents[1] / "migrations" / "042_contactout_queue_fencing.sql").read_text(encoding="utf-8")
 

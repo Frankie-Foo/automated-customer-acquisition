@@ -22,7 +22,7 @@ from ..outreach_copy import (
     customer_visible_contact,
     customer_visible_source_context,
 )
-from ..outreach_guard import send_readiness, sleep_between_sends, validate_email_body
+from ..outreach_guard import company_identity_issues, send_readiness, sleep_between_sends, validate_email_body
 from ..rendering import build_html_body, open_pixel_url, render_string, render_template, unsubscribe_url
 from ..sender_pool import SenderPoolManager
 from .pdca import LeadWorkflowService
@@ -47,6 +47,9 @@ class PersonalizedEmailService:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found or not claimed")
+        issues = company_identity_issues(contact)
+        if issues:
+            raise ValueError("Company needs review: " + ", ".join(issues))
         sender_user = sender_identity_user(self.repo, contact, user)
         signature = _signature_profile(self.config, sender_user)
         quality_service = OutboundQualityService(self.repo)

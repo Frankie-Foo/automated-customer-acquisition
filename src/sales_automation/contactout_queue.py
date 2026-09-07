@@ -13,6 +13,7 @@ from .config import AppConfig
 from .http import HttpClient
 from .logging_utils import log
 from .outbound_quality import enrichment_readiness
+from .outreach_guard import company_identity_issues
 
 
 class ContactOutAdapter(Protocol):
@@ -102,6 +103,9 @@ class ContactOutQueueService:
         contact = self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("contact_not_found")
+        issues = company_identity_issues(contact)
+        if issues:
+            raise ValueError("quality_gate:" + issues[0])
         linkedin_url = _normalize_linkedin(contact.get("linkedin_url"))
         if not linkedin_url:
             raise ValueError("linkedin_url_required")
@@ -176,6 +180,11 @@ class ContactOutQueueService:
         if not account or not contact:
             self.repo.fail_contactout_job(int(job["id"]), str(job["lease_token"]), "missing_account_or_contact", consumed=False)
             return ContactOutRun(int(job["id"]), "failed", error_code="missing_account_or_contact")
+        issues = company_identity_issues(contact)
+        if issues:
+            code = "quality_gate:" + issues[0]
+            self.repo.block_contactout_job(int(job["id"]), str(job["lease_token"]), code)
+            return ContactOutRun(int(job["id"]), "blocked", review_required=True, error_code=code)
         global_limit = max(0, int(self.config.raw.get("contactout", {}).get("global_daily_limit") or 0))
         reservation = self.repo.reserve_contactout_job_quota(
             int(job["id"]), str(job["lease_token"]), global_limit=global_limit

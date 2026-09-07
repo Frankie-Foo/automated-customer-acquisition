@@ -520,6 +520,7 @@ function contactWorkBucket(contact) {
     || Number(contact.unsubscribed_count || 0) > 0
     || Number(contact.complained_count || 0) > 0;
   if (blocked) return "blocked";
+  if (contact.company_identity_issues?.length) return "review";
   const hasValidEmail = Boolean(contact.email) && contact.email_status === "valid";
   if (hasValidEmail && !["replied", "sent_1", "sent_2", "sent_3"].includes(contact.status)) return "ready";
   const candidates = Array.isArray(contact.email_candidates) ? contact.email_candidates : [];
@@ -606,7 +607,10 @@ function ContactRow({ contact, onAction, busy, busyAction }) {
 function IdentityQuality({ contact }) {
   const score = Number(contact.identity_confidence ?? contact.lead_score ?? 0);
   const status = contact.identity_status || (score >= 70 ? "likely" : "review");
-  return <div className="identity-quality"><div><b>{score || "--"}</b><span>{identityStatusLabel(status)}</span></div><small>{emailQuality(contact)}</small>{contact.enrich_error && <em title={contact.enrich_error}>数据需处理</em>}</div>;
+  const companyIssue = contact.company_identity_issues?.includes("missing_company_identity")
+    ? "缺公司名称和官网"
+    : contact.company_identity_issues?.length ? "公司名称疑似抓错，请核对真实雇主" : "";
+  return <div className="identity-quality"><div><b>{score || "--"}</b><span>{identityStatusLabel(status)}</span></div><small>{emailQuality(contact)}</small>{companyIssue && <em>{companyIssue}</em>}{contact.enrich_error && <em title={contact.enrich_error}>数据需处理</em>}</div>;
 }
 
 function ContactActions({ contact, onAction, busy, busyAction }) {
@@ -625,6 +629,9 @@ function ContactActions({ contact, onAction, busy, busyAction }) {
 }
 
 function rowActions(contact) {
+  if (contact.company_identity_issues?.length) {
+    return { primary: ["detail", "先核对公司"], secondary: [] };
+  }
   if (contact.pool_type === "public") {
     return { primary: ["claim-open", "领取并处理"], secondary: [] };
   }

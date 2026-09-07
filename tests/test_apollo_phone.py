@@ -102,7 +102,7 @@ class _Repo:
         return self.reservation
 
     def get_contact(self, _contact_id):
-        return {"linkedin_url": "https://www.linkedin.com/in/person"}
+        return {"linkedin_url": "https://www.linkedin.com/in/person", "company_name": "Premium Retail Group"}
 
     def mark_apollo_phone_awaiting_webhook(self, *args, **kwargs):
         self.calls.append(("await", args, kwargs))
@@ -146,6 +146,34 @@ def test_quota_denial_prevents_apollo_call():
 
     assert result.status == "blocked"
     assert adapter.calls == 0
+
+
+def test_company_changed_during_reservation_releases_credits_without_provider_call():
+    repo = _Repo()
+    rows = iter([repo.get_contact(2), {"company_name": "LinkedIn"}])
+    repo.get_contact = lambda _id: next(rows)
+    adapter = _Adapter()
+    result = ApolloPhoneQueueService(_config(), repo, adapter=adapter).dispatch_next()
+    assert result.error_code == "quality_gate:company_identity_needs_review"
+    assert adapter.calls == 0
+    assert repo.calls[-1][0] == "fail"
+    assert repo.calls[-1][2] == {"charge_reserved": False}
+
+
+@pytest.mark.parametrize("fields", [{"company_name": " LinkedIn "}, {}])
+def test_dispatch_rechecks_company_before_reserving_credits(fields):
+    repo = _Repo()
+    repo.get_contact = lambda _id: {"linkedin_url": "https://linkedin.com/in/person", **fields}
+    adapter = _Adapter()
+
+    result = ApolloPhoneQueueService(_config(), repo, adapter=adapter).dispatch_next()
+
+    assert result.status == "failed"
+    assert result.error_code.startswith("quality_gate:")
+    assert adapter.calls == 0
+    assert not any(isinstance(call, tuple) and call[0] == "reserve" for call in repo.calls)
+    assert repo.calls[-1][0] == "fail"
+    assert repo.calls[-1][2]["charge_reserved"] is False
 
 
 def test_auto_enqueue_skips_low_quality_contact_before_reserving_credits():

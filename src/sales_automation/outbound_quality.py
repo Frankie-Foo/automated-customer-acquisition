@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Any, Iterable
 
 from .outreach_copy import contains_internal_outreach_data
-from .outreach_guard import is_decision_title, is_low_value_title, is_sendable_email
+from .outreach_guard import company_identity_issues, is_decision_title, is_low_value_title, is_sendable_email
 
 
 POSITIVE_REPLY_LABELS = {
@@ -145,7 +145,7 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
     profile = {**default_icp_profile(), **(profile or {})}
     breakdown: dict[str, int] = {}
     reasons: list[str] = []
-    disqualifiers: list[str] = []
+    disqualifiers: list[str] = company_identity_issues(contact)
 
     email = str(contact.get("email") or "").strip().lower()
     email_status = str(contact.get("email_status") or "").lower()
@@ -198,10 +198,8 @@ def assess_icp(contact: dict[str, Any], profile: dict[str, Any] | None = None) -
         breakdown["account_fit"] = 4
 
     identity_points = 0
-    if contact.get("company_name") or contact.get("company_domain"):
+    if not company_identity_issues(contact):
         identity_points += 7
-    else:
-        disqualifiers.append("missing_company_identity")
     if contact.get("first_name") or contact.get("last_name"):
         identity_points += 5
     else:

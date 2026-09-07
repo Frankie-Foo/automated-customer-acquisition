@@ -8,6 +8,7 @@ from ..db import Repository
 from ..email_discovery import build_email_discovery_engine
 from ..logging_utils import log
 from ..outbound_quality import enrichment_readiness
+from ..outreach_guard import company_identity_issues
 from ..provider_budget import ProviderBudgetGateway
 
 
@@ -66,6 +67,9 @@ class EnrichmentService:
         ninjapear: NinjaPearClient | None,
         prospeo: ProspeoClient | None,
     ) -> dict[str, Any]:
+        issues = company_identity_issues(contact)
+        if issues:
+            raise ValueError("Company needs review: " + ", ".join(issues))
         fields = self._enrich_one(contact, hunter, proxycurl, ninjapear, prospeo)
         warnings = fields.pop("_provider_warnings", [])
         note = None if fields.get("email_status") == "valid" else "; ".join(warnings) or "No verified email found"
