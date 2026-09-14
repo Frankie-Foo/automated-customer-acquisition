@@ -3,7 +3,7 @@ import base64
 
 from sales_automation.clients import MailClient
 from sales_automation.rendering import build_html_body
-from sales_automation.services.outreach import _normalize_sender_signature, _reply_to_email, _sender_signature
+from sales_automation.services.outreach import _email_assets, _normalize_sender_signature, _reply_to_email, _sender_signature
 
 
 class RecordingHttp:
@@ -173,6 +173,11 @@ def test_smtp_mail_client_embeds_inline_signature_logo():
         "Hello",
         attachments=[
             {
+                "filename": "VERTU.pdf",
+                "content": b"%PDF-test",
+                "content_type": "application/pdf",
+            },
+            {
                 "filename": "vertu.png",
                 "content": b"png-test",
                 "content_type": "image/png",
@@ -186,6 +191,39 @@ def test_smtp_mail_client_embeds_inline_signature_logo():
     assert len(related) == 1
     assert related[0]["Content-ID"] == "<vertu-signature-logo>"
     assert related[0].get_content_disposition() == "inline"
+    message = smtp.sent["message"]
+    alternative = message.get_payload()[0]
+    html_related = alternative.get_payload()[-1]
+    assert html_related.get_content_type() == "multipart/related"
+    assert html_related.get_payload()[0].get_content_type() == "text/html"
+    assert message.get_payload()[1].get_content_type() == "application/pdf"
+
+
+def test_mail_client_rejects_missing_inline_asset():
+    client = MailClient("smtp", "", {"email": "sales@example.test", "dry_run": True})
+
+    try:
+        client.send("lead@example.test", "Subject", '<img src="cid:missing" />', "Hello")
+    except ValueError as exc:
+        assert str(exc) == "HTML references missing inline attachments: missing"
+    else:
+        raise AssertionError("missing inline asset must block sending")
+
+
+def test_email_assets_embed_local_product_images(tmp_path):
+    image = tmp_path / "product.png"
+    image.write_bytes(b"png-test")
+    config = SimpleNamespace(
+        root_dir=tmp_path,
+        raw={"outreach": {}},
+        product_images={"enabled": True, "base_url": "https://broken.example", "items": [{"src": "product.png"}]},
+    )
+
+    product_images, attachments = _email_assets(config)
+
+    assert product_images["base_url"] == ""
+    assert product_images["items"][0]["src"] == "cid:vertu-product-1"
+    assert attachments[0]["content_id"] == "vertu-product-1"
 
 
 def test_html_body_renders_april_business_card():

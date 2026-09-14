@@ -153,9 +153,10 @@ class PersonalizedEmailService:
         if "Unsubscribe:" not in text:
             text = f"{text.rstrip()}\n\nUnsubscribe: {values['unsubscribe_url']}"
         validate_email_body(subject, text, min_chars=60)
+        product_images, attachments = _email_assets(self.config, sender.get("signature"))
         html_body = build_html_body(
             text,
-            product_images=getattr(self.config, "product_images", {}),
+            product_images=product_images,
             signature=sender.get("signature"),
         )
         html_body += f'<img src="{open_pixel_url(contact, step, base_url, tracking_secret)}" width="1" height="1" alt="" />'
@@ -179,7 +180,7 @@ class PersonalizedEmailService:
                 metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
-                attachments=_brand_attachments(self.config, sender.get("signature")),
+                attachments=attachments,
             )
         except Exception as exc:
             self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
@@ -552,7 +553,8 @@ class OutreachService:
         template = self.config.root_dir / step_cfg["body_template"]
         text, html_body = render_template(template, values)
         text = _normalize_sender_signature(text, sender_user, fallback_name=sender.get("name", ""), signature=sender.get("signature"), unsubscribe_value=values["unsubscribe_url"])
-        html_body = build_html_body(text, product_images=self.config.product_images, signature=sender.get("signature"))
+        product_images, attachments = _email_assets(self.config, sender.get("signature"))
+        html_body = build_html_body(text, product_images=product_images, signature=sender.get("signature"))
         validate_email_body(subject, text)
         quality_review = review_email_copy(subject, text, contact=contact)
         if quality_review["status"] == "blocked":
@@ -588,7 +590,7 @@ class OutreachService:
                 metadata={"contact_id": contact["id"], "sequence_step": step, "user_id": sender_user_id},
                 reply_to=reply_to,
                 idempotency_key=idempotency_key,
-                attachments=_brand_attachments(self.config, sender.get("signature")),
+                attachments=attachments,
             )
         except Exception as exc:
             self.repo.finish_send_attempt(int(contact["id"]), step, error=str(exc)[:1000])
@@ -984,6 +986,38 @@ def _normalize_sender_signature(
     body = _SIGNOFF_RE.sub("", body).rstrip()
     parts = [part for part in [body, _sender_signature(user, fallback_name, signature), unsubscribe] if part]
     return "\n\n".join(parts)
+
+
+def _email_assets(config: AppConfig, signature: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    product_images = dict(getattr(config, "product_images", {}) or {})
+    items = [dict(item) for item in product_images.get("items", []) if isinstance(item, dict)] if product_images.get("enabled") else []
+    attachments = _brand_attachments(config, signature)
+    for index, item in enumerate(items, start=1):
+        src = str(item.get("src") or "").strip()
+        if not src or src.startswith(("http://", "https://", "cid:")):
+            continue
+        path = Path(src)
+        if not path.is_absolute():
+            path = config.root_dir / path
+        if path.suffix.lower() not in {".png", ".jpg", ".jpeg"} or not path.is_file():
+            raise RuntimeError(f"Configured product image is missing or invalid: {path}")
+        content = path.read_bytes()
+        if not content or len(content) > 2 * 1024 * 1024:
+            raise RuntimeError("Configured product image must be no larger than 2 MB")
+        content_id = f"vertu-product-{index}"
+        item["src"] = f"cid:{content_id}"
+        attachments.append(
+            {
+                "filename": path.name,
+                "content": content,
+                "content_type": "image/png" if path.suffix.lower() == ".png" else "image/jpeg",
+                "disposition": "inline",
+                "content_id": content_id,
+            }
+        )
+    product_images["items"] = items
+    product_images["base_url"] = ""
+    return product_images, attachments
 
 
 def _brand_attachments(config: AppConfig, signature: dict[str, Any] | None = None) -> list[dict[str, Any]]:

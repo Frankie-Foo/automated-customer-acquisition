@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import smtplib
 import ssl
 import urllib.parse
@@ -292,6 +293,7 @@ class MailClient:
         idempotency_key: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
+        _validate_inline_attachments(html, attachments or [])
         if self.sender.get("dry_run", True):
             return f"dry-run:{to_email}:{subject}"
         if self.provider == "resend":
@@ -399,6 +401,7 @@ class MailClient:
                 message[header] = str(value).replace("\r", " ").replace("\n", " ")[:200]
         message.set_content(text)
         message.add_alternative(html, subtype="html")
+        html_part = message.get_payload()[-1]
         for attachment in attachments or []:
             content = attachment.get("content")
             filename = str(attachment.get("filename") or "attachment").replace("\r", " ").replace("\n", " ").strip()
@@ -407,7 +410,6 @@ class MailClient:
             content_type = str(attachment.get("content_type") or guess_type(filename)[0] or "application/octet-stream")
             maintype, _, subtype = content_type.partition("/")
             if attachment.get("disposition") == "inline" and attachment.get("content_id"):
-                html_part = message.get_payload()[-1]
                 html_part.add_related(
                     content,
                     maintype=maintype or "image",
@@ -433,6 +435,18 @@ class MailClient:
             client.login(username, password)
             client.send_message(message, from_addr=envelope_from, to_addrs=[to_email])
         return str(message["Message-ID"])
+
+
+def _validate_inline_attachments(html: str, attachments: list[dict[str, Any]]) -> None:
+    referenced = {value.lower() for value in re.findall(r"cid:([^\"'\s>]+)", str(html or ""), flags=re.IGNORECASE)}
+    available = {
+        str(item.get("content_id") or "").strip("<>").lower()
+        for item in attachments
+        if item.get("disposition") == "inline" and item.get("content_id")
+    }
+    missing = referenced - available
+    if missing:
+        raise ValueError("HTML references missing inline attachments: " + ", ".join(sorted(missing)))
 
 
 def _api_attachment(attachment: dict[str, Any]) -> dict[str, str]:

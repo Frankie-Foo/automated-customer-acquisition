@@ -95,6 +95,13 @@ sales_mailboxes:
   ivan:
     active: ${IVAN_MAILBOX_ACTIVE}
     email: ${IVAN_MAILBOX_EMAIL}
+    signature:
+      name: Ivan You
+      title: Regional Manager, Southeast Asia | Vertu International Corporation Limited
+      phone: ivan.yu@vertu.com
+      address: 87-105 Chatham Road South, Tsim Sha Tsui, Kowloon. Hong Kong
+      logo_path: assets/brand/vertu_signature_logo.png
+      logo_cid: vertu-signature-logo
     smtp:
       host: ${IVAN_SMTP_HOST}
       port: ${IVAN_SMTP_PORT}
