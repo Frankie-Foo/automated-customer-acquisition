@@ -414,18 +414,18 @@ product_images:
   position: after_body
   columns: 3
   items:
-    - src: assets/email_images/outreach_01.png
+    - src: assets/email_images/outreach_01_email.jpg
       alt: VERTU AI Phones
       width: 320
-    - src: assets/email_images/outreach_02.png
+    - src: assets/email_images/outreach_02_email.jpg
       alt: VERTU Watches
       width: 320
-    - src: assets/email_images/outreach_03.png
+    - src: assets/email_images/outreach_03_email.jpg
       alt: VERTU Premium Wearables
       width: 320
-    - src: assets/email_images/outreach_04.png
+    - src: assets/email_images/outreach_04_email.jpg
       alt: VERTU Luxury Mobile
       width: 320
-    - src: assets/email_images/outreach_05.png
+    - src: assets/email_images/outreach_05_email.jpg
       alt: VERTU Product Portfolio
       width: 320

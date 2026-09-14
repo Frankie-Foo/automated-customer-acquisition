@@ -213,12 +213,12 @@ def test_mail_client_rejects_missing_inline_asset():
 
 
 def test_email_assets_embed_local_product_images(tmp_path):
-    image = tmp_path / "product.png"
-    image.write_bytes(b"png-test")
+    image = tmp_path / "product.jpg"
+    image.write_bytes(b"jpg-test")
     config = SimpleNamespace(
         root_dir=tmp_path,
         raw={"outreach": {}},
-        product_images={"enabled": True, "base_url": "https://broken.example", "items": [{"src": "product.png"}]},
+        product_images={"enabled": True, "base_url": "https://broken.example", "items": [{"src": "product.jpg"}]},
     )
 
     product_images, attachments = _email_assets(config)
@@ -226,6 +226,7 @@ def test_email_assets_embed_local_product_images(tmp_path):
     assert product_images["base_url"] == ""
     assert product_images["items"][0]["src"] == "cid:vertu-product-1"
     assert attachments[0]["content_id"] == "vertu-product-1"
+    assert attachments[0]["content_type"] == "image/jpeg"
 
 
 def test_email_assets_reject_oversized_inline_payload(tmp_path):
