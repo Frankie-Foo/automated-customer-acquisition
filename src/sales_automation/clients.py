@@ -399,9 +399,8 @@ class MailClient:
             header = _smtp_metadata_header(key)
             if header:
                 message[header] = str(value).replace("\r", " ").replace("\n", " ")[:200]
-        message.set_content(text)
-        message.add_alternative(html, subtype="html")
-        html_part = message.get_payload()[-1]
+        inline_attachments = []
+        regular_attachments = []
         for attachment in attachments or []:
             content = attachment.get("content")
             filename = str(attachment.get("filename") or "attachment").replace("\r", " ").replace("\n", " ").strip()
@@ -410,16 +409,36 @@ class MailClient:
             content_type = str(attachment.get("content_type") or guess_type(filename)[0] or "application/octet-stream")
             maintype, _, subtype = content_type.partition("/")
             if attachment.get("disposition") == "inline" and attachment.get("content_id"):
-                html_part.add_related(
+                inline_attachments.append((attachment, content, filename, maintype, subtype))
+            else:
+                regular_attachments.append((content, filename, maintype, subtype))
+
+        if inline_attachments:
+            alternative = EmailMessage()
+            alternative.set_content(text)
+            alternative.add_alternative(html, subtype="html")
+            related = EmailMessage()
+            related.make_related()
+            related.attach(alternative)
+            for attachment, content, filename, maintype, subtype in inline_attachments:
+                content_id = str(attachment["content_id"]).strip("<>")
+                related.add_related(
                     content,
                     maintype=maintype or "image",
                     subtype=subtype or "octet-stream",
-                    cid=f"<{str(attachment['content_id']).strip('<>')}>",
+                    cid=f"<{content_id}>",
                     filename=filename,
                     disposition="inline",
                 )
-            else:
-                message.add_attachment(content, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
+                related.get_payload()[-1]["X-Attachment-Id"] = content_id
+                related.get_payload()[-1]["Content-Location"] = f"cid:{content_id}"
+            message.make_mixed()
+            message.attach(related)
+        else:
+            message.set_content(text)
+            message.add_alternative(html, subtype="html")
+        for content, filename, maintype, subtype in regular_attachments:
+            message.add_attachment(content, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
 
         factory = self.smtp_factory
         if factory is None:

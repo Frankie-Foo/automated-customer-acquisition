@@ -191,11 +191,13 @@ def test_smtp_mail_client_embeds_inline_signature_logo():
     assert len(related) == 1
     assert related[0]["Content-ID"] == "<vertu-signature-logo>"
     assert related[0].get_content_disposition() == "inline"
+    assert related[0]["X-Attachment-Id"] == "vertu-signature-logo"
     message = smtp.sent["message"]
-    alternative = message.get_payload()[0]
-    html_related = alternative.get_payload()[-1]
+    html_related = message.get_payload()[0]
+    alternative = html_related.get_payload()[0]
     assert html_related.get_content_type() == "multipart/related"
-    assert html_related.get_payload()[0].get_content_type() == "text/html"
+    assert alternative.get_content_type() == "multipart/alternative"
+    assert alternative.get_payload()[-1].get_content_type() == "text/html"
     assert message.get_payload()[1].get_content_type() == "application/pdf"
 
 
