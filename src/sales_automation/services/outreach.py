@@ -992,6 +992,7 @@ def _email_assets(config: AppConfig, signature: dict[str, Any] | None = None) ->
     product_images = dict(getattr(config, "product_images", {}) or {})
     items = [dict(item) for item in product_images.get("items", []) if isinstance(item, dict)] if product_images.get("enabled") else []
     attachments = _brand_attachments(config, signature)
+    inline_bytes = sum(len(item.get("content") or b"") for item in attachments if item.get("disposition") == "inline")
     for index, item in enumerate(items, start=1):
         src = str(item.get("src") or "").strip()
         if not src or src.startswith(("http://", "https://", "cid:")):
@@ -1004,6 +1005,9 @@ def _email_assets(config: AppConfig, signature: dict[str, Any] | None = None) ->
         content = path.read_bytes()
         if not content or len(content) > 2 * 1024 * 1024:
             raise RuntimeError("Configured product image must be no larger than 2 MB")
+        inline_bytes += len(content)
+        if inline_bytes > 1024 * 1024:
+            raise RuntimeError("Combined inline email images must be no larger than 1 MB")
         content_id = f"vertu-product-{index}"
         item["src"] = f"cid:{content_id}"
         attachments.append(

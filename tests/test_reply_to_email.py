@@ -228,6 +228,25 @@ def test_email_assets_embed_local_product_images(tmp_path):
     assert attachments[0]["content_id"] == "vertu-product-1"
 
 
+def test_email_assets_reject_oversized_inline_payload(tmp_path):
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"a" * 600_000)
+    second.write_bytes(b"b" * 600_000)
+    config = SimpleNamespace(
+        root_dir=tmp_path,
+        raw={"outreach": {}},
+        product_images={"enabled": True, "items": [{"src": first.name}, {"src": second.name}]},
+    )
+
+    try:
+        _email_assets(config)
+    except RuntimeError as exc:
+        assert str(exc) == "Combined inline email images must be no larger than 1 MB"
+    else:
+        raise AssertionError("oversized inline image payload must block sending")
+
+
 def test_html_body_renders_april_business_card():
     text = (
         "Hi Ada,\n\nRelevant note.\n\nBest regards,\nApril Yang\nHead of CIS & South Asia\n"
