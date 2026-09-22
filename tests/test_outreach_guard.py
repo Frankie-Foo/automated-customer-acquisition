@@ -49,7 +49,9 @@ def test_send_delay_defaults_to_zero_without_config():
     assert send_delay_seconds(Config()) == 0
 
 
-def test_send_readiness_accepts_verified_decision_maker():
+@pytest.mark.parametrize("strict_automation", [False, True])
+@pytest.mark.parametrize("status", [None, "", "new", "enriched", "queued", "sent_1", "sent_2", "sent_3", "replied"])
+def test_send_readiness_accepts_verified_decision_maker(status, strict_automation):
     contact = {
         "first_name": "Ada",
         "last_name": "Lovelace",
@@ -60,14 +62,65 @@ def test_send_readiness_accepts_verified_decision_maker():
         "email_status": "valid",
         "email_confidence": 90,
         "lead_score": 78,
+        "status": status,
     }
 
-    readiness = send_readiness(contact)
+    readiness = send_readiness(contact, strict_automation=strict_automation)
 
     assert readiness["ok"]
     assert readiness["tier"] == "sendable"
     assert readiness["score"] == 78
     assert readiness["reasons"] == []
+
+
+@pytest.mark.parametrize("strict_automation", [False, True])
+@pytest.mark.parametrize(
+    "overrides, reason",
+    [
+        ({"status": status}, "contact_suppressed")
+        for status in (
+            "unsubscribed", "bounced", "complained", "blocked",
+            " UNSUBSCRIBED ", " BOUNCED ", " COMPLAINED ", " BLOCKED ",
+        )
+    ] + [
+        ({"icp_assessment": {"score": 100, "tier": "disqualified"}}, "icp_disqualified"),
+        ({"icp_assessment": {"score": 100, "tier": " DISQUALIFIED "}}, "icp_disqualified"),
+    ],
+)
+def test_send_readiness_rejects_suppressed_or_disqualified_contacts(overrides, reason, strict_automation):
+    contact = {
+        "first_name": "Ada",
+        "job_title": "Founder",
+        "company_name": "Example Inc",
+        "email": "ada@example.com",
+        "email_status": "valid",
+        "lead_score": 100,
+        "icp_assessment": {"score": 100, "tier": "qualified"},
+        **overrides,
+    }
+
+    readiness = send_readiness(contact, strict_automation=strict_automation)
+
+    assert not readiness["ok"]
+    assert readiness["tier"] == "review"
+    assert readiness["score"] == 100
+    assert readiness["reasons"] == [reason]
+
+
+@pytest.mark.parametrize("strict_automation", [False, True])
+@pytest.mark.parametrize("assessment", [None, {}, {"score": 100}, {"score": 100, "tier": "review", "qualified": False}])
+def test_send_readiness_does_not_treat_missing_or_review_icp_as_rejection(assessment, strict_automation):
+    contact = {
+        "first_name": "Ada",
+        "job_title": "Founder",
+        "company_name": "Example Inc",
+        "email": "ada@example.com",
+        "email_status": "valid",
+        "lead_score": 100,
+        "icp_assessment": assessment,
+    }
+
+    assert send_readiness(contact, strict_automation=strict_automation)["ok"]
 
 
 def test_send_readiness_blocks_role_based_and_low_value_contacts():

@@ -135,6 +135,12 @@ def send_readiness(
 ) -> dict[str, Any]:
     reasons: list[str] = company_identity_issues(contact)
     warnings: list[str] = []
+    status = str(contact.get("status") or "").strip().lower()
+    if status in {"unsubscribed", "bounced", "complained", "blocked"}:
+        reasons.append("contact_suppressed")
+    assessment = contact.get("icp_assessment")
+    if isinstance(assessment, dict) and str(assessment.get("tier") or "").strip().lower() == "disqualified":
+        reasons.append("icp_disqualified")
     email = str(contact.get("email") or "")
     if contact.get("email_status") != "valid":
         reasons.append("email_not_verified")
