@@ -88,7 +88,7 @@ def test_process_holds_unqualified_contact_without_drafting(monkeypatch):
     assert states[-1] == (11, "held", "icp_review:55")
 
 
-def test_research_provider_failure_pauses_batch(monkeypatch):
+def test_research_failure_holds_contact_without_blocking_batch(monkeypatch):
     value = repo()
     research = Mock()
     research.research.side_effect = RuntimeError("provider unavailable")
@@ -96,13 +96,11 @@ def test_research_provider_failure_pauses_batch(monkeypatch):
     service = module.OutreachBatchAutomationService(SimpleNamespace(raw={}), value)
     states = []
     service._set_state = lambda lead_id, status, reason: states.append((lead_id, status, reason))
-    service._pause_campaign = Mock()
 
     outcome = service._process(dict(ITEM))
 
-    assert outcome == "retry"
-    assert states == [(11, "retry", "research:RuntimeError:provider unavailable")]
-    service._pause_campaign.assert_called_once_with(10, "research:RuntimeError:provider unavailable")
+    assert outcome == "held"
+    assert states == [(11, "held", "research:RuntimeError:provider unavailable")]
 
 
 def test_ready_contact_waits_without_sending_when_daily_quota_is_exhausted(monkeypatch):

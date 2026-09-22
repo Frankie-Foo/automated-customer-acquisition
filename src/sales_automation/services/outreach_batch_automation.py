@@ -55,9 +55,8 @@ class OutreachBatchAutomationService:
                 AccountResearchService(self.config, self.repo).research(int(contact["id"]), user=owner)
             except RuntimeError as exc:
                 reason = _reason("research", exc)
-                self._set_state(item["lead_id"], "retry", reason)
-                self._pause_campaign(int(item["campaign_id"]), reason)
-                return "retry"
+                self._set_state(item["lead_id"], "held", reason)
+                return "held"
             contact = self.repo.get_private_contact_for_user(int(item["contact_id"]), owner) or contact
             assessment = OutboundQualityService(self.repo).assess_contact(contact)
             if not assessment.get("qualified"):
@@ -161,15 +160,6 @@ class OutreachBatchAutomationService:
                 """UPDATE leads SET automation_status=%s, automation_reason=%s,
                           automation_updated_at=NOW() WHERE id=%s""",
                 (status, reason, int(lead_id)),
-            )
-
-    def _pause_campaign(self, campaign_id: int, reason: str) -> None:
-        with self.repo.db.connect() as conn:
-            conn.execute(
-                """UPDATE campaigns SET automation_status='paused', automation_error=%s,
-                          automation_updated_at=NOW()
-                   WHERE id=%s AND automation_status='running'""",
-                (reason, int(campaign_id)),
             )
 
     def _recover_stale(self) -> None:
