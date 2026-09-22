@@ -29,6 +29,7 @@ from .provider_budget import ProviderBudgetExceeded
 from .rendering import verify_tracking_token
 from .sender_pool import SenderPoolManager
 from .services import AcquisitionPlannerService, AccountResearchService, AutomationRunService, DataFlywheelService, EnrichmentService, LeadWorkflowService, LifecycleService, OutboundQualityService, OutreachService, PersonalizedEmailService, ProfileAgentService, QueueService, SchedulerService, SocialEnrichmentService, SourcingService, StageAgentService, WebhookService
+from .services.outreach_batches import OutreachBatchService
 from .vps_sso import VpsSsoError, VpsSsoService
 from .pdca_sso import PdcaSsoError, PdcaSsoService
 
@@ -253,6 +254,17 @@ def make_handler(config, repo: Repository):
                 search = qs.get("search", [""])[0] or None
                 limit = int(qs.get("limit", ["100"])[0])
                 self._json(lambda: {"emails": repo.list_sent_emails(user=self._current_user(), limit=limit, search=search)})
+                return
+            if parsed.path == "/api/outreach-batches":
+                self._json(lambda: {"batches": OutreachBatchService(repo).list(user=self._current_user())})
+                return
+            if parsed.path.startswith("/api/outreach-batches/"):
+                qs = parse_qs(parsed.query)
+                self._json(lambda: OutreachBatchService(repo).detail(
+                    int(parsed.path.rsplit("/", 1)[-1]), user=self._current_user(),
+                    limit=qs.get("limit", ["25"])[0], offset=qs.get("offset", ["0"])[0],
+                    search=qs.get("search", [""])[0],
+                ))
                 return
             if parsed.path == "/api/email-performance":
                 qs = parse_qs(parsed.query)
@@ -1191,7 +1203,14 @@ def make_handler(config, repo: Repository):
                     custom_subject=payload.get("subject"),
                     custom_body=payload.get("body"),
                     user=self._current_user(),
+                    campaign_id=int(payload["campaign_id"]) if payload.get("campaign_id") else None,
                 ), target_type="contact", target_id=payload.get("contact_id"), summary="生成邮件草稿", metadata={"mode": payload.get("mode") or "ai"})
+                return
+            if parsed.path == "/api/outreach-batches":
+                self._json_audit("create_outreach_batch", lambda: OutreachBatchService(repo).create(
+                    user=self._current_user(), name=payload.get("name"),
+                    contact_ids=payload.get("contact_ids"), source_ref=payload.get("source_ref"),
+                ), target_type="campaign", summary="创建客户触达批次")
                 return
             if parsed.path == "/api/icp-feedback":
                 user = self._current_user()

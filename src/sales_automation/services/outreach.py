@@ -43,6 +43,7 @@ class PersonalizedEmailService:
         custom_subject: str | None = None,
         custom_body: str | None = None,
         user: dict[str, Any] | None = None,
+        campaign_id: int | None = None,
     ) -> dict[str, Any]:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
@@ -51,6 +52,15 @@ class PersonalizedEmailService:
         if issues:
             raise ValueError("Company needs review: " + ", ".join(issues))
         sender_user = sender_identity_user(self.repo, contact, user)
+        if campaign_id is not None:
+            with self.repo.db.connect() as conn:
+                member = conn.execute(
+                    """SELECT b.id FROM campaigns b JOIN leads l ON l.campaign_id=b.id
+                       WHERE b.id=%s AND l.contact_id=%s AND b.owner_user_id=%s LIMIT 1""",
+                    (campaign_id, contact_id, int(sender_user["id"]) if sender_user else None),
+                ).fetchone()
+                if not member:
+                    raise PermissionError("Contact is not in this salesperson's batch")
         signature = _signature_profile(self.config, sender_user)
         quality_service = OutboundQualityService(self.repo)
         experiment = quality_service.experiment_assignment(
@@ -74,7 +84,8 @@ class PersonalizedEmailService:
                 result["subject"], result["body"], contact=contact
             )
             result["experiment"] = experiment
-            self._save_draft(contact, result, mode=mode, user=user)
+            result["generation_source"] = "custom"
+            self._save_draft(contact, result, mode=mode, user=sender_user, campaign_id=campaign_id)
             return result
         draft = self._ai_draft(contact, user=sender_user, experiment=experiment)
         result = {
@@ -91,7 +102,8 @@ class PersonalizedEmailService:
             result["subject"], result["body"], contact=contact
         )
         result["experiment"] = experiment
-        self._save_draft(contact, result, mode=mode, user=user)
+        result["generation_source"] = draft.get("generation_source", "template")
+        self._save_draft(contact, result, mode=mode, user=sender_user, campaign_id=campaign_id)
         return result
 
     def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom", user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -211,6 +223,8 @@ class PersonalizedEmailService:
             "reply_notification_email": _reply_to_email(sender_user),
             "user_id": sender_user_id,
             "actor_user_id": actor_user_id,
+            "recipient_email": contact["email"],
+            "attachments": [item.get("filename") for item in attachments],
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
         self.repo.finish_send_attempt(int(contact["id"]), step, message_id=message_id)
@@ -224,7 +238,7 @@ class PersonalizedEmailService:
                 channel="email",
                 sequence_step=step,
                 subject=subject,
-                body=body,
+                body=text,
                 status="sent",
                 provider=provider,
                 provider_message_id=message_id,
@@ -268,7 +282,7 @@ class PersonalizedEmailService:
             "reply_to_email": reply_to,
         }
 
-    def _save_draft(self, contact: dict[str, Any], draft: dict[str, Any], *, mode: str, user: dict[str, Any] | None) -> None:
+    def _save_draft(self, contact: dict[str, Any], draft: dict[str, Any], *, mode: str, user: dict[str, Any] | None, campaign_id: int | None = None) -> None:
         if not hasattr(self.repo, "save_email_draft"):
             return
         research = self.repo.get_contact_research(int(contact["id"])) or {}
@@ -290,16 +304,17 @@ class PersonalizedEmailService:
         )
         if saved and hasattr(self.repo, "record_outreach_message"):
             research_snapshot = saved.get("research_snapshot") if isinstance(saved.get("research_snapshot"), dict) else {}
-            self.repo.record_outreach_message(
+            message = self.repo.record_outreach_message(
                 contact_id=int(contact["id"]),
                 user_id=int(user["id"]) if user else None,
                 draft_id=int(saved["id"]),
+                campaign_id=campaign_id,
                 channel="email",
                 sequence_step=int(saved.get("sequence_step") or 1),
                 subject=saved.get("subject") or "",
                 body=saved.get("body") or "",
                 language=str(contact.get("language") or "en"),
-                ai_model=str(self.config.raw.get("llm", {}).get("provider") or "fallback"),
+                ai_model=str(draft.get("generation_source") or "custom"),
                 personalization_evidence=list(research_snapshot.get("sources") or []),
                 status="draft",
                 quality_review=saved.get("quality_review") or draft.get("quality_review") or {},
@@ -307,6 +322,7 @@ class PersonalizedEmailService:
                 experiment_variant=saved.get("experiment_variant"),
                 metadata={"mode": mode},
             )
+            draft["campaign_id"] = message.get("campaign_id") if message else campaign_id
         if saved and hasattr(self.repo, "close_open_followup_tasks") and hasattr(self.repo, "ensure_followup_task"):
             self.repo.close_open_followup_tasks(int(contact["id"]))
             owner_user_id = int(user["id"]) if user else contact.get("owner_user_id")
@@ -421,7 +437,9 @@ class PersonalizedEmailService:
             return fallback
         if review_email_copy(subject, body, contact=copy_contact)["status"] == "blocked":
             return fallback
-        return {"subject": subject, "body": body}
+        llm = self.config.raw.get("llm", {})
+        return {"subject": subject, "body": body,
+                "generation_source": f"{llm.get('provider', 'deepseek')}:{llm.get('model', 'deepseek-chat')}"}
 
     def _fallback_draft(
         self,

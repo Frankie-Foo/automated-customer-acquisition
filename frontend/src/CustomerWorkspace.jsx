@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api.js";
-import { rememberWorkspaceContact, selectedWorkspaceContact } from "./workspaceNavigation.js";
+import { rememberWorkspaceContact, selectedWorkspaceContact, selectedWorkspaceBatch, workspaceDraftBatch } from "./workspaceNavigation.js";
 
 const lifecycleOptions = [
   ["lead", "陌生线索"],
@@ -63,6 +63,7 @@ function CustomerWorkspace() {
   const [body, setBody] = useState("");
   const [qualityReview, setQualityReview] = useState(null);
   const [approved, setApproved] = useState(false);
+  const [draftCampaignId, setDraftCampaignId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [operationLabel, setOperationLabel] = useState("");
   const [error, setError] = useState("");
@@ -109,6 +110,7 @@ function CustomerWorkspace() {
       setBody(next.draft?.body || defaultEmailBody(next.contact));
       setEmailMode(next.draft?.mode || "ai");
       setApproved(next.draft?.status === "approved");
+      setDraftCampaignId(workspaceDraftBatch(next.contact.id, next.draft));
       setQualityReview(next.draft?.quality_review || null);
       setTimeout(() => document.querySelector("#customer-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     } catch (err) {
@@ -214,10 +216,11 @@ function CustomerWorkspace() {
       setOperationLabel(emailMode === "ai" ? "正在生成个性化草稿..." : "正在套用自定义草稿...");
       const result = await api("/api/email-draft", {
         method: "POST",
-        body: JSON.stringify({ contact_id: contact.id, mode: emailMode, subject, body }),
+        body: JSON.stringify({ contact_id: contact.id, campaign_id: selectedWorkspaceBatch(contact.id) ?? draftCampaignId, mode: emailMode, subject, body }),
       });
       setSubject(result.subject || "");
       setBody(result.body || "");
+      setDraftCampaignId(result.campaign_id ?? null);
       setQualityReview(result.quality_review || null);
       setApproved(false);
       window.dispatchEvent(new CustomEvent("salesbot:notice", { detail: { message: "邮件草稿已生成，请检查后再发送" } }));
@@ -259,10 +262,11 @@ function CustomerWorkspace() {
     if (!subject.trim() || !body.trim()) throw new Error("请先填写主题和正文");
     const saved = await api("/api/email-draft", {
       method: "POST",
-      body: JSON.stringify({ contact_id: contact.id, mode: "custom", subject: subject.trim(), body: body.trim() }),
+      body: JSON.stringify({ contact_id: contact.id, campaign_id: draftCampaignId, mode: "custom", subject: subject.trim(), body: body.trim() }),
     });
     setSubject(saved.subject || subject.trim());
     setBody(saved.body || body.trim());
+    setDraftCampaignId(saved.campaign_id ?? null);
     setQualityReview(saved.quality_review || null);
     await api("/api/email-draft/approve", { method: "POST", body: JSON.stringify({ contact_id: contact.id }) });
     setApproved(true);

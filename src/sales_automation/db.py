@@ -5187,7 +5187,9 @@ class Repository:
                 f"""
                 SELECT id, contact_id, user_id, sequence_step, mode, subject, body,
                        research_snapshot, quality_review, experiment_id, experiment_variant,
-                       status, created_at, sent_at, approved_at, approved_by_user_id
+                       status, created_at, sent_at, approved_at, approved_by_user_id,
+                       (SELECT m.campaign_id FROM outreach_messages m
+                        WHERE m.draft_id = email_drafts.id) AS campaign_id
                 FROM email_drafts
                 WHERE {' AND '.join(clauses)}
                 ORDER BY created_at DESC, id DESC
@@ -6274,10 +6276,11 @@ class Repository:
                     SELECT id, campaign_id
                     FROM leads
                     WHERE contact_id = %s
+                      AND (%s::bigint IS NULL OR campaign_id = %s)
                     ORDER BY updated_at DESC, id DESC
                     LIMIT 1
                     """,
-                    (contact_id,),
+                    (contact_id, campaign_id, campaign_id),
                 ).fetchone()
                 if lead_context:
                     lead_id = lead_id or int(lead_context["id"])
@@ -6295,13 +6298,14 @@ class Repository:
                 )
                 ON CONFLICT (draft_id) WHERE draft_id IS NOT NULL
                 DO UPDATE SET
-                    lead_id = COALESCE(EXCLUDED.lead_id, outreach_messages.lead_id),
-                    campaign_id = COALESCE(EXCLUDED.campaign_id, outreach_messages.campaign_id),
+                    lead_id = COALESCE(outreach_messages.lead_id, EXCLUDED.lead_id),
+                    campaign_id = COALESCE(outreach_messages.campaign_id, EXCLUDED.campaign_id),
                     subject = EXCLUDED.subject,
                     body = EXCLUDED.body,
                     language = COALESCE(EXCLUDED.language, outreach_messages.language),
                     ai_model = COALESCE(EXCLUDED.ai_model, outreach_messages.ai_model),
-                    personalization_evidence = EXCLUDED.personalization_evidence,
+                    personalization_evidence = CASE WHEN EXCLUDED.personalization_evidence = '[]'::jsonb
+                        THEN outreach_messages.personalization_evidence ELSE EXCLUDED.personalization_evidence END,
                     status = EXCLUDED.status,
                     provider = COALESCE(EXCLUDED.provider, outreach_messages.provider),
                     provider_message_id = COALESCE(EXCLUDED.provider_message_id, outreach_messages.provider_message_id),
