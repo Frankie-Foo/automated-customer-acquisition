@@ -1,5 +1,6 @@
 from sales_automation.clients import LLMClient
 import json
+from datetime import datetime, UTC
 
 import sales_automation.services.outreach as outreach_module
 from sales_automation.services.outreach import PersonalizedEmailService
@@ -77,6 +78,8 @@ def test_ai_draft_with_wrong_recipient_falls_back_to_grounded_copy(monkeypatch):
             return []
 
     monkeypatch.setattr(outreach_module, "LLMGateway", Gateway)
+    monkeypatch.setattr(outreach_module.DataFlywheelService, "context_for_contact",
+                        lambda self, contact: {"updated_at": datetime.now(UTC)})
 
     draft = PersonalizedEmailService(Config(), Repo()).draft(1)
 
