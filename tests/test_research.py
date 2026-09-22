@@ -1,4 +1,8 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from sales_automation.services import research as module
 
 from sales_automation.services.research import AccountResearchService
 
@@ -55,3 +59,32 @@ def test_research_persists_grounded_sources_for_email_generation():
     assert result["news_signals"][0]["published_at"] == "2026-07-09"
     assert all(item["url"].startswith("https://") for item in result["sources"])
     assert "found" in result["summary"]
+
+
+def test_search_outage_uses_company_evidence(monkeypatch):
+    official = {"type": "company", "title": "Example", "url": "https://example.com/",
+                "snippet": "Verified company text", "retrieval_method": "company_website"}
+    monkeypatch.setattr(module, "_official_source", lambda contact: official)
+    search = Mock()
+    search.search.side_effect = RuntimeError("search unavailable")
+    result = AccountResearchService(SimpleNamespace(apis={}, raw={}), Repo(), client=search).research(42, user={"id": 2})
+    assert result["sources"] == [official]
+    assert result["provider"] == "company_website"
+
+
+def test_outage_without_evidence_does_not_save_research(monkeypatch):
+    monkeypatch.setattr(module, "_official_source", lambda contact: None)
+    search = Mock()
+    search.search.side_effect = RuntimeError("search unavailable")
+    repo = Repo()
+    with pytest.raises(RuntimeError):
+        AccountResearchService(SimpleNamespace(apis={}, raw={}), repo, client=search).research(42, user={"id": 2})
+    assert repo.saved is None
+
+
+def test_official_site_rejects_private_network(monkeypatch):
+    monkeypatch.setattr(module.socket, "getaddrinfo", lambda *args, **kwargs: [(0, 0, 0, '', ('127.0.0.1', 443))])
+    opener = Mock()
+    monkeypatch.setattr(module.urllib.request, "build_opener", opener)
+    assert module._official_source({"company_domain": "example.com"}) is None
+    opener.assert_not_called()
