@@ -106,7 +106,16 @@ class PersonalizedEmailService:
         self._save_draft(contact, result, mode=mode, user=sender_user, campaign_id=campaign_id)
         return result
 
-    def send(self, contact_id: int, *, subject: str, body: str, mode: str = "custom", user: dict[str, Any] | None = None) -> dict[str, Any]:
+    def send(
+        self,
+        contact_id: int,
+        *,
+        subject: str,
+        body: str,
+        mode: str = "custom",
+        user: dict[str, Any] | None = None,
+        cc_emails: list[str] | None = None,
+    ) -> dict[str, Any]:
         contact = self.repo.get_private_contact_for_user(contact_id, user) if user else self.repo.get_contact(contact_id)
         if not contact:
             raise ValueError("Contact not found or not claimed")
@@ -191,6 +200,7 @@ class PersonalizedEmailService:
                 text,
                 metadata={"contact_id": contact["id"], "sequence_step": step, "mode": mode, "user_id": sender_user_id},
                 reply_to=reply_to,
+                cc=cc_emails,
                 idempotency_key=idempotency_key,
                 attachments=attachments,
             )
@@ -224,6 +234,7 @@ class PersonalizedEmailService:
             "user_id": sender_user_id,
             "actor_user_id": actor_user_id,
             "recipient_email": contact["email"],
+            "cc_emails": list(cc_emails or []),
             "attachments": [item.get("filename") for item in attachments],
         }
         recorded = self.repo.record_manual_sent(contact["id"], step, subject, message_id, metadata)
@@ -280,6 +291,7 @@ class PersonalizedEmailService:
             "message_id": message_id,
             "sender_email": sender.get("email"),
             "reply_to_email": reply_to,
+            "cc_emails": list(cc_emails or []),
         }
 
     def _save_draft(self, contact: dict[str, Any], draft: dict[str, Any], *, mode: str, user: dict[str, Any] | None, campaign_id: int | None = None) -> None:

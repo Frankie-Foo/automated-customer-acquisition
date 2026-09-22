@@ -32,6 +32,11 @@ const eligibilityLabels = {
   ownership_changed: "客户归属已变更", email_unverified: "邮箱尚未验证",
   unsubscribed: "客户已退订", bounced: "邮箱退信", complained: "客户投诉", blocked: "客户已被阻止发送",
 };
+const automationLabels = {
+  idle: "未启动", running: "自动处理中", paused: "已暂停", completed: "已完成", failed: "运行失败",
+  pending: "等待处理", researching: "背调中", ready: "待发送", sending: "发送中",
+  sent: "已自动发送", held: "待人工复核", retry: "稍后重试",
+};
 
 export default function OutreachBatches() {
   const headingId = useId();
@@ -102,6 +107,9 @@ function BatchAudit({ listedBatch, revision }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [automationBusy, setAutomationBusy] = useState(false);
+  const [automationError, setAutomationError] = useState("");
+  const [auditCc, setAuditCc] = useState("frank.fu@vertu.cn");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -125,6 +133,33 @@ function BatchAudit({ listedBatch, revision }) {
     return () => controller.abort();
   }, [listedBatch.id, offset, query, revision, retry]);
 
+  useEffect(() => {
+    if (data?.batch?.automation_status !== "running") return undefined;
+    const timer = window.setInterval(() => setRetry((value) => value + 1), 15000);
+    return () => window.clearInterval(timer);
+  }, [data?.batch?.automation_status]);
+
+  useEffect(() => {
+    const saved = data?.batch?.automation_config?.audit_cc;
+    if (Array.isArray(saved) && saved.length) setAuditCc(saved.join(", "));
+  }, [data?.batch?.automation_config]);
+
+  const configureAutomation = async (action) => {
+    setAutomationBusy(true);
+    setAutomationError("");
+    try {
+      await api(`/api/outreach-batches/${encodeURIComponent(listedBatch.id)}/automation`, {
+        method: "POST",
+        body: JSON.stringify({ action, audit_cc: auditCc.split(",").map((value) => value.trim()).filter(Boolean) }),
+      });
+      setRetry((value) => value + 1);
+    } catch (err) {
+      setAutomationError(err.message);
+    } finally {
+      setAutomationBusy(false);
+    }
+  };
+
   const batch = data?.batch || listedBatch;
   const page = Math.floor(offset / pageSize) + 1;
   const pages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1;
@@ -136,6 +171,30 @@ function BatchAudit({ listedBatch, revision }) {
       <span>创建：{formatDate(listedBatch.created_at)}</span>
       <span>来源：{batch.source_ref || "未记录"}</span>
     </div>
+    {data && <section className="outreach-batches-automation" aria-label="自动背调与发送">
+      <div>
+        <strong>{automationLabels[batch.automation_status] || batch.automation_status || "未启动"}</strong>
+        <span>等待 {data.summary.automation_pending ?? 0}</span>
+        <span>处理中 {data.summary.automation_active ?? 0}</span>
+        <span>待发送 {data.summary.automation_ready ?? 0}</span>
+        <span>已发送 {data.summary.automation_sent ?? 0}</span>
+        <span>待复核 {data.summary.automation_held ?? 0}</span>
+        <span>重试 {data.summary.automation_retry ?? 0}</span>
+        <span>失败 {data.summary.automation_failed ?? 0}</span>
+      </div>
+      <label>每封邮件抄送
+        <input type="email" value={auditCc} disabled={batch.automation_status === "running" || automationBusy}
+          onChange={(event) => setAuditCc(event.target.value)} />
+      </label>
+      {batch.automation_status === "running"
+        ? <button type="button" disabled={automationBusy} onClick={() => configureAutomation("pause")}>暂停自动处理</button>
+        : <button type="button" disabled={automationBusy || batch.automation_status === "completed"}
+            onClick={() => configureAutomation(batch.automation_status === "paused" ? "resume" : "start")}>
+            {batch.automation_status === "paused" ? "继续自动处理" : "开始自动背调与发送"}
+          </button>}
+      {automationError && <p role="alert">{automationError}</p>}
+      {batch.automation_error && <p role="alert">{batch.automation_error}</p>}
+    </section>}
     <form className="outreach-batches-search" role="search" aria-label="批次客户搜索" onSubmit={(event) => {
       event.preventDefault();
       setOffset(0);
@@ -209,6 +268,7 @@ function BatchContactRow({ contact, batchId }) {
       <dl>
         <dt>发件邮箱</dt><dd>{contact.sender_email || "未记录"}</dd>
         <dt>收件邮箱</dt><dd>{contact.recipient_email || contact.email || "未记录"}</dd>
+        <dt>抄送</dt><dd>{Array.isArray(contact.cc_emails) && contact.cc_emails.length ? contact.cc_emails.join(", ") : "无"}</dd>
         <dt>主题</dt><dd>{contact.latest_subject || "无主题"}</dd>
         <dt>正文</dt><dd>{contact.latest_body || "正文未记录"}</dd>
       </dl>
@@ -216,6 +276,8 @@ function BatchContactRow({ contact, batchId }) {
     <td>
       <strong>{statusLabels[contact.last_message_status] || contact.last_message_status || (Number(contact.sent_count) > 0 ? "已发送" : "尚未发送")}</strong>
       <div>发送 {contact.sent_count ?? 0} / 回复 {contact.replied_count ?? 0} / 打开 {contact.opened_count ?? 0}</div>
+      {contact.automation_status && <div className="outreach-batches-muted">自动流程：{automationLabels[contact.automation_status] || contact.automation_status}</div>}
+      {contact.automation_reason && <div className="outreach-batches-reason">{contact.automation_reason}</div>}
       <div className="outreach-batches-muted">最近发送：{formatDate(contact.last_sent_at)}</div>
       {contact.eligibility_reason && <div className="outreach-batches-reason">发送资格：{eligibilityLabels[contact.eligibility_reason] || contact.eligibility_reason}</div>}
     </td>

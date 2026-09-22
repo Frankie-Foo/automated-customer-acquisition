@@ -10,6 +10,7 @@ from .enrichment import EnrichmentService
 from .acquisition_planner import AcquisitionPlannerService
 from .flywheel import DataFlywheelService
 from .outreach import OutreachService
+from .outreach_batch_automation import OutreachBatchAutomationService
 from .pdca import LeadWorkflowService
 from .queue import QueueService
 
@@ -94,6 +95,12 @@ class SchedulerService:
                     ) if apollo_limit > 0 else []
                 quota = QuotaService(self.config, self.repo)
                 queued = step("queue", lambda: QueueService(self.repo).queue(queue_limit), 0)
+                batch_limit = int(self.config.raw.get("outreach", {}).get("batch_automation_limit") or 3)
+                outreach_batches = step(
+                    "outreach_batches",
+                    lambda: OutreachBatchAutomationService(self.config, self.repo).run_due(batch_limit),
+                    {"processed": 0, "sent": 0, "held": 0, "retry": 0, "deferred": 0},
+                )
 
                 def send_due() -> int:
                     limited_send = min(send_limit, quota.remaining_global("send"))
@@ -135,6 +142,7 @@ class SchedulerService:
                     "apollo_phone_auto_queue": apollo_auto_queue,
                     "apollo_phone": apollo_phone,
                     "queued": queued,
+                    "outreach_batches": outreach_batches,
                     "sent": sent,
                     "waiting": closed["waiting"],
                     "abandoned": closed["abandoned"],
@@ -172,6 +180,7 @@ def _loop_metrics(result: dict) -> dict:
         "apollo_queued": int((result.get("apollo_phone_auto_queue") or {}).get("queued") or 0),
         "apollo_processed": len(result.get("apollo_phone") or []),
         "queued": int(result.get("queued") or 0),
+        "outreach_batches": result.get("outreach_batches") or {},
         "sent": int(result.get("sent") or 0),
         "waiting": int(result.get("waiting") or 0),
         "abandoned": int(result.get("abandoned") or 0),

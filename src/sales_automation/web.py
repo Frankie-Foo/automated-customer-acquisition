@@ -1212,6 +1212,25 @@ def make_handler(config, repo: Repository):
                     contact_ids=payload.get("contact_ids"), source_ref=payload.get("source_ref"),
                 ), target_type="campaign", summary="创建客户触达批次")
                 return
+            batch_path = parsed.path.removeprefix("/api/outreach-batches/").removesuffix("/automation")
+            if (parsed.path.startswith("/api/outreach-batches/") and parsed.path.endswith("/automation")
+                    and batch_path.isdigit()):
+                batch_id = int(batch_path)
+                action = str(payload.get("action") or "start")
+                self._json_audit(
+                    "configure_outreach_batch_automation",
+                    lambda: OutreachBatchService(repo).configure_automation(
+                        batch_id,
+                        user=self._current_user(),
+                        action=action,
+                        audit_cc=payload.get("audit_cc"),
+                    ),
+                    target_type="campaign",
+                    target_id=batch_id,
+                    summary=f"{action} outreach batch automation",
+                    metadata={"action": action},
+                )
+                return
             if parsed.path == "/api/icp-feedback":
                 user = self._current_user()
                 contact_id = int(payload["contact_id"])

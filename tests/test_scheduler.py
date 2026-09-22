@@ -88,6 +88,12 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
             calls.append("send")
             return 4
 
+    class OutreachBatch:
+        def __init__(self, *_args): pass
+        def run_due(self, limit):
+            calls.append("outreach_batches")
+            return {"processed": 0, "sent": 0, "held": 0, "retry": 0, "deferred": 0}
+
     class Workflow:
         def __init__(self, *_args): pass
         def refresh_tasks(self, **_kwargs): return 0
@@ -106,6 +112,7 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
     monkeypatch.setattr(f"{module}.QueueService", Queue)
     monkeypatch.setattr(f"{module}.QuotaService", Quota)
     monkeypatch.setattr(f"{module}.OutreachService", Outreach)
+    monkeypatch.setattr(f"{module}.OutreachBatchAutomationService", OutreachBatch)
     monkeypatch.setattr(f"{module}.LeadWorkflowService", Workflow)
     monkeypatch.setattr(f"{module}.DataFlywheelService", Flywheel)
 
@@ -116,7 +123,7 @@ def test_scheduler_uses_paid_contactout_only_after_regular_enrichment(monkeypatc
     repo = _Repo()
     result = SchedulerService(config, repo).run_once(25, 25, 25)
 
-    assert calls == ["acquisition", "enrichment", "contactout_queue", "contactout_run", "apollo_queue", "apollo_run", "queue", "send"]
+    assert calls == ["acquisition", "enrichment", "contactout_queue", "contactout_run", "apollo_queue", "apollo_run", "queue", "outreach_batches", "send"]
     assert result["enrichment"] == {"succeeded": 3, "failed": 2}
     assert result["queued"] == 4
     assert result["sent"] == 4
@@ -153,6 +160,12 @@ def test_scheduler_continues_after_provider_failure(monkeypatch):
             calls.append("send")
             return 1
 
+    class OutreachBatch:
+        def __init__(self, *_args): pass
+        def run_due(self, _limit):
+            calls.append("outreach_batches")
+            return {"processed": 0, "sent": 0, "held": 0, "retry": 0, "deferred": 0}
+
     class Workflow:
         def __init__(self, *_args): pass
         def refresh_tasks(self, **_kwargs):
@@ -171,6 +184,7 @@ def test_scheduler_continues_after_provider_failure(monkeypatch):
     monkeypatch.setattr(f"{module}.QueueService", Queue)
     monkeypatch.setattr(f"{module}.QuotaService", Quota)
     monkeypatch.setattr(f"{module}.OutreachService", Outreach)
+    monkeypatch.setattr(f"{module}.OutreachBatchAutomationService", OutreachBatch)
     monkeypatch.setattr(f"{module}.LeadWorkflowService", Workflow)
     monkeypatch.setattr(f"{module}.DataFlywheelService", Flywheel)
 
@@ -178,4 +192,4 @@ def test_scheduler_continues_after_provider_failure(monkeypatch):
 
     assert result["status"] == "completed_with_errors"
     assert result["errors"] == [{"step": "acquisition", "error": "source unavailable"}]
-    assert calls == ["queue", "send", "tasks"]
+    assert calls == ["queue", "outreach_batches", "send", "tasks"]

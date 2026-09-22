@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 
@@ -77,6 +78,11 @@ class OutreachBatchService:
                          "original_row": original_rows.get(str(contact_id), {})},
                          ensure_ascii=False, default=str), contact.get("email")),
                 )
+            conn.execute(
+                """UPDATE leads SET automation_status='pending', automation_updated_at=NOW()
+                   WHERE campaign_id=%s AND source_type='outreach_batch' AND automation_status IS NULL""",
+                (campaign["id"],),
+            )
         return {"batch": campaign, "total": len(ids)}
 
     def list(self, *, user):
@@ -85,6 +91,8 @@ class OutreachBatchService:
             return conn.execute(
                 f"""SELECT b.id, b.name, b.region, b.created_at,
                        COALESCE(u.display_name, u.username) AS owner_name,
+                       b.automation_status, b.automation_config, b.automation_error,
+                       b.automation_started_at, b.automation_completed_at, b.automation_updated_at,
                        b.metadata->>'source_ref' AS source_ref,
                        (SELECT COUNT(DISTINCT c.id) FROM leads l JOIN contacts c ON c.id=l.contact_id
                         WHERE l.campaign_id=b.id AND (%s OR c.owner_user_id=%s)) AS total_count,
@@ -110,6 +118,8 @@ class OutreachBatchService:
         with self.repo.db.connect() as conn:
             batch = conn.execute(
                 """SELECT b.id, b.name, b.region, b.created_at, b.owner_user_id,
+                          b.automation_status, b.automation_config, b.automation_error,
+                          b.automation_started_at, b.automation_completed_at, b.automation_updated_at,
                           b.metadata->>'source_ref' AS source_ref,
                           COALESCE(u.display_name, u.username) AS owner_name
                    FROM campaigns b LEFT JOIN sales_users u ON u.id=b.owner_user_id
@@ -123,6 +133,8 @@ class OutreachBatchService:
                           c.status, c.lifecycle_stage, c.profile_summary, c.owner_user_id,
                           COALESCE(u.display_name,u.username) AS owner_name,
                           l.source_row, l.source_ref, l.raw_data,
+                          l.automation_status, l.automation_reason, l.automation_attempts,
+                          l.automation_updated_at,
                           r.summary AS research_summary, r.sources AS research_sources,
                           r.researched_at, m.subject AS latest_subject, m.body AS latest_body,
                           CASE WHEN m.status = 'draft' AND d.status = 'approved'
@@ -130,6 +142,7 @@ class OutreachBatchService:
                           m.quality_review,
                           m.personalization_evidence, m.ai_model, m.metadata->>'sender_email' AS sender_email,
                           m.metadata->>'recipient_email' AS recipient_email,
+                          m.metadata->'cc_emails' AS cc_emails,
                           counts.sent_count, counts.replied_count, counts.opened_count,
                           counts.failed_count, counts.last_sent_at,
                           task.title AS next_task_title, task.due_at AS next_task_due_at,
@@ -173,6 +186,78 @@ class OutreachBatchService:
         return {"batch": batch, "summary": summary, "total": len(rows),
                 "contacts": rows[offset:offset + limit]}
 
+    def configure_automation(self, batch_id: int, *, user, action: str, audit_cc=None):
+        user_id, admin = _actor(user)
+        action = str(action or "").strip().lower()
+        if action not in {"start", "pause", "resume"}:
+            raise ValueError("Action must be start, pause, or resume")
+        cc = _email_list(audit_cc)
+        with self.repo.db.connect() as conn:
+            batch = conn.execute(
+                """SELECT * FROM campaigns
+                   WHERE id=%s AND channel='outreach_batch' AND (%s OR owner_user_id=%s)
+                   FOR UPDATE""",
+                (int(batch_id), admin, user_id),
+            ).fetchone()
+            if not batch:
+                raise PermissionError("Batch not found or not accessible")
+            if action == "pause":
+                conn.execute(
+                    """UPDATE campaigns SET automation_status='paused', automation_updated_at=NOW()
+                       WHERE id=%s""",
+                    (int(batch_id),),
+                )
+            else:
+                config = batch.get("automation_config") if isinstance(batch.get("automation_config"), dict) else {}
+                if cc:
+                    config = {**config, "audit_cc": cc}
+                if not _email_list(config.get("audit_cc")):
+                    raise ValueError("At least one audit CC address is required")
+                conn.execute(
+                    """UPDATE campaigns
+                       SET automation_status='running', automation_config=%s::jsonb,
+                           automation_error=NULL, automation_started_at=COALESCE(automation_started_at, NOW()),
+                           automation_completed_at=NULL, automation_updated_at=NOW()
+                       WHERE id=%s""",
+                    (json.dumps(config, ensure_ascii=False), int(batch_id)),
+                )
+                conn.execute(
+                    """UPDATE leads l SET automation_status = CASE
+                             WHEN EXISTS (SELECT 1 FROM outreach_messages m
+                                          WHERE m.campaign_id=l.campaign_id AND m.contact_id=l.contact_id
+                                            AND m.sent_at IS NOT NULL
+                                            AND COALESCE(m.metadata->>'dry_run','false') <> 'true')
+                             THEN 'sent' ELSE 'pending' END,
+                           automation_reason=NULL, automation_updated_at=NOW()
+                       WHERE l.campaign_id=%s AND l.source_type='outreach_batch'
+                         AND (l.automation_status IS NULL OR l.automation_status IN ('failed','retry'))""",
+                    (int(batch_id),),
+                )
+        return self.automation_status(int(batch_id), user=user)
+
+    def automation_status(self, batch_id: int, *, user):
+        user_id, admin = _actor(user)
+        with self.repo.db.connect() as conn:
+            row = conn.execute(
+                """SELECT b.id, b.automation_status, b.automation_config, b.automation_error,
+                          b.automation_started_at, b.automation_completed_at, b.automation_updated_at,
+                          COUNT(l.id) AS total,
+                          COUNT(*) FILTER (WHERE l.automation_status='pending') AS pending,
+                          COUNT(*) FILTER (WHERE l.automation_status IN ('researching','sending')) AS active,
+                          COUNT(*) FILTER (WHERE l.automation_status='ready') AS ready,
+                          COUNT(*) FILTER (WHERE l.automation_status='sent') AS sent,
+                          COUNT(*) FILTER (WHERE l.automation_status='held') AS held,
+                          COUNT(*) FILTER (WHERE l.automation_status='retry') AS retry,
+                          COUNT(*) FILTER (WHERE l.automation_status='failed') AS failed
+                   FROM campaigns b LEFT JOIN leads l ON l.campaign_id=b.id AND l.source_type='outreach_batch'
+                   WHERE b.id=%s AND b.channel='outreach_batch' AND (%s OR b.owner_user_id=%s)
+                   GROUP BY b.id""",
+                (int(batch_id), admin, user_id),
+            ).fetchone()
+        if not row:
+            raise PermissionError("Batch not found or not accessible")
+        return row
+
 
 def summarize(rows):
     return {
@@ -184,4 +269,26 @@ def summarize(rows):
         "replied_contacts": sum(bool(row.get("replied_count")) for row in rows),
         "failed_messages": sum(int(row.get("failed_count") or 0) for row in rows),
         "blocked_contacts": sum(bool(row.get("eligibility_reason")) for row in rows),
+        "automation_pending": sum(row.get("automation_status") == "pending" for row in rows),
+        "automation_active": sum(row.get("automation_status") in {"researching", "sending"} for row in rows),
+        "automation_ready": sum(row.get("automation_status") == "ready" for row in rows),
+        "automation_sent": sum(row.get("automation_status") == "sent" for row in rows),
+        "automation_held": sum(row.get("automation_status") == "held" for row in rows),
+        "automation_retry": sum(row.get("automation_status") == "retry" for row in rows),
+        "automation_failed": sum(row.get("automation_status") == "failed" for row in rows),
     }
+
+
+def _email_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("Audit CC must be a list of email addresses")
+    result: list[str] = []
+    for value in values:
+        email = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", email):
+            raise ValueError("Audit CC contains an invalid email address")
+        if email.casefold() not in {item.casefold() for item in result}:
+            result.append(email)
+    return result

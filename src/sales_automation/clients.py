@@ -290,10 +290,12 @@ class MailClient:
         *,
         metadata: dict[str, Any] | None = None,
         reply_to: str | None = None,
+        cc: list[str] | None = None,
         idempotency_key: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
         _validate_inline_attachments(html, attachments or [])
+        cc = _normalize_cc(cc, to_email=to_email, sender_email=str(self.sender.get("email") or ""))
         if self.sender.get("dry_run", True):
             return f"dry-run:{to_email}:{subject}"
         if self.provider == "resend":
@@ -310,6 +312,8 @@ class MailClient:
             }
             if reply_to:
                 payload["reply_to"] = [reply_to]
+            if cc:
+                payload["cc"] = cc
             if attachments:
                 payload["attachments"] = [_api_attachment(item) for item in attachments]
             headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -324,8 +328,11 @@ class MailClient:
             )
             return data.get("id")
         if self.provider == "sendgrid":
+            personalization = {"to": [{"email": to_email}]}
+            if cc:
+                personalization["cc"] = [{"email": email} for email in cc]
             payload = {
-                "personalizations": [{"to": [{"email": to_email}]}],
+                "personalizations": [personalization],
                 "from": {"email": self.sender.get("email"), "name": self.sender.get("name")},
                 "subject": subject,
                 "content": [{"type": "text/plain", "value": text}, {"type": "text/html", "value": html}],
@@ -358,6 +365,7 @@ class MailClient:
                 text,
                 metadata=metadata,
                 reply_to=reply_to,
+                cc=cc,
                 attachments=attachments,
             )
         raise ValueError(f"Unsupported mail provider: {self.provider}")
@@ -371,6 +379,7 @@ class MailClient:
         *,
         metadata: dict[str, Any] | None,
         reply_to: str | None,
+        cc: list[str],
         attachments: list[dict[str, Any]] | None,
     ) -> str:
         cfg = self.smtp_config
@@ -391,6 +400,8 @@ class MailClient:
         message = EmailMessage()
         message["From"] = formataddr((sender_name, sender_email))
         message["To"] = to_email
+        if cc:
+            message["Cc"] = ", ".join(cc)
         message["Subject"] = subject
         message["Message-ID"] = make_msgid(domain=sender_email.partition("@")[2] or None)
         if reply_to:
@@ -452,8 +463,21 @@ class MailClient:
                 client.starttls(context=ssl.create_default_context())
                 client.ehlo()
             client.login(username, password)
-            client.send_message(message, from_addr=envelope_from, to_addrs=[to_email])
+            client.send_message(message, from_addr=envelope_from, to_addrs=[to_email, *cc])
         return str(message["Message-ID"])
+
+
+def _normalize_cc(values: list[str] | None, *, to_email: str, sender_email: str) -> list[str]:
+    excluded = {str(to_email).strip().casefold(), str(sender_email).strip().casefold()}
+    result: list[str] = []
+    for value in values or []:
+        email = str(value or "").strip()
+        normalized = email.casefold()
+        if not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", email):
+            raise ValueError("CC addresses must be complete email addresses")
+        if normalized not in excluded and normalized not in {item.casefold() for item in result}:
+            result.append(email)
+    return result
 
 
 def _validate_inline_attachments(html: str, attachments: list[dict[str, Any]]) -> None:

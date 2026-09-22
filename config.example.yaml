@@ -366,6 +366,7 @@ queue:
   batch_size: 100
 
 outreach:
+  batch_automation_limit: 3
   waiting_pool_after_days: 14
   send_delay_seconds: 10
   send_jitter_seconds: 5

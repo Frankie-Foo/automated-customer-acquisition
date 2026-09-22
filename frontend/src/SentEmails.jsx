@@ -132,7 +132,7 @@ function SentEmailRow({ email }) {
   return (
     <tr>
       <td>{formatDate(email.occurred_at)}</td>
-      <td><strong>{email.sender_email || "未记录"}</strong><div className="muted">回复至：{email.reply_to_email || "未记录"}</div>{email.dry_run && <div className="muted">dry run</div>}</td>
+      <td><strong>{email.sender_email || "未记录"}</strong><div className="muted">回复至：{email.reply_to_email || "未记录"}</div>{Array.isArray(email.metadata?.cc_emails) && email.metadata.cc_emails.length > 0 && <div className="muted">抄送：{email.metadata.cc_emails.join(", ")}</div>}{email.dry_run && <div className="muted">dry run</div>}</td>
       <td><strong>{email.recipient_email || ""}</strong><div className="muted">{fullName(email)}</div></td>
       <td className="subject-cell">{email.email_subject || ""}</td>
       <td><strong>{email.company_name || ""}</strong><div className="muted">{email.company_domain || email.job_title || ""}</div></td>

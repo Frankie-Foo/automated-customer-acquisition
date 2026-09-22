@@ -51,6 +51,27 @@ def test_resend_mail_client_sets_reply_to():
     assert http.calls[0]["json_body"]["reply_to"] == ["sales@vertu.cn"]
 
 
+def test_resend_mail_client_sets_deduplicated_cc():
+    http = RecordingHttp()
+    client = MailClient("resend", "key", {"email": "april@vertu.cn", "dry_run": False}, http=http)
+
+    client.send(
+        "lead@example.com", "Subject", "<p>Hello</p>", "Hello",
+        cc=["frank.fu@vertu.cn", "FRANK.FU@vertu.cn", "lead@example.com", "april@vertu.cn"],
+    )
+
+    assert http.calls[0]["json_body"]["cc"] == ["frank.fu@vertu.cn"]
+
+
+def test_sendgrid_mail_client_sets_cc():
+    http = RecordingHttp()
+    client = MailClient("sendgrid", "key", {"email": "april@vertu.cn", "dry_run": False}, http=http)
+
+    client.send("lead@example.com", "Subject", "<p>Hello</p>", "Hello", cc=["frank.fu@vertu.cn"])
+
+    assert http.calls[0]["json_body"]["personalizations"][0]["cc"] == [{"email": "frank.fu@vertu.cn"}]
+
+
 def test_resend_mail_client_sets_idempotency_key():
     http = RecordingHttp()
     sender = {"name": "vertuMay", "email": "vertuMay@mail.frelys.xyz", "dry_run": False}
@@ -130,6 +151,31 @@ def test_smtp_mail_client_supports_starttls():
     client.send("lead@example.com", "Subject", "<p>Hello</p>", "Hello")
 
     assert smtp.starttls_called is True
+
+
+def test_smtp_mail_client_sets_cc_header_and_envelope_recipient():
+    smtp = RecordingSmtp()
+    client = MailClient(
+        "smtp", "", {"name": "April", "email": "april@vertu.cn", "dry_run": False},
+        smtp_config={"host": "smtp.example.test", "username": "april@vertu.cn", "password": "pw", "security": "ssl"},
+        smtp_factory=lambda: smtp,
+    )
+
+    client.send("lead@example.com", "Subject", "<p>Hello</p>", "Hello", cc=["frank.fu@vertu.cn"])
+
+    assert smtp.sent["message"]["Cc"] == "frank.fu@vertu.cn"
+    assert smtp.sent["to_addrs"] == ["lead@example.com", "frank.fu@vertu.cn"]
+
+
+def test_mail_client_rejects_cc_header_injection_even_in_dry_run():
+    client = MailClient("smtp", "", {"email": "sales@example.test", "dry_run": True})
+
+    try:
+        client.send("lead@example.test", "Subject", "<p>Hello</p>", "Hello", cc=["ok@example.test\r\nBcc: hidden@example.test"])
+    except ValueError as exc:
+        assert str(exc) == "CC addresses must be complete email addresses"
+    else:
+        raise AssertionError("invalid CC must block sending")
 
 
 def test_smtp_mail_client_supports_pdf_attachments():

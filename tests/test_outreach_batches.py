@@ -14,7 +14,7 @@ import pytest
 from sales_automation import web
 from sales_automation.db import Repository
 from sales_automation.services.outreach import PersonalizedEmailService
-from sales_automation.services.outreach_batches import OutreachBatchService, _actor, summarize
+from sales_automation.services.outreach_batches import OutreachBatchService, _actor, _email_list, summarize
 
 
 SALES = {"id": 2, "role": "sales"}
@@ -90,7 +90,7 @@ def test_create_accepts_maximum_name_and_roster_size(mock_repo):
 
     assert result == {"batch": {"id": 7}, "total": 1000}
     assert conn.execute.call_args_list[0].args[1] == (ids,)
-    assert len(conn.execute.call_args_list) == 1002
+    assert len(conn.execute.call_args_list) == 1003
 
 
 def test_summary_counts_contacts_once_but_sums_messages():
@@ -105,8 +105,38 @@ def test_summary_counts_contacts_once_but_sums_messages():
         "total_count": 3, "profiled_contacts": 1, "drafted_contacts": 2,
         "sent_contacts": 2, "sent_messages": 5, "replied_contacts": 1,
         "failed_messages": 3, "blocked_contacts": 1,
+        "automation_pending": 0, "automation_ready": 0, "automation_sent": 0,
+        "automation_active": 0, "automation_held": 0, "automation_retry": 0, "automation_failed": 0,
     }
     assert summarize([]) == dict.fromkeys(summarize(rows), 0)
+
+
+def test_audit_cc_requires_complete_deduplicated_addresses():
+    assert _email_list(["frank.fu@vertu.cn", "FRANK.FU@vertu.cn"]) == ["frank.fu@vertu.cn"]
+    with pytest.raises(ValueError, match="invalid email"):
+        _email_list(["bad\r\nBcc: hidden@example.test"])
+
+
+def test_start_automation_persists_audit_cc_and_initializes_members(mock_repo):
+    conn = mock_repo.db.connect.return_value.__enter__.return_value
+    campaign = Mock()
+    campaign.fetchone.return_value = {"id": 7, "automation_config": {}}
+    update_campaign = Mock()
+    update_leads = Mock()
+    status = Mock()
+    status.fetchone.return_value = {
+        "id": 7, "automation_status": "running", "automation_config": {"audit_cc": ["frank.fu@vertu.cn"]},
+    }
+    conn.execute.side_effect = [campaign, update_campaign, update_leads, status]
+
+    result = OutreachBatchService(mock_repo).configure_automation(
+        7, user=SALES, action="start", audit_cc=["frank.fu@vertu.cn"],
+    )
+
+    assert result["automation_status"] == "running"
+    saved_config = json.loads(conn.execute.call_args_list[1].args[1][0])
+    assert saved_config == {"audit_cc": ["frank.fu@vertu.cn"]}
+    assert "THEN 'sent' ELSE 'pending' END" in conn.execute.call_args_list[2].args[0]
 
 
 @pytest.mark.parametrize("actor", [None, SALES])
@@ -175,6 +205,23 @@ def batch_api(monkeypatch, mock_repo):
         with response:
             return response.code, json.load(response)
 
+    def post(path, payload, token="sales-token"):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Cookie"] = f"salesbot_session={token}"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}{path}",
+            data=json.dumps(payload).encode(), headers=headers, method="POST",
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.code, json.load(response)
+
+    get.post = post
+
     try:
         yield get, mock_repo
     finally:
@@ -210,6 +257,30 @@ def test_get_routes_pass_session_scope_and_detail_options(batch_api, monkeypatch
     get("/api/outreach-batches/7")
     service.detail.assert_called_with(7, user=SALES, limit="25", offset="0", search="")
     factory.assert_called_with(repo)
+
+
+def test_post_automation_route_uses_session_owner_and_audit_cc(batch_api, monkeypatch):
+    get, repo = batch_api
+    service = Mock(spec=OutreachBatchService)
+    service.configure_automation.return_value = {"id": 7, "automation_status": "running"}
+    monkeypatch.setattr(web, "OutreachBatchService", Mock(return_value=service))
+
+    assert get.post(
+        "/api/outreach-batches/7/automation",
+        {"action": "start", "audit_cc": ["frank.fu@vertu.cn"]},
+    ) == (200, {"ok": True, "data": service.configure_automation.return_value})
+    service.configure_automation.assert_called_once_with(
+        7, user=SALES, action="start", audit_cc=["frank.fu@vertu.cn"],
+    )
+
+
+def test_post_automation_route_requires_session(batch_api):
+    get, repo = batch_api
+
+    assert get.post("/api/outreach-batches/7/automation", {"action": "start"}, token=None) == (
+        401, {"ok": False, "error": "unauthorized"},
+    )
+    repo.db.connect.assert_not_called()
 
 
 @pytest.mark.parametrize("suffix", ["7?limit=bad", "7?offset=bad", "7?limit=1.5", "not-a-batch"])
@@ -278,7 +349,9 @@ def pg_batches():
                 );
                 CREATE TEMP TABLE campaigns (
                     id bigserial PRIMARY KEY, name text, channel text, region text, owner_user_id bigint,
-                    idempotency_key text, metadata jsonb DEFAULT '{}', created_at timestamptz DEFAULT NOW()
+                    idempotency_key text, metadata jsonb DEFAULT '{}', created_at timestamptz DEFAULT NOW(),
+                    automation_status text DEFAULT 'idle', automation_config jsonb DEFAULT '{}', automation_error text,
+                    automation_started_at timestamptz, automation_completed_at timestamptz, automation_updated_at timestamptz
                 );
                 CREATE UNIQUE INDEX qa_campaign_key ON campaigns(idempotency_key)
                     WHERE idempotency_key IS NOT NULL;
@@ -286,7 +359,9 @@ def pg_batches():
                     id bigserial PRIMARY KEY, external_id text, source_type text, source_ref text,
                     source_row integer, campaign_id bigint, contact_id bigint, owner_user_id bigint,
                     raw_data jsonb DEFAULT '{}', normalized_email text, status text,
-                    updated_at timestamptz DEFAULT NOW(), UNIQUE(source_type, external_id)
+                    updated_at timestamptz DEFAULT NOW(), automation_status text, automation_reason text,
+                    automation_attempts integer DEFAULT 0, automation_updated_at timestamptz,
+                    UNIQUE(source_type, external_id)
                 );
                 CREATE TEMP TABLE contact_research (
                     contact_id bigint PRIMARY KEY, summary text, sources jsonb, researched_at timestamptz
@@ -426,6 +501,8 @@ class TestPostgresOutreachBatches:
             "total_count": 3, "profiled_contacts": 1, "drafted_contacts": 2,
             "sent_contacts": 1, "sent_messages": 2, "replied_contacts": 1,
             "failed_messages": 1, "blocked_contacts": 1,
+            "automation_pending": 2, "automation_ready": 0, "automation_sent": 0,
+            "automation_active": 0, "automation_held": 0, "automation_retry": 0, "automation_failed": 0,
         }
         assert [row["id"] for row in detail["contacts"]] == [10, 11, 12]
         first, historical, unsent = detail["contacts"]
