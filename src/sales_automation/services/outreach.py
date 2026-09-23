@@ -371,9 +371,13 @@ class PersonalizedEmailService:
         account_context = _account_context(copy_contact)
         framework = insights.get("email_framework") if isinstance(insights.get("email_framework"), dict) else outreach_framework(copy_contact)
         pain_strategy = insights.get("pain_point_strategy") if isinstance(insights.get("pain_point_strategy"), dict) else {}
-        followup_plan = insights.get("followup_plan") if isinstance(insights.get("followup_plan"), list) else []
         recipient_mandate = _recipient_mandate(copy_contact)
         flywheel = DataFlywheelService(self.config, self.repo).context_for_contact(copy_contact)
+        flywheel_prompt = {
+            "scope": flywheel.get("scope"),
+            "rules": flywheel.get("rules") or {},
+            "prompt_guidance": flywheel.get("prompt_guidance") or "",
+        }
         research_sources = []
         for item in (research.get("sources") or [])[:6]:
             cleaned = clean_public_research_item(item)
@@ -406,9 +410,8 @@ class PersonalizedEmailService:
             f"pain point strategy: {json.dumps(pain_strategy, ensure_ascii=False)}; "
             f"recipient decision lens: {json.dumps(recipient_mandate, ensure_ascii=False)}; "
             f"engagement context: sequence_step={int(copy_contact.get('sequence_step') or 0)}, status={str(copy_contact.get('status') or 'new')}, last_event={str(copy_contact.get('last_event_type') or 'none')}; "
-            f"14-day follow-up plan: {json.dumps(followup_plan, ensure_ascii=False)}; "
             f"research_sources: {json.dumps(research_sources, ensure_ascii=False)}; "
-            f"validated flywheel guidance: {json.dumps(flywheel, ensure_ascii=False, default=str)}; "
+            f"validated flywheel guidance: {json.dumps(flywheel_prompt, ensure_ascii=False, default=str)}; "
             "Use flywheel guidance only to choose among facts already present; never invent evidence from it. "
             f"account segment: {segment}. For luxury_group accounts, emphasize portfolio adjacency, selective distribution or boutique formats, VIP/private-client activation, and operating governance. "
             f"Use this exact subject unless it conflicts with a verified fact: {_email_subject(copy_contact, str(copy_contact.get('company_name') or 'your business'), recipient_mandate, segment)}. "
