@@ -100,9 +100,21 @@ class _WebsiteText(HTMLParser):
             self.parts.append(data.strip())
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
+class _CompanyRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self, company_domain):
+        super().__init__()
+        self.company_domain = company_domain.removeprefix("www.")
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+        parsed = urllib.parse.urlparse(newurl)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if parsed.scheme != "https" or host != self.company_domain or parsed.port not in (None, 443):
+            return None
+        _assert_external_url_allowed(newurl)
+        addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+        if not addresses or any(not ip_address(row[4][0]).is_global for row in addresses):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _official_source(contact):
@@ -116,7 +128,7 @@ def _official_source(contact):
         if not addresses or any(not ip_address(row[4][0]).is_global for row in addresses):
             return None
         request = urllib.request.Request(url, headers={"User-Agent": "salesbot-account-research/1.0"})
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=12) as response:
+        with urllib.request.build_opener(_CompanyRedirect(domain)).open(request, timeout=12) as response:
             if "text/html" not in response.headers.get("Content-Type", ""):
                 return None
             parser = _WebsiteText()
@@ -129,7 +141,7 @@ def _official_source(contact):
         if any(term in text.lower() for term in ("verify you are human", "access denied", "domain for sale")):
             return None
         return {"type": "company", "title": company + " company website", "snippet": text[:4000],
-                "url": url, "domain": domain, "published_at": "", "query": "",
+                "url": response.geturl(), "domain": domain, "published_at": "", "query": "",
                 "retrieval_method": "company_website", "retrieved_at": datetime.now(UTC).isoformat()}
     except Exception:
         return None

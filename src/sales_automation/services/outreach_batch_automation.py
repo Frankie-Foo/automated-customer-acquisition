@@ -139,7 +139,12 @@ class OutreachBatchAutomationService:
                            AND l.automation_updated_at::date=CURRENT_DATE
                          ))
                          OR (l.automation_status='retry'
-                             AND l.automation_updated_at < NOW() - INTERVAL '6 hours')
+                             AND (
+                               (l.automation_reason='model_unavailable_or_budget_exhausted'
+                                AND l.automation_updated_at::date < CURRENT_DATE)
+                               OR (l.automation_reason IS DISTINCT FROM 'model_unavailable_or_budget_exhausted'
+                                   AND l.automation_updated_at < NOW() - INTERVAL '6 hours')
+                             ))
                        )
                      ORDER BY CASE l.automation_status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
                               b.id, l.source_row NULLS LAST, l.id
