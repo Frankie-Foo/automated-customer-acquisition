@@ -46,9 +46,10 @@ llm:
   gateway:
     mode: high_value # off | high_value | all
     icp_threshold: 70
-    daily_calls: 200
-    daily_input_chars: 50000
-    daily_output_chars: 100000
+    # Effectively unbounded internal quotas; provider limits and billing still apply.
+    daily_calls: 2147483647
+    daily_input_chars: 2147483647
+    daily_output_chars: 2147483647
     cache_ttl_seconds: 86400
     cache_version: "1"
 
